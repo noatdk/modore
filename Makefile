@@ -29,17 +29,36 @@ BRIDGE_DIR := bridge
 export PATH := $(CURDIR)/$(BRIDGE_DIR)/build-tools:$(PATH)
 
 .PHONY: help build run open bridge clean clean-bridge distclean signing \
-        check-platform macos
+        check-platform macos linux install-user-bin test-puppeteer
 
 .DEFAULT_GOAL := help
 
 build: check-platform
 	@$(MAKE) --no-print-directory -C $(NATIVE_DIR)
 
-# Convenience: explicit macOS target. Useful in CI matrices or when a
-# developer is on a multi-OS machine and wants to be explicit.
+# Convenience: explicit per-OS targets (CI matrices, multi-OS machines).
 macos:
 	@$(MAKE) --no-print-directory -C native/macos
+
+linux:
+	@$(MAKE) --no-print-directory -C native/linux
+
+# Linux: install ~/.local/bin/modore-host + ~/.local/lib/modore/*.so
+# Same as: make -C native/linux install-user-bin (from this repo root, not …/modore/modore/…).
+install-user-bin: check-platform
+ifneq ($(PLATFORM),linux)
+	@echo "install-user-bin is Linux-only (host platform: $(PLATFORM))"; exit 1
+else
+	@$(MAKE) --no-print-directory -C native/linux install-user-bin
+endif
+
+# Linux: Puppeteer smoke test (needs modore-host running + graphical session; `npm ci` in test/puppeteer).
+test-puppeteer: check-platform
+ifneq ($(PLATFORM),linux)
+	@echo "test-puppeteer is Linux-only (host platform: $(PLATFORM))"; exit 1
+else
+	@cd test/puppeteer && npm ci && npm test
+endif
 
 run: check-platform
 	@$(MAKE) --no-print-directory -C $(NATIVE_DIR) run
@@ -74,12 +93,7 @@ endif
 check-platform:
 ifeq ($(PLATFORM),unsupported)
 	@echo "Unsupported host platform: $(UNAME_S)"; \
-	 echo "Currently supported: Darwin (macOS). Linux/Windows hosts not wired up yet."; \
-	 exit 1
-endif
-ifeq ($(PLATFORM),linux)
-	@echo "Linux host not wired up yet. The bridge builds cross-platform"; \
-	 echo "(see 'make bridge'), but no Linux frontend exists in this repo."; \
+	 echo "Currently supported: Darwin (macOS) and Linux (X11 host)."; \
 	 exit 1
 endif
 ifeq ($(PLATFORM),windows)
@@ -94,6 +108,8 @@ help:
 	@echo "Build:"
 	@echo "  make build      build the host app for the current platform"
 	@echo "  make macos      build the macOS host explicitly"
+	@echo "  make linux      build the Linux host explicitly"
+	@echo "  make install-user-bin   Linux: install to ~/.local (modore-host + bridge .so)"
 	@echo "  make bridge     build only the cross-platform Mozc bridge"
 	@echo
 	@echo "Run:"
@@ -106,4 +122,5 @@ help:
 	@echo
 	@echo "Other:"
 	@echo "  make signing    one-time: create self-signed identity (macOS)"
+	@echo "  make test-puppeteer  Linux: Chromium E2E vs running modore-host (see test/puppeteer/)"
 	@echo "  make help       print this list (default)"

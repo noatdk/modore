@@ -16,3 +16,6 @@ compile_commands.json
 .vscode/
 .idea/
 *.swp
+
+# Node (Puppeteer pipeline test)
+test/puppeteer/node_modules/

@@ -1,0 +1,8 @@
+# Copy to ~/.config/modore/modore.conf (same path regardless of distro).
+#
+# Electron / Chromium under Hyprland:
+# • If DISPLAY is set (usual XWayland case), ipc pickup prefers XTest — often works without extra tweaks.
+# • Pure Oz/Wayland Chromium (DISPLAY unset): keep DISPLAY in your session if possible, or rely on Hypr+wtype clipboard paths + modore-host --ipc-only trigger.
+
+[conversion]
+hotkey = Ctrl+Shift+grave
