@@ -1,4 +1,4 @@
-// modeless-ime — flat C ABI around the Mozc engine.
+// modore — flat C ABI around the Mozc engine.
 //
 // This header is what each frontend (macOS Swift host, future Windows/Linux
 // hosts, future CLIs) consumes to drive Japanese conversion. The convert-loop

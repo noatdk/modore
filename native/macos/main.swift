@@ -1,4 +1,4 @@
-// modeless-ime macOS native host.
+// modore — macOS native host.
 //
 // Runs as a menu-bar/accessory app, registers a global Ctrl+/ hotkey, reads
 // the focused text field (any app) via Accessibility, hands the picked span
@@ -6,7 +6,7 @@
 // OpenKey for Vietnamese.
 //
 // Build:  make -C native/macos
-// Run:    open native/macos/build/ModelessIMEHost.app
+// Run:    open native/macos/build/Modore.app
 // First run prompts for Accessibility permission. Grant it in
 //   System Settings → Privacy & Security → Accessibility, then re-launch.
 
@@ -24,7 +24,7 @@ let HOTKEY_KEYCODE: CGKeyCode = CGKeyCode(kVK_ANSI_Slash)
 // profile is a follow-up task.
 let MOZC_PROFILE_DIR: String = {
     let home = FileManager.default.homeDirectoryForCurrentUser.path
-    return "\(home)/Library/Application Support/ModelessIME"
+    return "\(home)/Library/Application Support/Modore"
 }()
 
 // MARK: - Backend call shape
@@ -74,14 +74,14 @@ func readFocusedField() -> FocusedField? {
         &focusedRef
     )
     if r1 != .success {
-        NSLog("[modeless-ime] AX focused-element lookup failed: %d", r1.rawValue)
+        NSLog("[modore] AX focused-element lookup failed: %d", r1.rawValue)
         if r1 == .apiDisabled || r1 == .cannotComplete {
-            NSLog("[modeless-ime] AX appears disabled for this process; restart the host after granting permission")
+            NSLog("[modore] AX appears disabled for this process; restart the host after granting permission")
         }
         return nil
     }
     guard let focused = focusedRef else {
-        NSLog("[modeless-ime] AX returned no focused element")
+        NSLog("[modore] AX returned no focused element")
         return nil
     }
     let element = focused as! AXUIElement
@@ -98,11 +98,11 @@ func readFocusedField() -> FocusedField? {
         &valueRef
     )
     guard r2 == .success else {
-        NSLog("[modeless-ime] AX value lookup failed on role=%@: %d", role, r2.rawValue)
+        NSLog("[modore] AX value lookup failed on role=%@: %d", role, r2.rawValue)
         return nil
     }
     guard let s = valueRef as? String else {
-        NSLog("[modeless-ime] AX value on role=%@ is not a String (type=%@)", role, String(describing: type(of: valueRef!)))
+        NSLog("[modore] AX value on role=%@ is not a String (type=%@)", role, String(describing: type(of: valueRef!)))
         return nil
     }
 
@@ -121,9 +121,9 @@ func readFocusedField() -> FocusedField? {
             selEnd = cfRange.location + cfRange.length
         }
     } else {
-        NSLog("[modeless-ime] AX selection range unavailable on role=%@ (using end-of-buffer caret)", role)
+        NSLog("[modore] AX selection range unavailable on role=%@ (using end-of-buffer caret)", role)
     }
-    NSLog("[modeless-ime] focused role=%@ valueLen=%d sel=[%d,%d]", role, s.utf16.count, selStart, selEnd)
+    NSLog("[modore] focused role=%@ valueLen=%d sel=[%d,%d]", role, s.utf16.count, selStart, selEnd)
     return FocusedField(element: element, value: s, selStart: selStart, selEnd: selEnd)
 }
 
@@ -161,7 +161,7 @@ func callBackend(text: String, spanStart: Int, spanEnd: Int) -> ConvertResult? {
         let converted = try MozcBridge.convert(span)
         return ConvertResult(replacement: converted, cursorOffset: nil)
     } catch {
-        NSLog("[modeless-ime] mozc bridge error: %@", String(describing: error))
+        NSLog("[modore] mozc bridge error: %@", String(describing: error))
         return nil
     }
 }
@@ -268,10 +268,10 @@ func doClipboardPickup() {
     if waitForClipboardChange(after: baseline, timeoutMs: 80),
        let s = pb.string(forType: .string), !s.isEmpty {
         if looksLikeLineCopy(s) {
-            NSLog("[modeless-ime] Cmd+C looks like a line-copy (no real selection); will force-select previous word")
+            NSLog("[modore] Cmd+C looks like a line-copy (no real selection); will force-select previous word")
         } else {
             picked = s
-            NSLog("[modeless-ime] using existing user selection: %@", s)
+            NSLog("[modore] using existing user selection: %@", s)
         }
     }
 
@@ -294,7 +294,7 @@ func doClipboardPickup() {
     }
 
     guard var pickedText = picked else {
-        NSLog("[modeless-ime] clipboard fallback: nothing to convert (Cmd+C didn't update clipboard in time)")
+        NSLog("[modore] clipboard fallback: nothing to convert (Cmd+C didn't update clipboard in time)")
         // Don't leave the user with a stuck visible selection from our Shift+Opt+Left
         if didForceSelect {
             postKey(kVK_RightArrow)
@@ -306,18 +306,18 @@ func doClipboardPickup() {
     if pickedText.hasSuffix("\n") { pickedText.removeLast() }
     if pickedText.hasSuffix("\r") { pickedText.removeLast() }
 
-    NSLog("[modeless-ime] clipboard pick: %@", pickedText)
+    NSLog("[modore] clipboard pick: %@", pickedText)
 
     let utf16Len = pickedText.utf16.count
     guard let result = callBackend(text: pickedText, spanStart: 0, spanEnd: utf16Len) else {
-        NSLog("[modeless-ime] clipboard fallback: backend returned no result")
+        NSLog("[modore] clipboard fallback: backend returned no result")
         if didForceSelect {
             postKey(kVK_RightArrow)
         }
         restoreClipboard(saved)
         return
     }
-    NSLog("[modeless-ime] clipboard replace -> %@", result.replacement)
+    NSLog("[modore] clipboard replace -> %@", result.replacement)
 
     // Replace the active selection by injecting the replacement as a Unicode
     // keystroke into the session event tap. No clipboard touch on the replace
@@ -342,26 +342,26 @@ func doPickup() {
             (start, end) = wordBounds(utf16, caret: field.selStart)
         }
         guard start >= 0, end <= utf16.count, start < end else {
-            NSLog("[modeless-ime] empty span; nothing to convert")
+            NSLog("[modore] empty span; nothing to convert")
             return
         }
 
         let spanText = String(utf16CodeUnits: Array(utf16[start..<end]), count: end - start)
-        NSLog("[modeless-ime] pick [%d..%d] %@", start, end, spanText)
+        NSLog("[modore] pick [%d..%d] %@", start, end, spanText)
 
         guard let result = callBackend(text: field.value, spanStart: start, spanEnd: end) else {
-            NSLog("[modeless-ime] backend returned no result")
+            NSLog("[modore] backend returned no result")
             return
         }
-        NSLog("[modeless-ime] replace -> %@", result.replacement)
+        NSLog("[modore] replace -> %@", result.replacement)
 
         if replaceRange(in: field.element, start: start, end: end, replacement: result.replacement) {
             return
         }
-        NSLog("[modeless-ime] AX replace failed; falling back to clipboard mode")
+        NSLog("[modore] AX replace failed; falling back to clipboard mode")
     }
 
-    NSLog("[modeless-ime] using clipboard fallback (app does not expose AX text)")
+    NSLog("[modore] using clipboard fallback (app does not expose AX text)")
     doClipboardPickup()
 }
 
@@ -380,7 +380,7 @@ func doPickup() {
 // The callback must return promptly (~1s budget before macOS disables the
 // tap), so we dispatch the slow pickup work onto a background queue.
 
-private let kHotkeyTapQueue = DispatchQueue(label: "local.modeless-ime.pickup", qos: .userInitiated)
+private let kHotkeyTapQueue = DispatchQueue(label: "local.modore.pickup", qos: .userInitiated)
 private var gEventTap: CFMachPort?
 private var gRunLoopSource: CFRunLoopSource?
 
@@ -389,7 +389,7 @@ private let tapCallback: CGEventTapCallBack = { _, type, event, _ in
     if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
         if let tap = gEventTap {
             CGEvent.tapEnable(tap: tap, enable: true)
-            NSLog("[modeless-ime] event tap re-enabled (was disabled: %d)", type.rawValue)
+            NSLog("[modore] event tap re-enabled (was disabled: %d)", type.rawValue)
         }
         return Unmanaged.passUnretained(event)
     }
@@ -442,10 +442,10 @@ func isTrusted(prompt: Bool) -> Bool {
 
 func describeSelf() {
     let bundle = Bundle.main
-    NSLog("[modeless-ime] pid=%d", ProcessInfo.processInfo.processIdentifier)
-    NSLog("[modeless-ime] executable=%@", bundle.executablePath ?? "?")
-    NSLog("[modeless-ime] bundle id=%@", bundle.bundleIdentifier ?? "(no bundle)")
-    NSLog("[modeless-ime] bundle path=%@", bundle.bundlePath)
+    NSLog("[modore] pid=%d", ProcessInfo.processInfo.processIdentifier)
+    NSLog("[modore] executable=%@", bundle.executablePath ?? "?")
+    NSLog("[modore] bundle id=%@", bundle.bundleIdentifier ?? "(no bundle)")
+    NSLog("[modore] bundle path=%@", bundle.bundlePath)
 }
 
 // MARK: - Main
@@ -458,29 +458,29 @@ describeSelf()
 // First, check silently. If not trusted, prompt the user. macOS will add the
 // bundle to the Accessibility list at this point.
 if !isTrusted(prompt: false) {
-    NSLog("[modeless-ime] Not trusted yet — requesting Accessibility permission.")
-    NSLog("[modeless-ime] Look for 'ModelessIMEHost' in:")
-    NSLog("[modeless-ime]   System Settings → Privacy & Security → Accessibility")
-    NSLog("[modeless-ime] If it does NOT appear, click the '+' button and add:")
-    NSLog("[modeless-ime]   %@", Bundle.main.bundlePath)
-    NSLog("[modeless-ime] Then quit and re-launch this host.")
+    NSLog("[modore] Not trusted yet — requesting Accessibility permission.")
+    NSLog("[modore] Look for 'modore' in:")
+    NSLog("[modore]   System Settings → Privacy & Security → Accessibility")
+    NSLog("[modore] If it does NOT appear, click the '+' button and add:")
+    NSLog("[modore]   %@", Bundle.main.bundlePath)
+    NSLog("[modore] Then quit and re-launch this host.")
     _ = isTrusted(prompt: true)
 } else {
-    NSLog("[modeless-ime] Accessibility: TRUSTED")
+    NSLog("[modore] Accessibility: TRUSTED")
 }
 
 if !installEventTap() {
-    NSLog("[modeless-ime] failed to create event tap — Accessibility permission missing?")
+    NSLog("[modore] failed to create event tap — Accessibility permission missing?")
     exit(1)
 }
 
 do {
     try MozcBridge.initialize(userProfileDir: MOZC_PROFILE_DIR)
-    NSLog("[modeless-ime] mozc bridge initialized (profile=%@)", MOZC_PROFILE_DIR)
+    NSLog("[modore] mozc bridge initialized (profile=%@)", MOZC_PROFILE_DIR)
 } catch {
-    NSLog("[modeless-ime] mozc bridge init FAILED: %@", String(describing: error))
+    NSLog("[modore] mozc bridge init FAILED: %@", String(describing: error))
     exit(1)
 }
 
-NSLog("[modeless-ime] ready: Ctrl+/ anywhere (via session event tap)")
+NSLog("[modore] ready: Ctrl+/ anywhere (via session event tap)")
 app.run()

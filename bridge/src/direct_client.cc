@@ -1,7 +1,7 @@
 // Vendored from fcitx-contrib/fcitx5-mozc, src/unix/fcitx5/mozc_direct_client.cc.
 //
 // Changes from upstream:
-//   - Namespace fcitx -> modeless_ime::mozc_bridge
+//   - Namespace fcitx -> modore::mozc_bridge
 //   - Removed <Fcitx5/Utils/fcitx-utils/macros.h> include + FCITX_UNUSED
 //   - Dropped LaunchTool/LaunchToolWithProtoBuf (not needed; bridge is a
 //     headless library, mozc_tool would have no UI to launch into)
@@ -25,7 +25,7 @@
 #include "session/key_info_util.h"
 #include "session/session_handler.h"
 
-namespace modeless_ime::mozc_bridge {
+namespace modore::mozc_bridge {
 
 namespace {
 
@@ -212,4 +212,4 @@ void MozcDirectClient::InitInput(mozc::commands::Input* input) const {
   input->set_id(id_);
 }
 
-}  // namespace modeless_ime::mozc_bridge
+}  // namespace modore::mozc_bridge

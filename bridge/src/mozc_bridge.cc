@@ -1,4 +1,4 @@
-// modeless-ime — bridge implementation.
+// modore — bridge implementation.
 //
 // Drives MozcDirectClient (in-process, no daemon) to convert a romaji span
 // into its top-candidate Japanese form. Wire shape:
@@ -30,14 +30,14 @@ thread_local std::string g_last_error;
 
 std::mutex g_init_mutex;
 bool g_initialized = false;
-std::unique_ptr<modeless_ime::mozc_bridge::MozcDirectClient> g_client;
+std::unique_ptr<modore::mozc_bridge::MozcDirectClient> g_client;
 
 void set_error(const char *msg) { g_last_error.assign(msg ? msg : ""); }
 void set_error(const std::string &msg) { g_last_error = msg; }
 void clear_error() { g_last_error.clear(); }
 
 // Send a single key event; returns false (and sets last_error) on failure.
-bool send_key(modeless_ime::mozc_bridge::MozcDirectClient *client,
+bool send_key(modore::mozc_bridge::MozcDirectClient *client,
               const mozc::commands::KeyEvent &key,
               mozc::commands::Output *out,
               const char *step) {
@@ -72,7 +72,7 @@ extern "C" int mozc_bridge_init(const char *user_profile_dir) {
 
     try {
         g_client =
-            std::make_unique<modeless_ime::mozc_bridge::MozcDirectClient>();
+            std::make_unique<modore::mozc_bridge::MozcDirectClient>();
     } catch (const std::exception &e) {
         set_error(std::string("MozcDirectClient ctor threw: ") + e.what());
         return -1;

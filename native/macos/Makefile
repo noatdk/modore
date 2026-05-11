@@ -1,9 +1,9 @@
-APP_NAME ?= ModelessIMEHost
-BUNDLE_ID ?= local.modeless-ime.host
-SIGN_ID   ?= ModelessIMEHost Dev
+APP_NAME ?= Modore
+BUNDLE_ID ?= local.modore.host
+SIGN_ID   ?= Modore Dev
 BUILD     ?= build
 APP       := $(BUILD)/$(APP_NAME).app
-BIN       := $(APP)/Contents/MacOS/ime-host
+BIN       := $(APP)/Contents/MacOS/modore-host
 PLIST     := $(APP)/Contents/Info.plist
 SRC       := main.swift MozcBridge.swift
 

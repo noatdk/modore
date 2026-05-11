@@ -1,4 +1,4 @@
-# modeless-ime — top-level build orchestrator.
+# modore — top-level build orchestrator.
 #
 # Detects the host platform and delegates to the platform-specific build
 # under native/<platform>/. The Mozc bridge (bridge/) is shared across
@@ -89,7 +89,7 @@ ifeq ($(PLATFORM),windows)
 endif
 
 help:
-	@echo "modeless-ime build orchestrator (host: $(PLATFORM))"
+	@echo "modore build orchestrator (host: $(PLATFORM))"
 	@echo
 	@echo "Build:"
 	@echo "  make build      build the host app for the current platform"

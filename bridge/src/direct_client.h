@@ -1,7 +1,7 @@
 // Vendored from fcitx-contrib/fcitx5-mozc, src/unix/fcitx5/mozc_direct_client.h.
 //
 // Changes from upstream:
-//   - Namespace: fcitx -> modeless_ime::mozc
+//   - Namespace: fcitx -> modore::mozc_bridge
 //   - Removed inheritance from MozcClientInterface (we're the only consumer;
 //     the abstract base just added a translation step).
 //   - Drop the createClient() factory (we instantiate directly).
@@ -9,8 +9,8 @@
 //
 // Upstream license is BSD 3-clause; see bridge/NOTICE.md.
 
-#ifndef MODELESS_IME_BRIDGE_DIRECT_CLIENT_H_
-#define MODELESS_IME_BRIDGE_DIRECT_CLIENT_H_
+#ifndef MODORE_BRIDGE_DIRECT_CLIENT_H_
+#define MODORE_BRIDGE_DIRECT_CLIENT_H_
 
 #include <cstdint>
 #include <memory>
@@ -22,7 +22,7 @@
 #include "protocol/commands.pb.h"
 #include "protocol/config.pb.h"
 
-namespace modeless_ime::mozc_bridge {
+namespace modore::mozc_bridge {
 
 // In-process mozc client: no IPC, no daemon, no separate server. Directly
 // drives a SessionHandler / Engine pair via SessionHandler::EvalCommand.
@@ -67,6 +67,6 @@ class MozcDirectClient {
   mozc::commands::Capability client_capability_;
 };
 
-}  // namespace modeless_ime::mozc_bridge
+}  // namespace modore::mozc_bridge
 
-#endif  // MODELESS_IME_BRIDGE_DIRECT_CLIENT_H_
+#endif  // MODORE_BRIDGE_DIRECT_CLIENT_H_
