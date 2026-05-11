@@ -1,0 +1,32 @@
+[Unit]
+Description=modore — modeless Japanese conversion host (IPC + optional X11 hotkey)
+# Start with the graphical session so DISPLAY / WAYLAND_* are typically available.
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+Type=simple
+# Clipboard IPC socket: $XDG_RUNTIME_DIR/modore.sock (with %t = /run/user/$UID).
+# Hyprland `exec` may omit XDG_RUNTIME_DIR — `modore-host --trigger` falls back to
+# /run/user/$UID/modore.sock; still run `systemctl --user import-environment …` if needed.
+# AT-SPI and GNOME portal-style services expect a session bus in this path.
+#
+# Pickup uses the same Wayland clipboard as `wl-paste` / Omarchy Walker (SUPER CTRL V). If
+# synthetic copy never changes the offer, Walker will not gain a new row either — ensure the
+# graphical session ran e.g. `systemctl --user import-environment WAYLAND_DISPLAY DISPLAY
+# HYPRLAND_INSTANCE_SIGNATURE XDG_CURRENT_DESKTOP` so this service matches your Hypr session.
+Environment=XDG_RUNTIME_DIR=%t
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=%t/bus
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin
+# PATH: so `wtype` / `wl-paste` resolve under systemd --user; the host also prepends in code.
+# Install: `make -C native/linux install-user-bin` puts the binary here.
+ExecStart=%h/.local/bin/modore-host --ipc-only
+Restart=on-failure
+RestartSec=3
+
+# If conversion should use an X11 grab as well, remove `--ipc-only` from ExecStart
+# (override with `systemctl --user edit modore-host`) and ensure DISPLAY is set,
+# e.g. drop-in with Environment=DISPLAY=:1
+
+[Install]
+WantedBy=graphical-session.target
