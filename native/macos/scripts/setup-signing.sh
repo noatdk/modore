@@ -16,7 +16,7 @@
 
 set -euo pipefail
 
-IDENTITY_NAME="Modore Dev"
+IDENTITY_NAME="modore Dev"
 LOGIN_KEYCHAIN="${HOME}/Library/Keychains/login.keychain-db"
 # Arbitrary non-empty password for the throwaway PKCS12 bundle. macOS's
 # `security import` rejects PKCS12 files protected by an empty password with

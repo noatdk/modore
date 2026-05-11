@@ -1,11 +1,11 @@
-APP_NAME ?= Modore
+APP_NAME ?= modore
 BUNDLE_ID ?= local.modore.host
-SIGN_ID   ?= Modore Dev
+SIGN_ID   ?= modore Dev
 BUILD     ?= build
 APP       := $(BUILD)/$(APP_NAME).app
 BIN       := $(APP)/Contents/MacOS/modore-host
 PLIST     := $(APP)/Contents/Info.plist
-SRC       := main.swift MozcBridge.swift
+SRC       := main.swift MozcBridge.swift ModoreConfig.swift
 
 # Cross-platform mozc bridge (cmake project at repo root)
 REPO_ROOT       := $(abspath ../..)

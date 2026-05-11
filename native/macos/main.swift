@@ -1,12 +1,12 @@
 // modore — macOS native host.
 //
-// Runs as a menu-bar/accessory app, registers a global Ctrl+/ hotkey, reads
+// Runs as a menu-bar/accessory app, registers a global conversion hotkey
+// (default Ctrl+/; configurable in ~/.config/modore/modore.conf), reads
 // the focused text field (any app) via Accessibility, hands the picked span
-// to the in-process Mozc engine, and writes the result back — same idea as
-// OpenKey for Vietnamese.
+// to the in-process Mozc engine, and writes the result back.
 //
 // Build:  make -C native/macos
-// Run:    open native/macos/build/Modore.app
+// Run:    open native/macos/build/modore.app
 // First run prompts for Accessibility permission. Grant it in
 //   System Settings → Privacy & Security → Accessibility, then re-launch.
 
@@ -14,18 +14,19 @@ import Cocoa
 import Carbon
 import ApplicationServices
 
-// MARK: - Config
+// MARK: - Config (defaults; overridden by ~/.config/modore/modore.conf — see ModoreConfig.swift)
 
-// Default chord: Ctrl + /  (kVK_ANSI_Slash = 0x2C). Matched via CGEventTap,
-// not Carbon — see installEventTap().
-let HOTKEY_KEYCODE: CGKeyCode = CGKeyCode(kVK_ANSI_Slash)
 // Where the mozc engine keeps its on-disk state (user dictionary, history).
 // Bootstrapping this from a user's existing Google Japanese Input / OSS Mozc
 // profile is a follow-up task.
 let MOZC_PROFILE_DIR: String = {
     let home = FileManager.default.homeDirectoryForCurrentUser.path
-    return "\(home)/Library/Application Support/Modore"
+    return "\(home)/Library/Application Support/modore"
 }()
+
+// Populated from ~/.config/modore/modore.conf before the event tap is installed.
+private var gConversionKeyCode: CGKeyCode = CGKeyCode(kVK_ANSI_Slash)
+private var gConversionCoreFlags: CGEventFlags = .maskControl
 
 // MARK: - Backend call shape
 //
@@ -374,8 +375,8 @@ func doPickup() {
 //      (kPostTap above) so Chromium/Electron honors synthetic events, and we
 //      observe at the same level so our hotkey detection is consistent with
 //      what apps actually see.
-//   2. We can swallow the original Ctrl+/ keystroke cleanly by returning
-//      nil from the callback — apps never see it, no stray "/" inserted.
+//   2. We can swallow the configured conversion keystroke cleanly by returning
+//      nil from the callback — the target key is not delivered to the app.
 //
 // The callback must return promptly (~1s budget before macOS disables the
 // tap), so we dispatch the slow pickup work onto a background queue.
@@ -403,8 +404,8 @@ private let tapCallback: CGEventTapCallBack = { _, type, event, _ in
         .maskCommand, .maskShift, .maskControl, .maskAlternate
     ])
 
-    // Match Ctrl + / exactly (no Cmd, Shift, or Option).
-    if keyCode == HOTKEY_KEYCODE && coreFlags == .maskControl {
+    // Match configured chord (modifiers: Cmd / Shift / Ctrl / Option only).
+    if keyCode == gConversionKeyCode && coreFlags == gConversionCoreFlags {
         kHotkeyTapQueue.async { doPickup() }
         return nil // swallow — host app must not see the "/"
     }
@@ -455,6 +456,10 @@ app.setActivationPolicy(.accessory)
 
 describeSelf()
 
+let modoreHotkey = ModoreConfig.loadConversionHotkey()
+gConversionKeyCode = modoreHotkey.keyCode
+gConversionCoreFlags = modoreHotkey.coreFlags
+
 // First, check silently. If not trusted, prompt the user. macOS will add the
 // bundle to the Accessibility list at this point.
 if !isTrusted(prompt: false) {
@@ -482,5 +487,5 @@ do {
     exit(1)
 }
 
-NSLog("[modore] ready: Ctrl+/ anywhere (via session event tap)")
+NSLog("[modore] ready: conversion hotkey installed (see ~/.config/modore/modore.conf)")
 app.run()
