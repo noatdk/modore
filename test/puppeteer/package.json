@@ -1,0 +1,14 @@
+{
+  "name": "modore-puppeteer-pipeline",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "MODORE_E2E_TRACE=1 node modore-pipeline.mjs"
+  },
+  "devDependencies": {
+    "puppeteer": "^24.2.0"
+  }
+}
