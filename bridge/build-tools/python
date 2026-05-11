@@ -1,0 +1,6 @@
+#!/bin/sh
+# Shim for build-time invocations that hard-code `python`.
+# Modern macOS only ships python3 by default; the mozc tree's helper scripts
+# (e.g. scripts/gen_pos_cost_map.sh, gen_version_def.sh) call bare `python`.
+# This shim is prepended to PATH by the Makefile and bridge CMake build.
+exec python3 "$@"
