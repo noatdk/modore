@@ -167,13 +167,28 @@ list(REMOVE_DUPLICATES _absl_targets)
 list(LENGTH _absl_targets _absl_count)
 message(STATUS "Linking ${_absl_count} absl_* static libs into mozc_bridge")
 
-target_link_libraries(mozc_bridge PUBLIC
-    libprotobuf
-    mozc-static
-    absl::flags_parse
-    absl::log_flags
-    ${_absl_targets}
-)
+# Linux (GNU ld): linking static libprotobuf into a shared library can leave
+# undefined google::protobuf::* on the final .so unless the archive is pulled
+# in whole. macOS ld64 does not hit this; keep Darwin on the simple link line.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  target_link_libraries(mozc_bridge PUBLIC
+      "-Wl,--whole-archive"
+      libprotobuf
+      "-Wl,--no-whole-archive"
+      mozc-static
+      absl::flags_parse
+      absl::log_flags
+      ${_absl_targets}
+  )
+else()
+  target_link_libraries(mozc_bridge PUBLIC
+      libprotobuf
+      mozc-static
+      absl::flags_parse
+      absl::log_flags
+      ${_absl_targets}
+  )
+endif()
 
 # Mozc's CMake build generates protobuf headers and a handful of data files
 # via a custom `gen` target. target_link_libraries only adds link-time deps,
