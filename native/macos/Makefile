@@ -21,11 +21,17 @@ BRIDGE_SOURCES  := $(wildcard $(BRIDGE_SRC_DIR)/src/*.cc) \
 
 BRIDGING_HEADER := $(BUILD)/bridging-header.h
 
-.PHONY: all run open clean clean-bridge
+.PHONY: all run open clean clean-bridge signing
 
 all: $(APP)
 
-$(APP): $(BIN) $(PLIST) $(BUNDLE_DYLIB)
+# Idempotent on every build — exits silently if the identity is already
+# present, creates it on a fresh machine. Keeping it a prerequisite means
+# `make` Just Works from a clean clone.
+signing:
+	@bash scripts/setup-signing.sh
+
+$(APP): $(BIN) $(PLIST) $(BUNDLE_DYLIB) | signing
 	# Re-sign the whole bundle. The dylib must be signed before the executable
 	# (codesign verifies inner content), but copying it in via $(BUNDLE_DYLIB)
 	# above is a clean-target dep, so by here it's already in place.

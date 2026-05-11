@@ -4,14 +4,8 @@
 # under native/<platform>/. The Mozc bridge (bridge/) is shared across
 # platforms and gets built by the per-platform Makefile via CMake.
 #
-# Common targets:
-#   make            — build the host app for the current platform (alias: build)
-#   make run        — build and launch the host app
-#   make bridge     — build only the cross-platform Mozc bridge (libmozc_bridge)
-#   make clean      — wipe per-platform build outputs (keeps bridge/build)
-#   make distclean  — also wipe bridge/build (forces a ~5min rebuild)
-#   make signing    — one-time: create the self-signed identity for codesign
-#   make help       — print this list
+# Plain `make` prints the target list — see `help` below. Use `make build`
+# (or an explicit `make macos` / `make bridge`) to actually compile.
 
 UNAME_S := $(shell uname -s)
 
@@ -34,10 +28,10 @@ BRIDGE_DIR := bridge
 # every sub-make so any CMake invocation downstream picks it up.
 export PATH := $(CURDIR)/$(BRIDGE_DIR)/build-tools:$(PATH)
 
-.PHONY: all build run open bridge clean clean-bridge distclean signing help \
+.PHONY: help build run open bridge clean clean-bridge distclean signing \
         check-platform macos
 
-all: build
+.DEFAULT_GOAL := help
 
 build: check-platform
 	@$(MAKE) --no-print-directory -C $(NATIVE_DIR)
@@ -97,11 +91,19 @@ endif
 help:
 	@echo "modeless-ime build orchestrator (host: $(PLATFORM))"
 	@echo
-	@echo "  make            build the host app (default)"
+	@echo "Build:"
+	@echo "  make build      build the host app for the current platform"
+	@echo "  make macos      build the macOS host explicitly"
+	@echo "  make bridge     build only the cross-platform Mozc bridge"
+	@echo
+	@echo "Run:"
 	@echo "  make run        build and launch the host app"
 	@echo "  make open       build and 'open' the .app bundle (macOS)"
-	@echo "  make bridge     build only the cross-platform Mozc bridge"
+	@echo
+	@echo "Clean:"
 	@echo "  make clean      wipe per-platform build outputs"
 	@echo "  make distclean  also wipe bridge/build (forces ~5min rebuild)"
+	@echo
+	@echo "Other:"
 	@echo "  make signing    one-time: create self-signed identity (macOS)"
-	@echo "  make help       print this list"
+	@echo "  make help       print this list (default)"
