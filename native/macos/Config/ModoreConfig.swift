@@ -1,8 +1,9 @@
 // Loads ~/.config/modore/modore.conf (same path on macOS/Linux via XDG layout).
 //
 // Sections:
-//   [conversion] hotkey=...        — global trigger chord (same format as Linux)
-//   [clipboard]  *_ms=<integer>    — fallback-path timings (macOS only)
+//   [conversion] hotkey=...             — global trigger chord (same format as Linux)
+//   [conversion] katakana_modifier=...  — extra modifier that forces katakana (macOS only)
+//   [clipboard]  *_ms=<integer>         — fallback-path timings (macOS only)
 
 import Carbon
 import Foundation
@@ -46,6 +47,35 @@ enum ModoreConfig {
         case loaded(ConversionHotkey, source: String)
         case usingDefault(reason: String)
         case invalid(reason: String)
+    }
+
+    /// Extra modifier that, when combined with the primary conversion chord,
+    /// forces a katakana commit instead of the usual top-kanji candidate.
+    /// Default `.none` keeps the pre-feature behavior (one chord, kanji
+    /// always); set to `.shift` to bind `Shift+<primary>` as a second chord.
+    ///
+    /// Resolution to a concrete `CGEventFlags` bit happens via `cgFlag` so
+    /// the parser and the secondary-chord builder agree.
+    enum KatakanaModifier: Equatable {
+        case none
+        case shift
+
+        /// CGEventFlags bit added on top of the primary chord. `nil` for
+        /// `.none` so callers can branch on "is there a secondary chord?".
+        var cgFlag: CGEventFlags? {
+            switch self {
+            case .none:  return nil
+            case .shift: return .maskShift
+            }
+        }
+
+        /// Human-readable form for menus / log lines.
+        var displayName: String {
+            switch self {
+            case .none:  return "none"
+            case .shift: return "Shift"
+            }
+        }
     }
 
     /// Tunable timings for the clipboard fallback path in `doClipboardPickup`.
@@ -108,6 +138,40 @@ enum ModoreConfig {
             return .usingDefault(reason: "no config at \(url.path)")
         }
         return outcome ?? .usingDefault(reason: "[conversion] hotkey not set in \(url.path)")
+    }
+
+    /// Parse `~/.config/modore/modore.conf` for `[conversion] katakana_modifier`.
+    /// Logs issues via `Log.config`; never fails. Wrapper around
+    /// `parseKatakanaModifier()` for the runtime path.
+    static func loadKatakanaModifier() -> KatakanaModifier {
+        let (m, issues) = parseKatakanaModifier()
+        for issue in issues {
+            Log.config(issue)
+        }
+        return m
+    }
+
+    /// Same parse as `loadKatakanaModifier()` but returns the validation
+    /// issues separately instead of logging them. Used by `--check-config`.
+    /// Missing file / missing key / unknown value all yield `.none` with at
+    /// most one issue string; the running host treats `.none` as "no
+    /// secondary chord, behave exactly as before."
+    static func parseKatakanaModifier() -> (KatakanaModifier, [String]) {
+        var m: KatakanaModifier = .none
+        var issues: [String] = []
+        let url = configFileURL()
+        _ = forEachKeyValue(url) { section, key, value in
+            guard section == "conversion" && key == "katakana_modifier" else { return }
+            switch value.lowercased() {
+            case "none", "":
+                m = .none
+            case "shift":
+                m = .shift
+            default:
+                issues.append("ignoring [conversion] katakana_modifier=\(value) (expected none|shift)")
+            }
+        }
+        return (m, issues)
     }
 
     /// Parse `~/.config/modore/modore.conf` for `[clipboard]` timing keys.

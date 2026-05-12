@@ -5,7 +5,12 @@ BUILD     ?= build
 APP       := $(BUILD)/$(APP_NAME).app
 BIN       := $(APP)/Contents/MacOS/modore-host
 PLIST     := $(APP)/Contents/Info.plist
-SRC       := main.swift MozcBridge.swift ModoreConfig.swift ConfigWatcher.swift CarbonHotkey.swift StatusItem.swift SecureInputMonitor.swift FrontmostApp.swift BootGuards.swift Log.swift
+# Auto-discover every Swift file under native/macos/, excluding $(BUILD).
+# Sources are grouped by concern in App/ Pickup/ Hotkey/ Config/ UI/
+# Diagnostics/ — Swift doesn't care about ordering or directories (the
+# module compiles all files together and resolves cross-file symbols),
+# so adding a new .swift file anywhere under here Just Works on next build.
+SRC       := $(shell find . -name '*.swift' -not -path './$(BUILD)/*')
 
 # Cross-platform mozc bridge (cmake project at repo root)
 REPO_ROOT       := $(abspath ../..)

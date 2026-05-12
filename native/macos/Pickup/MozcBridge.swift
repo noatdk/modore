@@ -29,15 +29,31 @@ enum MozcBridge {
         }
     }
 
+    /// Target shape for a conversion call. `.kanji` is the default (Mozc's
+    /// top kanji candidate); `.katakana` forces full-width katakana, useful
+    /// for loanwords Mozc keeps trying to write as kanji.
+    enum ConvertTarget {
+        case kanji
+        case katakana
+
+        var bridgeFlags: UInt32 {
+            switch self {
+            case .kanji:    return 0
+            case .katakana: return UInt32(MOZC_CONVERT_FLAG_KATAKANA)
+            }
+        }
+    }
+
     /// Convert a UTF-8 romaji string into its top-candidate Japanese form.
     /// Returns the converted string; throws on engine error.
-    static func convert(_ romaji: String) throws -> String {
+    static func convert(_ romaji: String, target: ConvertTarget = .kanji) throws -> String {
         guard let utf8 = romaji.cString(using: .utf8) else {
             throw MozcBridgeError.stringEncoding
         }
         // Drop the trailing NUL we don't want to send across the boundary.
         let utf8Bytes = utf8.dropLast()
         let inputLen = utf8Bytes.count
+        let flags = target.bridgeFlags
 
         // Start with a reasonable buffer; grow once if needed.
         var cap = max(inputLen * 4 + 64, 256)
@@ -46,12 +62,13 @@ enum MozcBridge {
             var buf = [CChar](repeating: 0, count: cap)
             let rc = utf8.withUnsafeBufferPointer { inPtr -> Int32 in
                 buf.withUnsafeMutableBufferPointer { outPtr -> Int32 in
-                    return Int32(mozc_bridge_convert(
+                    return Int32(mozc_bridge_convert_ex(
                         inPtr.baseAddress,
                         inputLen,
                         outPtr.baseAddress,
                         cap,
-                        &outLen
+                        &outLen,
+                        flags
                     ))
                 }
             }

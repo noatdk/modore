@@ -26,6 +26,10 @@ final class ModoreStatusItem: NSObject {
 
     private let item: NSStatusItem
     private let hotkeyMenuItem: NSMenuItem
+    /// Shown only when `[conversion] katakana_modifier` is bound — surfaces
+    /// the second chord so the user can see at a glance which combination
+    /// forces katakana. Hidden when no secondary chord is active.
+    private let katakanaMenuItem: NSMenuItem
     private let deliveryMenuItem: NSMenuItem
     /// Shown only while SecureInput is held by another app — surfaces *why*
     /// the hotkey is silently failing in password fields / sudo prompts.
@@ -40,6 +44,7 @@ final class ModoreStatusItem: NSObject {
     override init() {
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         hotkeyMenuItem      = NSMenuItem(title: "Hotkey: —",   action: nil, keyEquivalent: "")
+        katakanaMenuItem    = NSMenuItem(title: "",            action: nil, keyEquivalent: "")
         deliveryMenuItem    = NSMenuItem(title: "Delivery: —", action: nil, keyEquivalent: "")
         secureInputMenuItem = NSMenuItem(title: "",            action: nil, keyEquivalent: "")
         super.init()
@@ -49,10 +54,13 @@ final class ModoreStatusItem: NSObject {
 
         let menu = NSMenu()
         hotkeyMenuItem.isEnabled = false
+        katakanaMenuItem.isEnabled = false
+        katakanaMenuItem.isHidden = true
         deliveryMenuItem.isEnabled = false
         secureInputMenuItem.isEnabled = false
         secureInputMenuItem.isHidden = true
         menu.addItem(hotkeyMenuItem)
+        menu.addItem(katakanaMenuItem)
         menu.addItem(deliveryMenuItem)
         menu.addItem(secureInputMenuItem)
         menu.addItem(NSMenuItem.separator())
@@ -85,10 +93,22 @@ final class ModoreStatusItem: NSObject {
     }
 
     /// Update the live menu after a chord change or Carbon-registration flip.
-    /// Main-thread only.
-    func refresh(hotkey: ModoreConfig.ConversionHotkey, usingCarbonHotkey: Bool) {
+    /// `katakanaChord` is the secondary chord (if any) — pass `nil` when no
+    /// katakana modifier is bound. Main-thread only.
+    func refresh(
+        hotkey: ModoreConfig.ConversionHotkey,
+        usingCarbonHotkey: Bool,
+        katakanaChord: ModoreConfig.ConversionHotkey? = nil
+    ) {
         currentHotkeyLabel = hotkey.displayName
         hotkeyMenuItem.title = "Hotkey: \(hotkey.displayName)"
+        if let katakana = katakanaChord {
+            katakanaMenuItem.title = "Katakana: \(katakana.displayName)"
+            katakanaMenuItem.isHidden = false
+        } else {
+            katakanaMenuItem.title = ""
+            katakanaMenuItem.isHidden = true
+        }
         deliveryMenuItem.title = "Delivery: " + (usingCarbonHotkey
             ? "Carbon (system grab)"
             : "CGEventTap (fallback)")
