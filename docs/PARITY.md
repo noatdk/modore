@@ -45,6 +45,7 @@ The Linux columns are the same binary on different display servers;
 | Tunable clipboard-fallback timings            |   ✓¹⁴ |     ✗       |       ✗         |    ✗    |
 | `--check-config` preflight (no engine start)  |   ✓¹⁵ |     ✗       |       ✗         |    ✗    |
 | Menu-bar status item ("running" indicator)    |   ✓¹⁶ |     ✗       |       ✗         |    ✗    |
+| SecureInput awareness (sudo/password prompts) |   ✓¹⁷ |     —       |       —         |    —    |
 | Log file on disk (`modore.log`)               |   ✗¹⁰ |     ✓       |       ✓         |    ✗    |
 | First-run permission prompt                   |   ✓   |     —¹¹     |       —¹¹       |    ✗    |
 | systemd user unit shipped                     |   —   |     ✓       |       ✓         |    ✗    |
@@ -70,3 +71,5 @@ The Linux columns are the same binary on different display servers;
 ¹⁵ `modore-host --check-config` parses the same file the running host would and reports each section's outcome. Exits 0 on healthy load, 1 on malformed hotkey, 2 on rejected `[clipboard]` key. Useful for pre-commit hooks and dotfiles tests.
 
 ¹⁶ `NSStatusItem` showing "ﾓﾄﾞﾚ" (half-width katakana for "modore") in the menu bar; menu lists the live hotkey, delivery path (Carbon vs CGEventTap), and shortcuts for opening / revealing the config plus Quit. Refreshes automatically on config reload. See `native/macos/StatusItem.swift`.
+
+¹⁷ Polls `IORegistry → IOConsoleUsers → kCGSSessionSecureInputPID` on a background timer (3 s idle / 1 s while held). When held by another app (sudo prompts in Terminal/iTerm, password fields in 1Password/Bitwarden/Safari, the Lock Screen, Touch ID) the menu-bar title flips to red and a `⚠ Blocked by <App>` line appears in the menu — so the user knows why the hotkey is silently failing. `modore-host --secure-input-status` is a one-shot diagnostic. See `native/macos/SecureInputMonitor.swift`. The feature is "—" on Linux/Windows because Secure Keyboard Entry is a macOS-only OS concept.

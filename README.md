@@ -33,7 +33,9 @@ reading/writing the focused text field. Grant it in *System Settings → Privacy
 & Security → Accessibility*, then re-launch. Once running, a **ﾓﾄﾞﾚ** label
 appears in the menu bar; its menu shows the live hotkey + delivery path
 (Carbon vs tap fallback) and has shortcuts for editing/revealing the config
-and quitting.
+and quitting. The label flips to red while another app holds Secure Keyboard
+Entry (sudo prompts, password fields) — the OS blocks injection in that
+state, so the menu surfaces which app to release.
 
 **Linux** runs from your graphical login (AT-SPI needs the session D-Bus).
 For Wayland compositors, Hyprland binds, the `--trigger` socket, Chromium/

@@ -50,6 +50,12 @@ private var gClipboardTimings = ModoreConfig.ClipboardTimings()
 /// `applyConversionHotkeyChord` calls `refresh` on every chord update.
 private var gStatusItem: ModoreStatusItem?
 
+/// Polls `IOConsoleUsers` for the SecureInput holder pid (sudo / password
+/// fields / Lock Screen). Held for the lifetime of the process; tears down
+/// its DispatchSourceTimer on deinit. Initialized after the status item so
+/// the very first transition has somewhere to land.
+private var gSecureInputMonitor: SecureInputMonitor?
+
 private func applyConversionHotkeyChord(_ chord: ModoreConfig.ConversionHotkey) {
     gConversionKeyCode = chord.keyCode
     gConversionCoreFlags = chord.coreFlags
@@ -673,6 +679,27 @@ if CommandLine.arguments.contains("--check-config") {
     runConfigCheck()
 }
 
+// `--secure-input-status` is a one-shot diagnostic: query the IORegistry
+// once, print who (if anyone) is holding SecureInput, and exit. Same code
+// path the long-running watcher uses, so a "it works here but the menu bar
+// doesn't update" report can be triaged in one command.
+if CommandLine.arguments.contains("--secure-input-status") {
+    if let pid = SecureInputMonitor.currentHolderPid() {
+        let desc = SecureInputMonitor.describeProcess(pid: pid)
+        print("secure input: held by pid \(pid)")
+        if let desc = desc {
+            print("  app: \(desc.name)")
+            print("  path: \(desc.path)")
+        } else {
+            print("  app: unknown (pid path unreadable)")
+        }
+        exit(1)
+    } else {
+        print("secure input: clear")
+        exit(0)
+    }
+}
+
 // MARK: - Main
 
 let app = NSApplication.shared
@@ -727,6 +754,22 @@ if gCarbonHotkey?.register(modoreHotkey) == true {
 gStatusItem = ModoreStatusItem()
 gStatusItem?.refresh(hotkey: modoreHotkey, usingCarbonHotkey: gUsingCarbonHotkey)
 Log.boot("status item installed in menu bar")
+
+// SecureInput watcher. Starts polling immediately so a password prompt
+// already on screen at boot is reflected in the menu bar within ~1 s. The
+// closure runs on the main queue (see SecureInputMonitor.swift), so it can
+// touch the status item directly.
+gSecureInputMonitor = SecureInputMonitor { state in
+    switch state {
+    case .blocked(let appName, let appPath, let pid):
+        Log.secureInput("acquired by '\(appName)' pid=\(pid) path=\(appPath)")
+        gStatusItem?.setSecureInputBlocked(by: appName)
+    case .clear:
+        Log.secureInput("released")
+        gStatusItem?.setSecureInputBlocked(by: nil)
+    }
+}
+gSecureInputMonitor?.start()
 
 // Held for the lifetime of the process; tears down its DispatchSource on deinit.
 let gConfigWatcher = ConfigWatcher(path: ModoreConfig.configFileURL().path) {

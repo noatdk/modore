@@ -17,6 +17,7 @@ enum Log {
     static func pickup(_ message: String)    { write("pickup",    message) }
     static func clipboard(_ message: String) { write("clipboard", message) }
     static func mozc(_ message: String)      { write("mozc",      message) }
+    static func secureInput(_ message: String) { write("secure-input", message) }
 
     static func tagged(_ tag: String, _ message: String) { write(tag, message) }
 

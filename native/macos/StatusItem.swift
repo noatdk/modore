@@ -27,11 +27,21 @@ final class ModoreStatusItem: NSObject {
     private let item: NSStatusItem
     private let hotkeyMenuItem: NSMenuItem
     private let deliveryMenuItem: NSMenuItem
+    /// Shown only while SecureInput is held by another app — surfaces *why*
+    /// the hotkey is silently failing in password fields / sudo prompts.
+    /// See SecureInputMonitor.swift for the detection path.
+    private let secureInputMenuItem: NSMenuItem
+
+    /// Latest hotkey description, kept here so the tooltip can be rebuilt
+    /// after toggling between blocked / clear without losing the hotkey
+    /// label.
+    private var currentHotkeyLabel: String = "—"
 
     override init() {
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        hotkeyMenuItem   = NSMenuItem(title: "Hotkey: —",   action: nil, keyEquivalent: "")
-        deliveryMenuItem = NSMenuItem(title: "Delivery: —", action: nil, keyEquivalent: "")
+        hotkeyMenuItem      = NSMenuItem(title: "Hotkey: —",   action: nil, keyEquivalent: "")
+        deliveryMenuItem    = NSMenuItem(title: "Delivery: —", action: nil, keyEquivalent: "")
+        secureInputMenuItem = NSMenuItem(title: "",            action: nil, keyEquivalent: "")
         super.init()
 
         item.button?.title = "ﾓﾄﾞﾚ"
@@ -40,8 +50,11 @@ final class ModoreStatusItem: NSObject {
         let menu = NSMenu()
         hotkeyMenuItem.isEnabled = false
         deliveryMenuItem.isEnabled = false
+        secureInputMenuItem.isEnabled = false
+        secureInputMenuItem.isHidden = true
         menu.addItem(hotkeyMenuItem)
         menu.addItem(deliveryMenuItem)
+        menu.addItem(secureInputMenuItem)
         menu.addItem(NSMenuItem.separator())
 
         // ⌘, is the macOS-standard "open this app's preferences" shortcut;
@@ -74,11 +87,49 @@ final class ModoreStatusItem: NSObject {
     /// Update the live menu after a chord change or Carbon-registration flip.
     /// Main-thread only.
     func refresh(hotkey: ModoreConfig.ConversionHotkey, usingCarbonHotkey: Bool) {
+        currentHotkeyLabel = hotkey.displayName
         hotkeyMenuItem.title = "Hotkey: \(hotkey.displayName)"
         deliveryMenuItem.title = "Delivery: " + (usingCarbonHotkey
             ? "Carbon (system grab)"
             : "CGEventTap (fallback)")
-        item.button?.toolTip = "modore — \(hotkey.displayName) (running)"
+        // Only rewrite the tooltip if SecureInput isn't currently blocking;
+        // the blocked tooltip is more important to keep visible.
+        if secureInputMenuItem.isHidden {
+            item.button?.toolTip = "modore — \(hotkey.displayName) (running)"
+        }
+    }
+
+    /// Reflect the SecureInput watcher's state in the menu bar:
+    ///
+    ///  - `nil` → title back to plain "ﾓﾄﾞﾚ", warning menu item hidden,
+    ///    tooltip restored to the running state.
+    ///  - non-nil → title gets a red attributed-string treatment so the
+    ///    user notices the change in their peripheral vision, the warning
+    ///    menu item shows which app is holding SecureInput, and the
+    ///    tooltip reports the blocker explicitly.
+    ///
+    /// Called from SecureInputMonitor on the main queue. Main-thread only.
+    func setSecureInputBlocked(by appName: String?) {
+        guard let button = item.button else { return }
+        if let name = appName {
+            let attrs: [NSAttributedString.Key: Any] = [
+                .foregroundColor: NSColor.systemRed,
+            ]
+            button.attributedTitle = NSAttributedString(string: "ﾓﾄﾞﾚ", attributes: attrs)
+            button.toolTip = "modore — blocked by \(name) (secure keyboard entry)"
+            secureInputMenuItem.title = "⚠ Blocked by \(name) (secure keyboard entry)"
+            secureInputMenuItem.isHidden = false
+        } else {
+            // Setting `attributedTitle` to an empty string and re-setting
+            // `title` is the documented way to clear the styled override —
+            // assigning `title` alone leaves the previous attributed run
+            // in place on some macOS versions.
+            button.attributedTitle = NSAttributedString(string: "")
+            button.title = "ﾓﾄﾞﾚ"
+            button.toolTip = "modore — \(currentHotkeyLabel) (running)"
+            secureInputMenuItem.title = ""
+            secureInputMenuItem.isHidden = true
+        }
     }
 
     // MARK: - Menu actions

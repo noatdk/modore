@@ -82,6 +82,38 @@ config path: /Users/you/.config/modore/modore.conf
 This is the "parse-before-swap" path made explicit: same code that runs
 on a live reload, but as a one-shot you can invoke from CI.
 
+## Diagnostic: `modore-host --secure-input-status` (macOS)
+
+Query which (if any) app is currently holding **Secure Keyboard Entry**
+(macOS's SecureInput mode). While SecureInput is active, the OS routes
+keystrokes through a path that bypasses both modore's event tap and any
+synthetic injection — the hotkey silently no-ops. Common holders are
+Terminal/iTerm with a `sudo` or password prompt on screen, password
+fields in 1Password / Bitwarden / Safari banking pages, the Lock
+Screen, Touch ID prompts, and FileVault.
+
+```text
+$ modore-host --secure-input-status
+secure input: clear
+# exit 0
+
+$ modore-host --secure-input-status
+secure input: held by pid 30625
+  app: osascript
+  path: /usr/bin/osascript
+# exit 1
+```
+
+| Exit code | Meaning                                                            |
+| :-------: | ------------------------------------------------------------------ |
+| `0`       | SecureInput is clear; modore can deliver keystrokes normally.      |
+| `1`       | SecureInput is held by another app (printed). Hotkey will no-op.   |
+
+The running host also polls for this in the background (3 s idle / 1 s
+while held) and reflects the state in the menu bar: title flips to red
+and a `⚠ Blocked by <App>` line appears in the menu. The `[secure-input]`
+log tag records every transition.
+
 ## Auto-reload
 
 **macOS only (today)**: edits to `modore.conf` are picked up live — no
