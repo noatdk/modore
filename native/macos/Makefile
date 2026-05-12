@@ -26,7 +26,25 @@ BRIDGE_SOURCES  := $(wildcard $(BRIDGE_SRC_DIR)/src/*.cc) \
 
 BRIDGING_HEADER := $(BUILD)/bridging-header.h
 
-.PHONY: all run open clean clean-bridge signing
+.PHONY: all run open clean clean-bridge signing test
+
+# Swift unit-test driver. Self-discovers what to compile:
+#
+#   TESTABLE_SRC — every native/macos/ source whose header starts with the
+#                  `// @testable` marker. The marker is opt-in (not "no
+#                  platform-framework imports") because some Foundation-only
+#                  files still link C symbols that pull in the bridge dylib
+#                  at runtime; the marker is the contract the file's author
+#                  signs to say "this compiles standalone with Foundation."
+#   TEST_FILES   — every *.swift under test/macos/. Drop a new test in there
+#                  and `make test` picks it up; no Makefile edit needed.
+#
+# The build joins both sets into one swiftc invocation (Swift requires top-
+# level helpers and tests to compile as one module since the project doesn't
+# ship a SwiftPM manifest).
+TESTABLE_SRC := $(shell grep -lE '^// @testable' $(SRC) 2>/dev/null)
+TEST_FILES   := $(shell find ../../test/macos -name '*.swift' 2>/dev/null)
+TEST_BIN     := $(BUILD)/unit-tests
 
 all: $(APP)
 
@@ -100,3 +118,15 @@ clean:
 
 clean-bridge:
 	rm -rf $(BRIDGE_BUILD)
+
+# Compile + run the auto-discovered Swift unit tests. Test sources and
+# `// @testable`-marked helpers compile as one Foundation-only module —
+# no Cocoa/Carbon/bridge linkage required.
+$(TEST_BIN): $(TESTABLE_SRC) $(TEST_FILES)
+	@if [ -z "$(TEST_FILES)" ]; then echo "no test sources found under ../../test/macos"; exit 1; fi
+	@if [ -z "$(TESTABLE_SRC)" ]; then echo "no '// @testable' marked sources found under native/macos"; exit 1; fi
+	mkdir -p "$(BUILD)"
+	swiftc -O -o "$@" $(TESTABLE_SRC) $(TEST_FILES)
+
+test: $(TEST_BIN)
+	"$(TEST_BIN)"
