@@ -45,6 +45,11 @@ private var gCarbonHotkey: CarbonHotkey?
 /// via a snapshot copy at function entry, so a plain swap is race-free.
 private var gClipboardTimings = ModoreConfig.ClipboardTimings()
 
+/// Menu-bar item showing "running" state + current hotkey. Created late in
+/// boot so its initial refresh sees the post-Carbon-registration values.
+/// `applyConversionHotkeyChord` calls `refresh` on every chord update.
+private var gStatusItem: ModoreStatusItem?
+
 private func applyConversionHotkeyChord(_ chord: ModoreConfig.ConversionHotkey) {
     gConversionKeyCode = chord.keyCode
     gConversionCoreFlags = chord.coreFlags
@@ -55,6 +60,7 @@ private func applyConversionHotkeyChord(_ chord: ModoreConfig.ConversionHotkey) 
             Log.hotkey("RegisterEventHotKey failed — falling back to tap-based detection")
         }
     }
+    gStatusItem?.refresh(hotkey: chord, usingCarbonHotkey: gUsingCarbonHotkey)
 }
 
 func applyConversionHotkeyReload() {
@@ -714,6 +720,13 @@ if gCarbonHotkey?.register(modoreHotkey) == true {
 } else {
     Log.hotkey("Carbon hotkey unavailable — using CGEventTap fallback")
 }
+
+// Menu-bar item. Created after Carbon registration so the very first
+// refresh shows the correct delivery path; subsequent refreshes come from
+// `applyConversionHotkeyChord` on every chord change.
+gStatusItem = ModoreStatusItem()
+gStatusItem?.refresh(hotkey: modoreHotkey, usingCarbonHotkey: gUsingCarbonHotkey)
+Log.boot("status item installed in menu bar")
 
 // Held for the lifetime of the process; tears down its DispatchSource on deinit.
 let gConfigWatcher = ConfigWatcher(path: ModoreConfig.configFileURL().path) {

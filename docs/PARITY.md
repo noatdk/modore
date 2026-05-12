@@ -44,6 +44,7 @@ The Linux columns are the same binary on different display servers;
 | Auto-reload on config change                  |   ✓¹² |     ✗       |       ✗         |    ✗    |
 | Tunable clipboard-fallback timings            |   ✓¹⁴ |     ✗       |       ✗         |    ✗    |
 | `--check-config` preflight (no engine start)  |   ✓¹⁵ |     ✗       |       ✗         |    ✗    |
+| Menu-bar status item ("running" indicator)    |   ✓¹⁶ |     ✗       |       ✗         |    ✗    |
 | Log file on disk (`modore.log`)               |   ✗¹⁰ |     ✓       |       ✓         |    ✗    |
 | First-run permission prompt                   |   ✓   |     —¹¹     |       —¹¹       |    ✗    |
 | systemd user unit shipped                     |   —   |     ✓       |       ✓         |    ✗    |
@@ -67,3 +68,5 @@ The Linux columns are the same binary on different display servers;
 ¹⁴ `[clipboard]` section: `pre_copy_delay_ms` (renderer catch-up after force-select), `read_timeout_ms` (max wait for `Cmd+C` to land on the clipboard), `restore_clipboard_delay_ms` (delay before restoring the user's clipboard). Reloads with `[conversion]`; malformed values are ignored. See [`configuration.md`](configuration.md).
 
 ¹⁵ `modore-host --check-config` parses the same file the running host would and reports each section's outcome. Exits 0 on healthy load, 1 on malformed hotkey, 2 on rejected `[clipboard]` key. Useful for pre-commit hooks and dotfiles tests.
+
+¹⁶ `NSStatusItem` showing "ﾓﾄﾞﾚ" (half-width katakana for "modore") in the menu bar; menu lists the live hotkey, delivery path (Carbon vs CGEventTap), and shortcuts for opening / revealing the config plus Quit. Refreshes automatically on config reload. See `native/macos/StatusItem.swift`.

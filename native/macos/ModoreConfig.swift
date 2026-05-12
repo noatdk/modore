@@ -13,6 +13,13 @@ enum ModoreConfig {
         var keyCode: CGKeyCode
         var coreFlags: CGEventFlags
 
+        /// Best-effort human-readable form of the chord, for the menu bar
+        /// item and any future "current hotkey" UI. For parsed chords this is
+        /// the user's original string verbatim ("Ctrl+Shift+grave"); for the
+        /// built-in default it's `defaultChord`. Excluded from equality so
+        /// "config changed but resolved to the same chord" still no-ops.
+        var displayName: String = ""
+
         /// Carbon `RegisterEventHotKey` expects a modifier mask using
         /// `cmdKey` / `controlKey` / `shiftKey` / `optionKey` constants —
         /// different bit layout from `CGEventFlags`. One place to translate.
@@ -23,6 +30,10 @@ enum ModoreConfig {
             if coreFlags.contains(.maskCommand)   { mask |= UInt32(cmdKey)     }
             if coreFlags.contains(.maskAlternate) { mask |= UInt32(optionKey)  }
             return mask
+        }
+
+        static func == (lhs: ConversionHotkey, rhs: ConversionHotkey) -> Bool {
+            lhs.keyCode == rhs.keyCode && lhs.coreFlags == rhs.coreFlags
         }
     }
 
@@ -65,7 +76,10 @@ enum ModoreConfig {
         if let h = parseChord(defaultChord) {
             return h
         }
-        return ConversionHotkey(keyCode: CGKeyCode(kVK_ANSI_Slash), coreFlags: .maskControl)
+        return ConversionHotkey(
+            keyCode: CGKeyCode(kVK_ANSI_Slash),
+            coreFlags: .maskControl,
+            displayName: defaultChord)
     }
 
     static func configFileURL() -> URL {
@@ -204,7 +218,7 @@ enum ModoreConfig {
 
         let keyName = segments.last!
         guard let keyCode = carbonKeyCode(named: keyName) else { return nil }
-        return ConversionHotkey(keyCode: keyCode, coreFlags: flags)
+        return ConversionHotkey(keyCode: keyCode, coreFlags: flags, displayName: s)
     }
 
     private static func carbonKeyCode(named name: String) -> CGKeyCode? {

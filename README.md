@@ -30,7 +30,10 @@ in a few seconds.
 
 **macOS** prompts for Accessibility permission on first launch — required for
 reading/writing the focused text field. Grant it in *System Settings → Privacy
-& Security → Accessibility*, then re-launch.
+& Security → Accessibility*, then re-launch. Once running, a **ﾓﾄﾞﾚ** label
+appears in the menu bar; its menu shows the live hotkey + delivery path
+(Carbon vs tap fallback) and has shortcuts for editing/revealing the config
+and quitting.
 
 **Linux** runs from your graphical login (AT-SPI needs the session D-Bus).
 For Wayland compositors, Hyprland binds, the `--trigger` socket, Chromium/
