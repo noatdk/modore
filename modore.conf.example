@@ -7,6 +7,12 @@
 [conversion]
 hotkey = Ctrl+Shift+grave
 
+# macOS only — bind an extra modifier on top of `hotkey` that forces a
+# katakana commit instead of the usual top-kanji candidate. Useful for
+# loanwords Mozc keeps writing as kanji ("シドッチ" vs "史奉行"). Accepts
+# `none` (default; no secondary chord) or `shift`.
+# katakana_modifier = shift
+
 # macOS only — tune the clipboard fallback path (used when the focused app
 # doesn't expose Accessibility text, e.g. Chromium/Electron). Defaults
 # shown; uncomment and adjust if force-select copies are flaky.

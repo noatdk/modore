@@ -38,6 +38,48 @@ to the default rather than refusing to start. On Linux the resolved
 chord is echoed to `modore.log` after each `modore-host` start; macOS
 logs the same line to `Console.app` via `NSLog`.
 
+## `[conversion] katakana_modifier` (macOS only)
+
+Optional second chord that fires the same pickup but forces a **full-width
+katakana** commit instead of Mozc's top kanji candidate. Useful for
+loanwords Mozc keeps writing as kanji (e.g. "シドッチ" coming out as
+"史奉行").
+
+The modifier is layered on top of `hotkey`. With the default
+`hotkey = Ctrl+Slash` and `katakana_modifier = shift`, modore binds:
+
+| Chord              | Behavior                                  |
+| ------------------ | ----------------------------------------- |
+| `Ctrl+Slash`       | Convert to top kanji candidate (default). |
+| `Shift+Ctrl+Slash` | Convert to full-width katakana.           |
+
+| Value   | Effect                                                            |
+| ------- | ----------------------------------------------------------------- |
+| `none`  | Default. No secondary chord; behavior matches pre-feature builds. |
+| `shift` | Binds `Shift+<hotkey>` as the katakana chord.                     |
+
+**Validation**: an unknown value logs `ignoring [conversion]
+katakana_modifier=<value>` and falls back to `none`. If `hotkey`
+already includes the configured modifier (e.g.
+`hotkey = Ctrl+Shift+grave` + `katakana_modifier = shift`), the
+secondary chord would be indistinguishable from the primary — modore
+declines to bind it and logs `katakana chord cleared (collides with
+primary modifiers)`. The primary chord keeps working normally.
+
+The clipboard-fallback path (apps that don't expose Accessibility text)
+honors the katakana modifier too; the only divergence between the AX
+fast-path and the clipboard fallback is *how* the replacement is
+written back, not what Mozc returns.
+
+**Status item**: when a secondary chord is bound, the menu-bar item
+shows an extra `Katakana: <chord>` line below `Hotkey:` so the binding
+is visible without rechecking the config.
+
+**Preflight**: `modore-host --check-config` reports the resolved
+secondary chord (or the collision reason). A malformed
+`katakana_modifier` value exits `2`, same as a malformed `[clipboard]`
+key.
+
 ## `[clipboard]` (macOS only)
 
 Timings for the clipboard fallback path — the route modore takes when the
@@ -153,6 +195,8 @@ together; sections are independent and only the changed one logs.
 | File re-created with a new chord        | Swap to the new chord. Same path as the "edit" case.                      |
 | `[clipboard]` value changed             | Apply on next pickup. Logs `clipboard timings: …`.                        |
 | `[clipboard]` value malformed / unknown | Ignore that key. Logs `ignoring [clipboard] …`. Other keys still applied. |
+| `katakana_modifier` changed             | Re-bind secondary chord. Logs `katakana modifier: …` + `katakana chord registered/cleared`. |
+| `katakana_modifier` malformed           | Keep previous value. Logs `ignoring [conversion] katakana_modifier=…`.    |
 
 If the config file doesn't exist at startup, the watcher polls for it
 once a second and arms as soon as it appears. There's no need to restart

@@ -78,6 +78,9 @@ Implementation notes draw on:
 - [OpenKey](https://github.com/tuyenvm/OpenKey) — session-tap posting
   location for synthetic key events (the path that reaches Chromium /
   Electron).
+- [ibus-hiragana](https://github.com/esrille/ibus-hiragana) — conversion-time
+  UX ideas (candidate cycling, MRU history, okurigana handling, per-conversion
+  katakana modifier).
 
 ## Requirements
 
