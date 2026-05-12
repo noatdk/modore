@@ -46,7 +46,37 @@ enum MozcBridge {
 
     /// Convert a UTF-8 romaji string into its top-candidate Japanese form.
     /// Returns the converted string; throws on engine error.
+    ///
+    /// Equivalent to `convertWithCandidates(...).committed` — kept as a
+    /// thin wrapper for call sites that don't need the alternative list
+    /// (e.g. simple one-shot tooling, or if the Linux host's Swift port
+    /// ever wants the same façade).
     static func convert(_ romaji: String, target: ConvertTarget = .kanji) throws -> String {
+        return try convertWithCandidates(romaji, target: target, maxCandidates: 0).committed
+    }
+
+    /// Result of a conversion call that also captured Mozc's alternative
+    /// candidates. `committed` is what the bridge wrote into the field
+    /// (Mozc's top candidate after the SPACE + ENTER cycle); `candidates`
+    /// is the top-N list captured between SPACE and ENTER — usually
+    /// includes `committed` as the first entry. Empty for inputs Mozc
+    /// can't offer alternatives on, or when `maxCandidates == 0`.
+    struct ConversionResult {
+        let committed: String
+        let candidates: [String]
+    }
+
+    /// Convert a romaji string AND fetch Mozc's top-N candidate list.
+    /// `maxCandidates == 0` skips candidate capture (faster path; same as
+    /// `convert(_:target:)`). Otherwise the C bridge writes the candidates
+    /// into a side buffer between Mozc's SPACE and ENTER steps, so cycle
+    /// gestures can swap to a different candidate without re-running the
+    /// whole conversion round-trip.
+    static func convertWithCandidates(
+        _ romaji: String,
+        target: ConvertTarget = .kanji,
+        maxCandidates: Int = 8
+    ) throws -> ConversionResult {
         guard let utf8 = romaji.cString(using: .utf8) else {
             throw MozcBridgeError.stringEncoding
         }
@@ -55,29 +85,85 @@ enum MozcBridge {
         let inputLen = utf8Bytes.count
         let flags = target.bridgeFlags
 
-        // Start with a reasonable buffer; grow once if needed.
+        // Candidates buffer: rough cap on the order of "max N candidates ×
+        // a generous per-candidate UTF-8 budget." Mozc's candidate strings
+        // are usually short (a kanji compound + NUL), but we leave headroom
+        // for rare long words. Truncation is silent in the C layer, so a
+        // too-small buffer just yields a partial list — never an error.
+        let candsCap = maxCandidates > 0 ? max(maxCandidates * 128, 1024) : 0
+        var candsBuf = [CChar](repeating: 0, count: candsCap)
+
+        // Commit buffer: start reasonable, grow once if the C layer asks.
         var cap = max(inputLen * 4 + 64, 256)
         while true {
-            var outLen: Int = 0
+            var commitLen: Int = 0
+            var candsTotalLen: Int = 0
+            var candsCount: Int32 = 0
             var buf = [CChar](repeating: 0, count: cap)
-            let rc = utf8.withUnsafeBufferPointer { inPtr -> Int32 in
+            let rc: Int32 = utf8.withUnsafeBufferPointer { inPtr -> Int32 in
                 buf.withUnsafeMutableBufferPointer { outPtr -> Int32 in
-                    return Int32(mozc_bridge_convert_ex(
+                    if candsCap > 0 {
+                        return candsBuf.withUnsafeMutableBufferPointer { candsPtr in
+                            Int32(mozc_bridge_convert_with_candidates_ex(
+                                inPtr.baseAddress,
+                                inputLen,
+                                outPtr.baseAddress,
+                                cap,
+                                &commitLen,
+                                candsPtr.baseAddress,
+                                candsCap,
+                                &candsTotalLen,
+                                Int32(maxCandidates),
+                                &candsCount,
+                                flags
+                            ))
+                        }
+                    }
+                    return Int32(mozc_bridge_convert_with_candidates_ex(
                         inPtr.baseAddress,
                         inputLen,
                         outPtr.baseAddress,
                         cap,
-                        &outLen,
+                        &commitLen,
+                        nil,
+                        0,
+                        nil,
+                        0,
+                        nil,
                         flags
                     ))
                 }
             }
             if rc == 0 {
-                let data = Data(bytes: buf, count: outLen)
-                guard let s = String(data: data, encoding: .utf8) else {
+                let committedData = Data(bytes: buf, count: commitLen)
+                guard let committed = String(data: committedData, encoding: .utf8) else {
                     throw MozcBridgeError.stringEncoding
                 }
-                return s
+                // Parse the NUL-separated candidate buffer. Each candidate
+                // is a complete UTF-8 string followed by a single NUL; the
+                // C layer guarantees no garbage past `candsTotalLen`.
+                var candidates: [String] = []
+                if candsCount > 0 && candsTotalLen > 0 {
+                    candidates.reserveCapacity(Int(candsCount))
+                    candsBuf.withUnsafeBufferPointer { ptr in
+                        guard let base = ptr.baseAddress else { return }
+                        var i = 0
+                        while i < candsTotalLen && candidates.count < Int(candsCount) {
+                            let start = base.advanced(by: i)
+                            // strnlen up to remaining bytes.
+                            var len = 0
+                            while i + len < candsTotalLen && start.advanced(by: len).pointee != 0 {
+                                len += 1
+                            }
+                            let chunk = Data(bytes: start, count: len)
+                            if let s = String(data: chunk, encoding: .utf8) {
+                                candidates.append(s)
+                            }
+                            i += len + 1  // skip past the NUL
+                        }
+                    }
+                }
+                return ConversionResult(committed: committed, candidates: candidates)
             }
             if rc < 0 {
                 throw MozcBridgeError.conversionFailed(lastError() ?? "convert rc=\(rc)")

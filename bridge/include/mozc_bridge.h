@@ -70,6 +70,44 @@ int mozc_bridge_convert_ex(const char *romaji,
                            size_t *out_len,
                            unsigned int flags);
 
+// Convert *and* return Mozc's top-N alternative candidates. Same commit
+// behavior as mozc_bridge_convert_ex (top-1 is committed and copied into
+// out_buf), with the added side-channel of the candidate list captured
+// from Mozc's response between SPACE and ENTER. Used by frontends that
+// want to offer candidate cycling without paying the cost of a second
+// conversion round-trip per cycle press.
+//
+// cands_buf:       caller-provided output buffer for candidate strings.
+//                  UTF-8, NUL-separated. Each candidate is followed by a
+//                  single '\0' byte; no leading/trailing NUL beyond
+//                  *cands_total_len.
+// cands_cap:       capacity of cands_buf in bytes. Pass 0 / NULL buffer
+//                  to skip candidate capture entirely (function then
+//                  behaves like mozc_bridge_convert_ex).
+// cands_total_len: on success, total bytes written into cands_buf
+//                  (sum of candidate UTF-8 lengths + NUL separators).
+// max_candidates:  cap on how many candidates to emit. <= 0 means "no
+//                  cap, write as many as fit." Truncation is silent —
+//                  if the buffer fills before max_candidates is reached,
+//                  the partial list is returned without error.
+// out_candidate_count: on success, number of candidates actually written.
+// flags:           same MOZC_CONVERT_FLAG_* bits as convert_ex.
+//
+// Returns 0 on success. Same error contract as mozc_bridge_convert_ex for
+// the commit half: -1 on error, positive value > out_cap if commit_buf is
+// too small (candidate output is undefined when commit-side errors).
+int mozc_bridge_convert_with_candidates_ex(const char *romaji,
+                                           size_t romaji_len,
+                                           char *commit_buf,
+                                           size_t commit_cap,
+                                           size_t *commit_len,
+                                           char *cands_buf,
+                                           size_t cands_cap,
+                                           size_t *cands_total_len,
+                                           int max_candidates,
+                                           int *out_candidate_count,
+                                           unsigned int flags);
+
 // Releases the engine. Optional — process exit is fine too.
 void mozc_bridge_shutdown(void);
 
