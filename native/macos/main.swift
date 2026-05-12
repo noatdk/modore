@@ -706,6 +706,7 @@ let app = NSApplication.shared
 app.setActivationPolicy(.accessory)
 
 describeSelf()
+BootGuards.enforce()
 
 let modoreHotkey = ModoreConfig.loadConversionHotkey()
 gConversionKeyCode = modoreHotkey.keyCode
