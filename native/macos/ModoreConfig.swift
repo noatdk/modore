@@ -6,12 +6,30 @@ import Foundation
 
 enum ModoreConfig {
 
-    struct ConversionHotkey {
+    struct ConversionHotkey: Equatable {
         var keyCode: CGKeyCode
         var coreFlags: CGEventFlags
     }
 
+    /// Three-way result for both startup and reload.
+    ///
+    /// Startup callers map every case to a concrete hotkey (falling back to
+    /// the default on `usingDefault` / `invalid`). Reload callers treat
+    /// `invalid` as "keep the previous chord" instead of reverting.
+    enum LoadOutcome {
+        case loaded(ConversionHotkey, source: String)
+        case usingDefault(reason: String)
+        case invalid(reason: String)
+    }
+
     private static let defaultChord = "Ctrl+Slash"
+
+    static func defaultConversionHotkey() -> ConversionHotkey {
+        if let h = parseChord(defaultChord) {
+            return h
+        }
+        return ConversionHotkey(keyCode: CGKeyCode(kVK_ANSI_Slash), coreFlags: .maskControl)
+    }
 
     static func configFileURL() -> URL {
         if let xdg = ProcessInfo.processInfo.environment["XDG_CONFIG_HOME"], !xdg.isEmpty {
@@ -21,12 +39,13 @@ enum ModoreConfig {
             .appendingPathComponent(".config/modore/modore.conf")
     }
 
-    /// Reads `[conversion] hotkey` or returns defaults. Logs a warning if the file specifies an invalid chord.
-    static func loadConversionHotkey() -> ConversionHotkey {
+    /// Parse `~/.config/modore/modore.conf` and report what we found.
+    /// Pure — does not log, does not touch globals. Callers decide.
+    static func loadConversionHotkeyOutcome() -> LoadOutcome {
         let url = configFileURL()
         guard let data = try? Data(contentsOf: url),
               let text = String(data: data, encoding: .utf8) else {
-            return parseChordOrDefault(defaultChord, source: "default")
+            return .usingDefault(reason: "no config at \(url.path)")
         }
 
         var section = ""
@@ -48,24 +67,29 @@ enum ModoreConfig {
             let value = parts[1]
             if section == "conversion" && key == "hotkey" {
                 if let h = parseChord(value) {
-                    NSLog("[modore] config loaded (%@): hotkey=%@", url.path, value)
-                    return h
+                    return .loaded(h, source: "[conversion] hotkey=\(value) (\(url.path))")
                 }
-                NSLog("[modore] config invalid hotkey in %@ — using default (%@)", url.path, defaultChord)
-                return parseChordOrDefault(defaultChord, source: "fallback")
+                return .invalid(reason: "malformed [conversion] hotkey=\(value) in \(url.path)")
             }
         }
 
-        return parseChordOrDefault(defaultChord, source: "default (no hotkey key)")
+        return .usingDefault(reason: "[conversion] hotkey not set in \(url.path)")
     }
 
-    private static func parseChordOrDefault(_ s: String, source: String) -> ConversionHotkey {
-        if let h = parseChord(s) {
-            NSLog("[modore] using %@ hotkey: %@", source, s)
+    /// Convenience for startup: always returns a usable chord, logs the outcome,
+    /// falls back to the default on any non-loaded case.
+    static func loadConversionHotkey() -> ConversionHotkey {
+        switch loadConversionHotkeyOutcome() {
+        case .loaded(let h, let source):
+            Log.config("loaded \(source)")
             return h
+        case .usingDefault(let reason):
+            Log.config("\(reason) — using default \(defaultChord)")
+            return defaultConversionHotkey()
+        case .invalid(let reason):
+            Log.config("\(reason) — using default \(defaultChord)")
+            return defaultConversionHotkey()
         }
-        // Last resort — must succeed for default chord.
-        return ConversionHotkey(keyCode: CGKeyCode(kVK_ANSI_Slash), coreFlags: .maskControl)
     }
 
     private static func parseChord(_ s: String) -> ConversionHotkey? {
@@ -100,18 +124,20 @@ enum ModoreConfig {
 
         if lower.count == 1, let ch = lower.first {
             if ch >= "a" && ch <= "z" {
-                let o = UInt16(ch.asciiValue! - UInt8(ascii: "a"))
+                let o = Int(ch.asciiValue! - UInt8(ascii: "a"))
                 return CGKeyCode(kVK_ANSI_A + o)
             }
         }
 
         if lower.count == 1, let ch = lower.first, ch >= "0" && ch <= "9" {
-            let map: [Character: UInt16] = [
-                "1": kVK_ANSI_1, "2": kVK_ANSI_2, "3": kVK_ANSI_3, "4": kVK_ANSI_4,
-                "5": kVK_ANSI_5, "6": kVK_ANSI_6, "7": kVK_ANSI_7, "8": kVK_ANSI_8,
-                "9": kVK_ANSI_9, "0": kVK_ANSI_0,
+            let map: [Character: CGKeyCode] = [
+                "1": CGKeyCode(kVK_ANSI_1), "2": CGKeyCode(kVK_ANSI_2),
+                "3": CGKeyCode(kVK_ANSI_3), "4": CGKeyCode(kVK_ANSI_4),
+                "5": CGKeyCode(kVK_ANSI_5), "6": CGKeyCode(kVK_ANSI_6),
+                "7": CGKeyCode(kVK_ANSI_7), "8": CGKeyCode(kVK_ANSI_8),
+                "9": CGKeyCode(kVK_ANSI_9), "0": CGKeyCode(kVK_ANSI_0),
             ]
-            return map[ch].map { CGKeyCode($0) }
+            return map[ch]
         }
 
         switch lower {
@@ -146,12 +172,12 @@ enum ModoreConfig {
 
         if lower.hasPrefix("f"), lower.count >= 2,
            let n = Int(lower.dropFirst()), n >= 1 && n <= 12 {
-            let f: [Int: UInt16] = [
-                1: kVK_F1, 2: kVK_F2, 3: kVK_F3, 4: kVK_F4,
-                5: kVK_F5, 6: kVK_F6, 7: kVK_F7, 8: kVK_F8,
-                9: kVK_F9, 10: kVK_F10, 11: kVK_F11, 12: kVK_F12,
+            let f: [CGKeyCode] = [
+                CGKeyCode(kVK_F1), CGKeyCode(kVK_F2), CGKeyCode(kVK_F3), CGKeyCode(kVK_F4),
+                CGKeyCode(kVK_F5), CGKeyCode(kVK_F6), CGKeyCode(kVK_F7), CGKeyCode(kVK_F8),
+                CGKeyCode(kVK_F9), CGKeyCode(kVK_F10), CGKeyCode(kVK_F11), CGKeyCode(kVK_F12),
             ]
-            return f[n].map { CGKeyCode($0) }
+            return f[n - 1]
         }
 
         return nil

@@ -5,7 +5,7 @@ BUILD     ?= build
 APP       := $(BUILD)/$(APP_NAME).app
 BIN       := $(APP)/Contents/MacOS/modore-host
 PLIST     := $(APP)/Contents/Info.plist
-SRC       := main.swift MozcBridge.swift ModoreConfig.swift
+SRC       := main.swift MozcBridge.swift ModoreConfig.swift ConfigWatcher.swift Log.swift
 
 # Cross-platform mozc bridge (cmake project at repo root)
 REPO_ROOT       := $(abspath ../..)

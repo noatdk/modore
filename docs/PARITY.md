@@ -41,6 +41,7 @@ The Linux columns are the same binary on different display servers;
 | Feature                                       | macOS | Linux (X11) | Linux (Wayland) | Windows |
 | --------------------------------------------- | :---: | :---------: | :-------------: | :-----: |
 | `~/.config/modore/modore.conf` (XDG)          |   ✓   |     ✓       |       ✓         |    ✗    |
+| Auto-reload on config change                  |   ✓¹² |     ✗       |       ✗         |    ✗    |
 | Log file on disk (`modore.log`)               |   ✗¹⁰ |     ✓       |       ✓         |    ✗    |
 | First-run permission prompt                   |   ✓   |     —¹¹     |       —¹¹       |    ✗    |
 | systemd user unit shipped                     |   —   |     ✓       |       ✓         |    ✗    |
@@ -58,3 +59,4 @@ The Linux columns are the same binary on different display servers;
 ⁹ When `DISPLAY` is set on a Wayland session, the host prefers the X11 keyboard path because Electron is still attached to `DISPLAY`.
 ¹⁰ macOS logs via `NSLog` to `Console.app`; no on-disk log file yet.
 ¹¹ AT-SPI uses session D-Bus; some desktops still need the user to enable Accessibility manually, but the host does not prompt.
+¹² `DispatchSourceFileSystemObject` on `modore.conf` with 300 ms debounce; survives atomic-rename editors. Malformed reloads keep the previous chord. See [`configuration.md`](configuration.md) and `native/macos/ConfigWatcher.swift`.

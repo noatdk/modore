@@ -25,8 +25,32 @@ let MOZC_PROFILE_DIR: String = {
 }()
 
 // Populated from ~/.config/modore/modore.conf before the event tap is installed.
+// Read by the tap callback on the main thread; written by the main thread on
+// startup and on watcher-driven reloads, so a plain swap is race-free.
 private var gConversionKeyCode: CGKeyCode = CGKeyCode(kVK_ANSI_Slash)
 private var gConversionCoreFlags: CGEventFlags = .maskControl
+
+func applyConversionHotkeyReload() {
+    let prev = ModoreConfig.ConversionHotkey(
+        keyCode: gConversionKeyCode, coreFlags: gConversionCoreFlags)
+    switch ModoreConfig.loadConversionHotkeyOutcome() {
+    case .loaded(let next, let source):
+        if next != prev {
+            gConversionKeyCode = next.keyCode
+            gConversionCoreFlags = next.coreFlags
+            Log.config("reloaded \(source)")
+        }
+    case .usingDefault(let reason):
+        let def = ModoreConfig.defaultConversionHotkey()
+        if def != prev {
+            gConversionKeyCode = def.keyCode
+            gConversionCoreFlags = def.coreFlags
+            Log.config("reload: \(reason) — reverted to default")
+        }
+    case .invalid(let reason):
+        Log.config("reload rejected: \(reason) — keeping previous hotkey")
+    }
+}
 
 // MARK: - Backend call shape
 //
@@ -75,14 +99,14 @@ func readFocusedField() -> FocusedField? {
         &focusedRef
     )
     if r1 != .success {
-        NSLog("[modore] AX focused-element lookup failed: %d", r1.rawValue)
+        Log.ax("focused-element lookup failed: \(r1.rawValue)")
         if r1 == .apiDisabled || r1 == .cannotComplete {
-            NSLog("[modore] AX appears disabled for this process; restart the host after granting permission")
+            Log.ax("appears disabled for this process; restart the host after granting permission")
         }
         return nil
     }
     guard let focused = focusedRef else {
-        NSLog("[modore] AX returned no focused element")
+        Log.ax("returned no focused element")
         return nil
     }
     let element = focused as! AXUIElement
@@ -99,11 +123,11 @@ func readFocusedField() -> FocusedField? {
         &valueRef
     )
     guard r2 == .success else {
-        NSLog("[modore] AX value lookup failed on role=%@: %d", role, r2.rawValue)
+        Log.ax("value lookup failed on role=\(role): \(r2.rawValue)")
         return nil
     }
     guard let s = valueRef as? String else {
-        NSLog("[modore] AX value on role=%@ is not a String (type=%@)", role, String(describing: type(of: valueRef!)))
+        Log.ax("value on role=\(role) is not a String (type=\(String(describing: type(of: valueRef!))))")
         return nil
     }
 
@@ -122,9 +146,9 @@ func readFocusedField() -> FocusedField? {
             selEnd = cfRange.location + cfRange.length
         }
     } else {
-        NSLog("[modore] AX selection range unavailable on role=%@ (using end-of-buffer caret)", role)
+        Log.ax("selection range unavailable on role=\(role) (using end-of-buffer caret)")
     }
-    NSLog("[modore] focused role=%@ valueLen=%d sel=[%d,%d]", role, s.utf16.count, selStart, selEnd)
+    Log.ax("focused role=\(role) valueLen=\(s.utf16.count) sel=[\(selStart),\(selEnd)]")
     return FocusedField(element: element, value: s, selStart: selStart, selEnd: selEnd)
 }
 
@@ -162,7 +186,7 @@ func callBackend(text: String, spanStart: Int, spanEnd: Int) -> ConvertResult? {
         let converted = try MozcBridge.convert(span)
         return ConvertResult(replacement: converted, cursorOffset: nil)
     } catch {
-        NSLog("[modore] mozc bridge error: %@", String(describing: error))
+        Log.mozc("bridge error: \(String(describing: error))")
         return nil
     }
 }
@@ -269,10 +293,10 @@ func doClipboardPickup() {
     if waitForClipboardChange(after: baseline, timeoutMs: 80),
        let s = pb.string(forType: .string), !s.isEmpty {
         if looksLikeLineCopy(s) {
-            NSLog("[modore] Cmd+C looks like a line-copy (no real selection); will force-select previous word")
+            Log.clipboard("Cmd+C looks like a line-copy (no real selection); will force-select previous word")
         } else {
             picked = s
-            NSLog("[modore] using existing user selection: %@", s)
+            Log.clipboard("using existing user selection: \(s)")
         }
     }
 
@@ -295,7 +319,7 @@ func doClipboardPickup() {
     }
 
     guard var pickedText = picked else {
-        NSLog("[modore] clipboard fallback: nothing to convert (Cmd+C didn't update clipboard in time)")
+        Log.clipboard("nothing to convert (Cmd+C didn't update clipboard in time)")
         // Don't leave the user with a stuck visible selection from our Shift+Opt+Left
         if didForceSelect {
             postKey(kVK_RightArrow)
@@ -307,18 +331,18 @@ func doClipboardPickup() {
     if pickedText.hasSuffix("\n") { pickedText.removeLast() }
     if pickedText.hasSuffix("\r") { pickedText.removeLast() }
 
-    NSLog("[modore] clipboard pick: %@", pickedText)
+    Log.clipboard("pick: \(pickedText)")
 
     let utf16Len = pickedText.utf16.count
     guard let result = callBackend(text: pickedText, spanStart: 0, spanEnd: utf16Len) else {
-        NSLog("[modore] clipboard fallback: backend returned no result")
+        Log.clipboard("backend returned no result")
         if didForceSelect {
             postKey(kVK_RightArrow)
         }
         restoreClipboard(saved)
         return
     }
-    NSLog("[modore] clipboard replace -> %@", result.replacement)
+    Log.clipboard("replace -> \(result.replacement)")
 
     // Replace the active selection by injecting the replacement as a Unicode
     // keystroke into the session event tap. No clipboard touch on the replace
@@ -343,26 +367,26 @@ func doPickup() {
             (start, end) = wordBounds(utf16, caret: field.selStart)
         }
         guard start >= 0, end <= utf16.count, start < end else {
-            NSLog("[modore] empty span; nothing to convert")
+            Log.pickup("empty span; nothing to convert")
             return
         }
 
         let spanText = String(utf16CodeUnits: Array(utf16[start..<end]), count: end - start)
-        NSLog("[modore] pick [%d..%d] %@", start, end, spanText)
+        Log.pickup("pick [\(start)..\(end)] \(spanText)")
 
         guard let result = callBackend(text: field.value, spanStart: start, spanEnd: end) else {
-            NSLog("[modore] backend returned no result")
+            Log.pickup("backend returned no result")
             return
         }
-        NSLog("[modore] replace -> %@", result.replacement)
+        Log.pickup("replace -> \(result.replacement)")
 
         if replaceRange(in: field.element, start: start, end: end, replacement: result.replacement) {
             return
         }
-        NSLog("[modore] AX replace failed; falling back to clipboard mode")
+        Log.pickup("AX replace failed; falling back to clipboard mode")
     }
 
-    NSLog("[modore] using clipboard fallback (app does not expose AX text)")
+    Log.pickup("using clipboard fallback (app does not expose AX text)")
     doClipboardPickup()
 }
 
@@ -390,7 +414,7 @@ private let tapCallback: CGEventTapCallBack = { _, type, event, _ in
     if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
         if let tap = gEventTap {
             CGEvent.tapEnable(tap: tap, enable: true)
-            NSLog("[modore] event tap re-enabled (was disabled: %d)", type.rawValue)
+            Log.hotkey("event tap re-enabled (was disabled: \(type.rawValue))")
         }
         return Unmanaged.passUnretained(event)
     }
@@ -443,10 +467,10 @@ func isTrusted(prompt: Bool) -> Bool {
 
 func describeSelf() {
     let bundle = Bundle.main
-    NSLog("[modore] pid=%d", ProcessInfo.processInfo.processIdentifier)
-    NSLog("[modore] executable=%@", bundle.executablePath ?? "?")
-    NSLog("[modore] bundle id=%@", bundle.bundleIdentifier ?? "(no bundle)")
-    NSLog("[modore] bundle path=%@", bundle.bundlePath)
+    Log.boot("pid=\(ProcessInfo.processInfo.processIdentifier)")
+    Log.boot("executable=\(bundle.executablePath ?? "?")")
+    Log.boot("bundle id=\(bundle.bundleIdentifier ?? "(no bundle)")")
+    Log.boot("bundle path=\(bundle.bundlePath)")
 }
 
 // MARK: - Main
@@ -463,29 +487,35 @@ gConversionCoreFlags = modoreHotkey.coreFlags
 // First, check silently. If not trusted, prompt the user. macOS will add the
 // bundle to the Accessibility list at this point.
 if !isTrusted(prompt: false) {
-    NSLog("[modore] Not trusted yet — requesting Accessibility permission.")
-    NSLog("[modore] Look for 'modore' in:")
-    NSLog("[modore]   System Settings → Privacy & Security → Accessibility")
-    NSLog("[modore] If it does NOT appear, click the '+' button and add:")
-    NSLog("[modore]   %@", Bundle.main.bundlePath)
-    NSLog("[modore] Then quit and re-launch this host.")
+    Log.ax("not trusted yet — requesting Accessibility permission.")
+    Log.ax("look for 'modore' in:")
+    Log.ax("  System Settings → Privacy & Security → Accessibility")
+    Log.ax("if it does NOT appear, click the '+' button and add:")
+    Log.ax("  \(Bundle.main.bundlePath)")
+    Log.ax("then quit and re-launch this host.")
     _ = isTrusted(prompt: true)
 } else {
-    NSLog("[modore] Accessibility: TRUSTED")
+    Log.ax("trusted")
 }
 
 if !installEventTap() {
-    NSLog("[modore] failed to create event tap — Accessibility permission missing?")
+    Log.hotkey("failed to create event tap — Accessibility permission missing?")
     exit(1)
 }
+
+// Held for the lifetime of the process; tears down its DispatchSource on deinit.
+let gConfigWatcher = ConfigWatcher(path: ModoreConfig.configFileURL().path) {
+    applyConversionHotkeyReload()
+}
+gConfigWatcher.start()
 
 do {
     try MozcBridge.initialize(userProfileDir: MOZC_PROFILE_DIR)
-    NSLog("[modore] mozc bridge initialized (profile=%@)", MOZC_PROFILE_DIR)
+    Log.mozc("bridge initialized (profile=\(MOZC_PROFILE_DIR))")
 } catch {
-    NSLog("[modore] mozc bridge init FAILED: %@", String(describing: error))
+    Log.mozc("bridge init FAILED: \(String(describing: error))")
     exit(1)
 }
 
-NSLog("[modore] ready: conversion hotkey installed (see ~/.config/modore/modore.conf)")
+Log.boot("ready: conversion hotkey installed (see ~/.config/modore/modore.conf)")
 app.run()
