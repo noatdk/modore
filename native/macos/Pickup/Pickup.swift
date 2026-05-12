@@ -4,8 +4,10 @@
 //
 //   - PickupRequest / ConvertResult: per-invocation transfer object + result.
 //   - callBackend: the thin Mozc-bridge wrapper (no slicing, no policy).
-//   - sliceUTF16 / wordBounds: span resolution in the AX/JS index domain.
 //   - doPickup / doClipboardPickup: the two halves of the pipeline.
+//
+// Span-domain helpers (wordBounds, splitTrailingASCII, sliceUTF16) live in
+// SpanSplit.swift so the test driver can compile them without Cocoa.
 //
 // Globals it reads:
 //   - gClipboardTimings (HotkeyState.swift) — snapshot at function entry.
@@ -38,60 +40,6 @@ struct PickupRequest {
     /// Target conversion shape. The katakana modifier flips this to
     /// `.katakana`; everything else uses the default `.kanji`.
     var target: MozcBridge.ConvertTarget = .kanji
-}
-
-// MARK: - Span resolution (UTF-16, matches AX/JS semantics)
-
-func wordBounds(_ utf16: [UInt16], caret: Int) -> (Int, Int) {
-    if utf16.isEmpty { return (0, 0) }
-    let c = min(max(caret, 0), utf16.count)
-    let isWS: (UInt16) -> Bool = { ch in
-        ch == 0x20 || ch == 0x09 || ch == 0x0A || ch == 0x0D
-    }
-    // Stop the word walk on a script transition (ASCII ↔ non-ASCII), not
-    // just whitespace. Without this, typing `kaitou`→Ctrl+/→`hentai`
-    // grabs `回答hentai` as one word and Mozc returns it unchanged.
-    //
-    // TODO: this is a coarse split — every BMP code point ≥ 0x80 reads
-    // as "non-ASCII" (kana, kanji, fullwidth, latin-1 supplement, …).
-    // Fine for romaji→kana flow today; revisit when boundary cycling
-    // against Mozc's segment output lands, since that will subsume this logic.
-    // Whitespace is handled by the outer `while` (`!isWS(utf16[start-1])`
-    // / `!isWS(utf16[end])`). scriptBreak is strictly about the
-    // ASCII↔non-ASCII transition — otherwise a caret sitting just
-    // before a newline would break out at start = caret and collapse
-    // the span.
-    let isASCII: (UInt16) -> Bool = { $0 < 0x80 }
-    let scriptBreak: (UInt16, UInt16) -> Bool = { a, b in
-        isASCII(a) != isASCII(b)
-    }
-    var start = c
-    while start > 0 && !isWS(utf16[start - 1]) {
-        if start < utf16.count, scriptBreak(utf16[start - 1], utf16[start]) {
-            break
-        }
-        start -= 1
-    }
-    var end = c
-    while end < utf16.count && !isWS(utf16[end]) {
-        if end > 0, scriptBreak(utf16[end - 1], utf16[end]) {
-            break
-        }
-        end += 1
-    }
-    if start == end {
-        if c < utf16.count { return (c, c + 1) }
-        if c > 0 { return (c - 1, c) }
-    }
-    return (start, end)
-}
-
-/// UTF-16 substring helper, matching the AX/JS index domain used throughout
-/// the pickup pipeline. Returns `nil` if the bounds are out of range or empty.
-func sliceUTF16(_ text: String, start: Int, end: Int) -> String? {
-    let utf16 = Array(text.utf16)
-    guard start >= 0, end <= utf16.count, start < end else { return nil }
-    return String(utf16CodeUnits: Array(utf16[start..<end]), count: end - start)
 }
 
 // MARK: - Backend call (in-process via mozc bridge)
@@ -206,30 +154,54 @@ func doClipboardPickup(_ request: PickupRequest = .init()) {
 
     Log.clipboard("pick: \(pickedText)")
 
+    // Mirror the AX path's script-boundary split for the clipboard path:
+    // Shift+Opt+Left in Discord/Sublime grabs the whole word including any
+    // non-ASCII prefix (e.g. `対人sen` arrives as one blob), and the bridge
+    // sends each byte of UTF-8 to Mozc as a separate `key_code` — kanji
+    // come out as Latin-1 mojibake. Strip the non-ASCII prefix here, send
+    // only the trailing romaji to the bridge, then re-attach the prefix.
+    let (asciiPrefix, romajiTail) = splitTrailingASCII(pickedText)
+    guard !romajiTail.isEmpty else {
+        // No trailing romaji to convert — bridge would error or echo input.
+        // Drop the forced selection (if any) so we don't leave the user
+        // with a stuck highlight.
+        Log.clipboard("nothing to convert (no trailing romaji in \(pickedText))")
+        if didForceSelect {
+            postKey(kVK_RightArrow)
+        }
+        return
+    }
+
     // Fetch candidates so the cycle gesture has something to work with in
     // this app too. Esc-undo and cycle on the clipboard path use a
     // backspace + retype strategy (the alternative — re-running the
     // selection + Cmd+C dance — would be much slower per cycle press).
-    guard let result = callBackend(pickedText, request: request, wantCandidates: true) else {
+    guard let result = callBackend(romajiTail, request: request, wantCandidates: true) else {
         Log.clipboard("backend returned no result")
         if didForceSelect {
             postKey(kVK_RightArrow)
         }
         return
     }
-    Log.clipboard("replace -> \(result.replacement) (alts=\(result.candidates.count))")
+    let replacement = asciiPrefix + result.replacement
+    Log.clipboard("replace -> \(replacement) (alts=\(result.candidates.count))")
 
     // Replace the active selection by injecting the replacement as a Unicode
     // keystroke into the session event tap. No clipboard touch on the replace
     // path → no flicker, no race with the user's clipboard contents.
-    postUnicode(result.replacement)
+    postUnicode(replacement)
 
     // Open a clipboard-backed session for follow-up gestures. The frontmost
     // app's pid + bundle ID are the identity check Esc-undo / cycle use to
     // refuse to act on the wrong window. Same single-element-list fallback
     // as the AX path for inputs Mozc didn't offer alternatives on.
+    // Candidates get the prefix glued on too — cycle replaces the whole
+    // typed run (prefix + tail) on each press, so each candidate must
+    // already include the prefix for backspace-count math to line up.
     let snapshotCandidates: [String] =
-        result.candidates.isEmpty ? [result.replacement] : result.candidates
+        result.candidates.isEmpty
+            ? [replacement]
+            : result.candidates.map { asciiPrefix + $0 }
     let frontmost = FrontmostApp.describe()
     let session = ConversionSession(
         backing: .clipboard(
@@ -284,25 +256,41 @@ func doPickup(_ request: PickupRequest = .init()) {
         }
         Log.pickup("pick [\(start)..\(end)] \(spanText)")
 
+        // Strip any non-ASCII prefix before handing off to Mozc — same
+        // reason as the clipboard path. `wordBounds` already does this on
+        // the empty-caret branch (script-transition stop), but a
+        // user-made selection covering `対人sen` bypasses it. Without this
+        // the bridge feeds Mozc UTF-8 bytes as Latin-1 codepoints and
+        // mojibake comes back.
+        let (asciiPrefix, romajiTail) = splitTrailingASCII(spanText)
+        guard !romajiTail.isEmpty else {
+            Log.pickup("nothing to convert (no trailing romaji in \(spanText))")
+            return
+        }
+
         // AX path requests candidates so the snapshot can power Esc-undo
         // and the cycle gesture. Clipboard fallback below skips this —
         // no stable span to act on.
-        guard let result = callBackend(spanText, request: request, wantCandidates: true) else {
+        guard let result = callBackend(romajiTail, request: request, wantCandidates: true) else {
             Log.pickup("backend returned no result")
             return
         }
-        Log.pickup("replace -> \(result.replacement) (alts=\(result.candidates.count))")
+        let replacement = asciiPrefix + result.replacement
+        Log.pickup("replace -> \(replacement) (alts=\(result.candidates.count))")
 
-        if replaceRange(in: field.element, start: start, end: end, replacement: result.replacement) {
+        if replaceRange(in: field.element, start: start, end: end, replacement: replacement) {
             // Open a session so Esc-undo and the cycle gesture have
             // something to act on. `candidates` is the full list captured
             // from Mozc; if Mozc returned nothing (rare — only trivial
             // single-kana inputs), we still snapshot the committed string
             // as a single-element list so the index/identity math stays
             // simple. `candidateIndex = 0` means "candidates[0] is what
-            // got written to the span."
+            // got written to the span." Each candidate carries the
+            // non-ASCII prefix so cycling lines up byte-for-byte.
             let snapshotCandidates: [String] =
-                result.candidates.isEmpty ? [result.replacement] : result.candidates
+                result.candidates.isEmpty
+                    ? [replacement]
+                    : result.candidates.map { asciiPrefix + $0 }
             let session = ConversionSession(
                 backing: .ax(element: field.element, spanStart: start),
                 originalReading: spanText,
