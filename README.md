@@ -6,13 +6,15 @@ top-candidate conversion.
 
 ## Status
 
-| Host    | State                                                   |
-| ------- | ------------------------------------------------------- |
-| macOS   | shipping; configurable hotkey, top-candidate only       |
-| Linux   | shipping; X11 grab + AT-SPI2 + Unix socket IPC + Wayland fallbacks |
-| Windows | planned, not started                                    |
 
-Per-host feature matrix: [`docs/PARITY.md`](docs/PARITY.md). Update it in the
+| Host    | State                                                              |
+| ------- | ------------------------------------------------------------------ |
+| macOS   | shipping; configurable hotkey, top-candidate only                  |
+| Linux   | shipping; X11 grab + AT-SPI2 + Unix socket IPC + Wayland fallbacks |
+| Windows | planned, not started                                               |
+
+
+Per-host feature matrix: [docs/PARITY.md](docs/PARITY.md). Update it in the
 same commit that adds or removes a capability.
 
 ## Build & run
@@ -39,7 +41,7 @@ state, so the menu surfaces which app to release.
 
 **Linux** runs from your graphical login (AT-SPI needs the session D-Bus).
 For Wayland compositors, Hyprland binds, the `--trigger` socket, Chromium/
-Electron quirks, and the systemd user unit, see [`docs/linux.md`](docs/linux.md).
+Electron quirks, and the systemd user unit, see [docs/linux.md](docs/linux.md).
 
 ## Configuration
 
@@ -52,7 +54,7 @@ hotkey = Ctrl+Shift+grave
 ```
 
 Default is `Ctrl+Slash`. Full hotkey grammar, modifier aliases, and key names
-in [`docs/configuration.md`](docs/configuration.md).
+in [docs/configuration.md](docs/configuration.md).
 
 ## Layout
 
@@ -73,14 +75,14 @@ abseil, and protobuf. Frontends only need to consume the flat C ABI in
 Implementation notes draw on:
 
 - [espanso](https://github.com/espanso/espanso) — Carbon hotkey delivery,
-  synthetic-event marker, modifier-release wait, Unicode-injection chunking,
-  SecureInput watcher.
+synthetic-event marker, modifier-release wait, Unicode-injection chunking,
+SecureInput watcher.
 - [OpenKey](https://github.com/tuyenvm/OpenKey) — session-tap posting
-  location for synthetic key events (the path that reaches Chromium /
-  Electron).
+location for synthetic key events (the path that reaches Chromium /
+Electron).
 - [ibus-hiragana](https://github.com/esrille/ibus-hiragana) — conversion-time
-  UX ideas (candidate cycling, MRU history, okurigana handling, per-conversion
-  katakana modifier).
+UX ideas (candidate cycling, MRU history, okurigana handling, per-conversion
+katakana modifier).
 
 ## Requirements
 
@@ -88,8 +90,8 @@ Implementation notes draw on:
 - Python 3 (Mozc's build scripts invoke `python`)
 - **macOS**: Xcode Command Line Tools
 - **Linux**: GCC or Clang with C++20, X11 + XTest dev (`libX11`, `libXtst`),
-  AT-SPI (`atspi-2`, GLib), and `pkg-config`. Clipboard helpers: `xclip` (X11)
-  and/or `wl-clipboard` (`wl-paste` / `wl-copy`) on Wayland compositors.
+AT-SPI (`atspi-2`, GLib), and `pkg-config`. Clipboard helpers: `xclip` (X11)
+and/or `wl-clipboard` (`wl-paste` / `wl-copy`) on Wayland compositors.
 
 ## License
 
