@@ -5,11 +5,18 @@ Both hosts read `$XDG_CONFIG_HOME/modore/modore.conf` if set, otherwise
 
 INI-style. Sections are independent: omit any section to keep its defaults.
 
+Each section/key below opens with an **Available**: line listing the
+platforms it currently works on. The live feature matrix is in
+[`PARITY.md`](PARITY.md); the labels here go stale only when a key
+gains or loses a platform, which is a guaranteed line in the commit
+that does so.
+
 ```ini
 [conversion]
 hotkey = Ctrl+Shift+grave
 
-# macOS-only knobs for the clipboard fallback path. Omit for defaults.
+# Available: macOS
+# Knobs for the clipboard fallback path. Omit for defaults.
 [clipboard]
 pre_copy_delay_ms = 20
 read_timeout_ms = 250
@@ -19,6 +26,8 @@ restore_clipboard_delay_ms = 50
 A copy-pasteable starter ships at [`modore.conf.example`](../modore.conf.example).
 
 ## `[conversion] hotkey`
+
+**Available**: macOS, Linux
 
 Format is one or more modifiers joined by `+`, then a single key name.
 
@@ -38,7 +47,9 @@ to the default rather than refusing to start. On Linux the resolved
 chord is echoed to `modore.log` after each `modore-host` start; macOS
 logs the same line to `Console.app` via `NSLog`.
 
-## `[conversion] katakana_modifier` (macOS only)
+## `[conversion] katakana_modifier`
+
+**Available**: macOS
 
 Optional second chord that fires the same pickup but forces a **full-width
 katakana** commit instead of Mozc's top kanji candidate. Useful for
@@ -80,7 +91,9 @@ secondary chord (or the collision reason). A malformed
 `katakana_modifier` value exits `2`, same as a malformed `[clipboard]`
 key.
 
-## `[conversion] undo_window_ms` (macOS only)
+## `[conversion] undo_window_ms`
+
+**Available**: macOS
 
 How long after a successful conversion **Esc** still reverts the
 replacement back to the original reading. Mozc's top kanji candidate
@@ -123,7 +136,9 @@ sees exactly which gate rejected the undo.
 stays in effect. `--check-config` reports the resolved value and
 exits `2` on a rejected value.
 
-## `[clipboard]` (macOS only)
+## `[clipboard]`
+
+**Available**: macOS
 
 Timings for the clipboard fallback path — the route modore takes when the
 focused app doesn't expose Accessibility (Chromium/Electron browsers, some
@@ -145,7 +160,9 @@ tuning knob, so leaving it fixed keeps the fast-path predictable.
 values are ignored with a `[config]` log line and the previous default
 stays in effect. Unknown keys in `[clipboard]` are logged and ignored.
 
-## Preflight: `modore-host --check-config` (macOS)
+## Preflight: `modore-host --check-config`
+
+**Available**: macOS
 
 Validate the config without starting the host. Reads the same file the
 running host would, prints what it found, and exits with a status that
@@ -167,7 +184,9 @@ config path: /Users/you/.config/modore/modore.conf
 This is the "parse-before-swap" path made explicit: same code that runs
 on a live reload, but as a one-shot you can invoke from CI.
 
-## Diagnostic: `modore-host --secure-input-status` (macOS)
+## Diagnostic: `modore-host --secure-input-status`
+
+**Available**: macOS
 
 Query which (if any) app is currently holding **Secure Keyboard Entry**
 (macOS's SecureInput mode). While SecureInput is active, the OS routes
@@ -199,7 +218,9 @@ while held) and reflects the state in the menu bar: title flips to red
 and a `⚠ Blocked by <App>` line appears in the menu. The `[secure-input]`
 log tag records every transition.
 
-## Path printers (macOS)
+## Path printers
+
+**Available**: macOS
 
 Two zero-side-effect flags for scripting and bug-report copy-paste:
 
@@ -222,11 +243,13 @@ labels every line for humans.
 
 ## Auto-reload
 
-**macOS only (today)**: edits to `modore.conf` are picked up live — no
-restart needed. The watcher applies a 300 ms quiet-window debounce, so
-multi-event saves (atomic-rename editors like Vim, VSCode, JetBrains)
-land as a single reload. Both `[conversion]` and `[clipboard]` reload
-together; sections are independent and only the changed one logs.
+**Available**: macOS
+
+Edits to `modore.conf` are picked up live — no restart needed. The
+watcher applies a 300 ms quiet-window debounce, so multi-event saves
+(atomic-rename editors like Vim, VSCode, JetBrains) land as a single
+reload. Both `[conversion]` and `[clipboard]` reload together; sections
+are independent and only the changed one logs.
 
 | Edit                                    | Behavior                                                                  |
 | --------------------------------------- | ------------------------------------------------------------------------- |

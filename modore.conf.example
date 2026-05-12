@@ -1,24 +1,32 @@
 # Copy to ~/.config/modore/modore.conf (same path regardless of distro).
 #
+# See docs/configuration.md for the full behavior of each key and
+# PARITY.md for the live feature matrix.
+#
 # Electron / Chromium under Hyprland:
 # • If DISPLAY is set (usual XWayland case), ipc pickup prefers XTest — often works without extra tweaks.
 # • Pure Oz/Wayland Chromium (DISPLAY unset): keep DISPLAY in your session if possible, or rely on Hypr+wtype clipboard paths + modore-host --ipc-only trigger.
 
 [conversion]
+
+# Available: macOS, Linux
+# Trigger chord. Modifiers + a single key, joined with `+`.
 hotkey = Ctrl+Shift+grave
 
-# macOS only — bind an extra modifier on top of `hotkey` that forces a
-# katakana commit instead of the usual top-kanji candidate. Useful for
-# loanwords Mozc keeps writing as kanji ("シドッチ" vs "史奉行"). Accepts
-# `none` (default; no secondary chord) or `shift`.
+# Available: macOS
+# Extra modifier on top of `hotkey` that forces a katakana commit
+# instead of the usual top-kanji candidate. Useful for loanwords Mozc
+# keeps writing as kanji ("シドッチ" vs "史奉行"). One of: none, shift.
 # katakana_modifier = shift
 
-# macOS only — how long after a conversion Esc still reverts it back to
-# the original reading. Default 5000 (5 s). Set to 0 to disable Esc-undo
-# entirely; max 30000.
+# Available: macOS
+# How long after a conversion Esc still reverts it back to the original
+# reading. Default 5000 (5 s). Set to 0 to disable Esc-undo entirely;
+# max 30000.
 # undo_window_ms = 5000
 
-# macOS only — tune the clipboard fallback path (used when the focused app
+# Available: macOS
+# Timings for the clipboard fallback path (used when the focused app
 # doesn't expose Accessibility text, e.g. Chromium/Electron). Defaults
 # shown; uncomment and adjust if force-select copies are flaky.
 # See docs/configuration.md → [clipboard] for what each knob controls.
