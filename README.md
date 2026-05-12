@@ -68,6 +68,17 @@ The bridge is a shared library (`libmozc_bridge.dylib` on macOS,
 abseil, and protobuf. Frontends only need to consume the flat C ABI in
 `bridge/include/mozc_bridge.h`.
 
+## References
+
+Implementation notes draw on:
+
+- [espanso](https://github.com/espanso/espanso) — Carbon hotkey delivery,
+  synthetic-event marker, modifier-release wait, Unicode-injection chunking,
+  SecureInput watcher.
+- [OpenKey](https://github.com/tuyenvm/OpenKey) — session-tap posting
+  location for synthetic key events (the path that reaches Chromium /
+  Electron).
+
 ## Requirements
 
 - CMake 3.22+
