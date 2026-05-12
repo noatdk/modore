@@ -78,12 +78,21 @@ func cycleNext(verbose: Bool) -> Bool {
     }
     if !swapped { return false }
 
+    var refreshed: ConversionSession? = nil
     ConversionSessionStore.update { session in
         session.candidateIndex = nextIndex
         session.timestamp = Date()
+        refreshed = session
     }
     let totalN = snap.candidates.count
     Log.cycle("'\(from)' → '\(to)' (\(nextIndex + 1)/\(totalN))")
+    // Both panel modes show on cycle (on_cycle = "first cycle reveals";
+    // on_convert was already visible from the convert path). show() is
+    // idempotent — repeated calls during a cycle chain just refresh the
+    // highlighted row.
+    if gCandidatePanelMode != .none, let session = refreshed {
+        CandidatePanel.shared.show(session: session)
+    }
     return true
 }
 

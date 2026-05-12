@@ -126,6 +126,27 @@ enum ModoreConfig {
         }
     }
 
+    /// When the candidate panel (the floating list of Mozc alternatives)
+    /// appears. `none` = panel disabled entirely (default; pre-feature
+    /// behavior). `onCycle` = stays hidden on fresh conversions, shows
+    /// after the first cycle press so the user can see what they're
+    /// stepping through. `onConvert` = shows on every successful
+    /// conversion and stays through the session window. Hidden on
+    /// session clear (focus moved, non-chord keystroke, window expired).
+    enum CandidatePanelMode: Equatable {
+        case none
+        case onCycle
+        case onConvert
+
+        var displayName: String {
+            switch self {
+            case .none:      return "none"
+            case .onCycle:   return "on_cycle"
+            case .onConvert: return "on_convert"
+            }
+        }
+    }
+
     /// Max age (ms) of the most-recent-conversion snapshot for Esc-undo to
     /// still fire. 0 disables the feature entirely (the tap callback's Esc
     /// branch short-circuits before touching any state). Clamped to
@@ -133,6 +154,14 @@ enum ModoreConfig {
     /// doing" territory and Esc means something else by then.
     static let defaultUndoWindowMs: Int = 5000
     static let undoWindowRange: ClosedRange<Int> = 0...30000
+
+    /// How long the candidate panel stays visible after each show. Reset
+    /// on every `show()` call (cycle / convert / undo), so a chain of
+    /// cycle presses keeps the panel alive. `0` disables auto-hide — the
+    /// panel persists for the lifetime of the session (cleared the same
+    /// way the session is). Clamped to [0, 30000].
+    static let defaultCandidatePanelDurationMs: Int = 1500
+    static let candidatePanelDurationRange: ClosedRange<Int> = 0...30000
 
     /// Tunable timings for the clipboard fallback path in `doClipboardPickup`.
     /// Defaults match the previously hard-coded numbers, so omitting the
@@ -290,6 +319,62 @@ enum ModoreConfig {
             }
         }
         return (v, issues)
+    }
+
+    /// Parse `[ui] candidate_panel`. Wrapper that logs issues.
+    static func loadCandidatePanelMode() -> CandidatePanelMode {
+        let (m, issues) = parseCandidatePanelMode()
+        for issue in issues { Log.config(issue) }
+        return m
+    }
+
+    /// Same parse as `loadCandidatePanelMode()` but returns issues
+    /// separately. Default `.none` reproduces the pre-feature behavior
+    /// (no panel) — omitting the `[ui]` section is always a no-op.
+    static func parseCandidatePanelMode() -> (CandidatePanelMode, [String]) {
+        var m: CandidatePanelMode = .none
+        var issues: [String] = []
+        let url = configFileURL()
+        _ = forEachKeyValue(url) { section, key, value in
+            guard section == "ui" && key == "candidate_panel" else { return }
+            switch value.lowercased() {
+            case "none", "off", "":   m = .none
+            case "on_cycle":          m = .onCycle
+            case "on_convert":        m = .onConvert
+            default:
+                issues.append("ignoring [ui] candidate_panel=\(value) (expected none|on_cycle|on_convert)")
+            }
+        }
+        return (m, issues)
+    }
+
+    /// Parse `[ui] candidate_panel_duration_ms`. Wrapper that logs issues.
+    static func loadCandidatePanelDurationMs() -> Int {
+        let (n, issues) = parseCandidatePanelDurationMs()
+        for issue in issues { Log.config(issue) }
+        return n
+    }
+
+    /// Same parse as `loadCandidatePanelDurationMs()` but returns issues
+    /// separately. Missing key yields the default (1500); malformed or
+    /// out-of-range values yield the default with one issue string.
+    static func parseCandidatePanelDurationMs() -> (Int, [String]) {
+        var n: Int = defaultCandidatePanelDurationMs
+        var issues: [String] = []
+        let url = configFileURL()
+        _ = forEachKeyValue(url) { section, key, value in
+            guard section == "ui" && key == "candidate_panel_duration_ms" else { return }
+            guard let parsed = Int(value) else {
+                issues.append("ignoring [ui] candidate_panel_duration_ms=\(value) (expected integer)")
+                return
+            }
+            guard candidatePanelDurationRange.contains(parsed) else {
+                issues.append("ignoring [ui] candidate_panel_duration_ms=\(parsed) (out of range \(candidatePanelDurationRange.lowerBound)..\(candidatePanelDurationRange.upperBound))")
+                return
+            }
+            n = parsed
+        }
+        return (n, issues)
     }
 
     /// Parse `~/.config/modore/modore.conf` for `[conversion] undo_window_ms`.

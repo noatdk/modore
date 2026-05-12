@@ -231,14 +231,18 @@ func doClipboardPickup(_ request: PickupRequest = .init()) {
     let snapshotCandidates: [String] =
         result.candidates.isEmpty ? [result.replacement] : result.candidates
     let frontmost = FrontmostApp.describe()
-    ConversionSessionStore.set(ConversionSession(
+    let session = ConversionSession(
         backing: .clipboard(
             frontmostBundleId: frontmost?.bundleID,
             frontmostPid: frontmost?.pid ?? 0),
         originalReading: pickedText,
         candidates: snapshotCandidates,
         candidateIndex: 0,
-        timestamp: Date()))
+        timestamp: Date())
+    ConversionSessionStore.set(session)
+    if gCandidatePanelMode == .onConvert {
+        CandidatePanel.shared.show(session: session)
+    }
 }
 
 // MARK: - Pickup pipeline
@@ -299,12 +303,16 @@ func doPickup(_ request: PickupRequest = .init()) {
             // got written to the span."
             let snapshotCandidates: [String] =
                 result.candidates.isEmpty ? [result.replacement] : result.candidates
-            ConversionSessionStore.set(ConversionSession(
+            let session = ConversionSession(
                 backing: .ax(element: field.element, spanStart: start),
                 originalReading: spanText,
                 candidates: snapshotCandidates,
                 candidateIndex: 0,
-                timestamp: Date()))
+                timestamp: Date())
+            ConversionSessionStore.set(session)
+            if gCandidatePanelMode == .onConvert {
+                CandidatePanel.shared.show(session: session)
+            }
             return
         }
         Log.pickup("AX replace failed; falling back to clipboard mode\(FrontmostApp.logSuffix())")

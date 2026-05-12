@@ -33,7 +33,10 @@ The Linux columns are the same binary on different display servers;
 | Feature                                       | macOS | Linux (X11) | Linux (Wayland) | Windows |
 | --------------------------------------------- | :---: | :---------: | :-------------: | :-----: |
 | Top-candidate Mozc conversion (in-process)    |   ✓   |     ✓       |       ✓         |    ✗    |
-| Candidate window / Nth candidate              |   ✗   |     ✗       |       ✗         |    ✗    |
+| Cycle through Mozc candidates (repeat hotkey) |   ✓   |     ✗       |       ✗         |    ✗    |
+| Esc to undo last conversion                   |   ✓   |     ✗       |       ✗         |    ✗    |
+| Katakana modifier (Shift+hotkey → カタカナ)   |   ✓   |     ✗       |       ✗         |    ✗    |
+| Floating candidate panel                      |   ✓   |     ✗       |       ✗         |    ✗    |
 | Bootstrap from existing Mozc / GJI profile    |   ✗   |     ✗       |       ✗         |    ✗    |
 
 ## Config & lifecycle

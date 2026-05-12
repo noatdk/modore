@@ -9,7 +9,7 @@ top-candidate conversion.
 
 | Host    | State                                                              |
 | ------- | ------------------------------------------------------------------ |
-| macOS   | shipping; configurable hotkey, top-candidate only                  |
+| macOS   | shipping; configurable hotkey, candidate cycling + Esc-undo + optional candidate panel |
 | Linux   | shipping; X11 grab + AT-SPI2 + Unix socket IPC + Wayland fallbacks |
 | Windows | planned, not started                                               |
 

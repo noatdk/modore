@@ -102,6 +102,28 @@ func runConfigCheck() -> Never {
         exit_code = 2
     }
 
+    let (panelMode, panelIssues) = ModoreConfig.parseCandidatePanelMode()
+    print("  [ui]          candidate_panel=\(panelMode.displayName)")
+    for issue in panelIssues {
+        print("                \(issue)")
+    }
+    if !panelIssues.isEmpty && exit_code == 0 {
+        exit_code = 2
+    }
+
+    let (panelDuration, panelDurationIssues) = ModoreConfig.parseCandidatePanelDurationMs()
+    if panelDuration == 0 {
+        print("  [ui]          candidate_panel_duration_ms=0 (no auto-hide)")
+    } else {
+        print("  [ui]          candidate_panel_duration_ms=\(panelDuration)")
+    }
+    for issue in panelDurationIssues {
+        print("                \(issue)")
+    }
+    if !panelDurationIssues.isEmpty && exit_code == 0 {
+        exit_code = 2
+    }
+
     let (timings, issues) = ModoreConfig.parseClipboardTimings()
     print("  [clipboard]   pre_copy=\(timings.preCopyDelayMs)ms"
         + " read_timeout=\(timings.readTimeoutMs)ms"

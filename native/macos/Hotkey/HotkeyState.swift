@@ -75,6 +75,20 @@ var gCycleChordFlags: CGEventFlags? = nil
 /// `performCycleNext` when the session is in the undone state.
 var gCycleFromUndone: ModoreConfig.CycleFromUndone = .redo
 
+/// Current `[ui] candidate_panel` setting. Drives whether the floating
+/// candidate list appears, and on which gesture. `.none` is the
+/// pre-feature default (panel disabled). Read by `doPickup` /
+/// `cycleNext` to decide whether to call `CandidatePanel.show(...)`.
+var gCandidatePanelMode: ModoreConfig.CandidatePanelMode = .none
+
+/// Current `[ui] candidate_panel_duration_ms`. How long the panel stays
+/// up after each `show()`; reset on every show so a chain of cycle
+/// presses keeps it alive. `0` disables auto-hide (panel sticks for the
+/// session). Read by `CandidatePanel.show` on the main queue; written
+/// by the main thread on boot and config reload — plain swap is
+/// race-free.
+var gCandidatePanelDurationMs: Int = ModoreConfig.defaultCandidatePanelDurationMs
+
 // MARK: - Secondary chord (katakana modifier)
 
 /// Build the katakana-variant chord by layering the configured modifier on top
@@ -331,6 +345,34 @@ func applyUndoWindowReload() {
     }
 }
 
+/// Reload `[ui] candidate_panel` from disk. Pure state swap — the next
+/// conversion/cycle picks up the new mode. If the panel is currently
+/// visible and the new mode is `.none`, hide it so the swap is visible
+/// immediately rather than lingering until the session expires.
+func applyCandidatePanelReload() {
+    let next = ModoreConfig.loadCandidatePanelMode()
+    if next != gCandidatePanelMode {
+        gCandidatePanelMode = next
+        Log.config("candidate panel: \(next.displayName)")
+        if next == .none {
+            DispatchQueue.main.async { CandidatePanel.shared.hide() }
+        }
+    }
+}
+
+/// Reload `[ui] candidate_panel_duration_ms` from disk. Plain state
+/// swap; takes effect on the next `show()` call (existing visibility
+/// stays on the old timer, which decays within a couple of seconds).
+func applyCandidatePanelDurationReload() {
+    let next = ModoreConfig.loadCandidatePanelDurationMs()
+    if next != gCandidatePanelDurationMs {
+        gCandidatePanelDurationMs = next
+        Log.config(next == 0
+            ? "candidate panel duration: no auto-hide (sticks for session)"
+            : "candidate panel duration: \(next)ms")
+    }
+}
+
 /// Single entry point for the config watcher — reloads every section.
 func applyConfigReload() {
     applyConversionHotkeyReload()
@@ -339,4 +381,6 @@ func applyConfigReload() {
     applyCycleFromUndoneReload()
     applyUndoWindowReload()
     applyClipboardTimingsReload()
+    applyCandidatePanelReload()
+    applyCandidatePanelDurationReload()
 }

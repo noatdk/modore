@@ -20,6 +20,7 @@ enum Log {
     static func secureInput(_ message: String) { write("secure-input", message) }
     static func undo(_ message: String)        { write("undo",         message) }
     static func cycle(_ message: String)       { write("cycle",        message) }
+    static func panel(_ message: String)        { write("panel",        message) }
 
     static func tagged(_ tag: String, _ message: String) { write(tag, message) }
 

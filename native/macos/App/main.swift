@@ -145,6 +145,14 @@ Log.config(gUndoWindowMs == 0
     ? "undo window: disabled (undo_window_ms = 0)"
     : "undo window: \(gUndoWindowMs)ms")
 
+gCandidatePanelMode = ModoreConfig.loadCandidatePanelMode()
+Log.config("candidate panel: \(gCandidatePanelMode.displayName)")
+
+gCandidatePanelDurationMs = ModoreConfig.loadCandidatePanelDurationMs()
+Log.config(gCandidatePanelDurationMs == 0
+    ? "candidate panel duration: no auto-hide (sticks for session)"
+    : "candidate panel duration: \(gCandidatePanelDurationMs)ms")
+
 gClipboardTimings = ModoreConfig.loadClipboardTimings()
 Log.config("clipboard timings: pre_copy=\(gClipboardTimings.preCopyDelayMs)ms"
          + " read_timeout=\(gClipboardTimings.readTimeoutMs)ms"

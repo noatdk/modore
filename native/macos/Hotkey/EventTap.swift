@@ -106,6 +106,10 @@ let tapCallback: CGEventTapCallBack = { _, type, event, _ in
     // clears the session just because the user is *about* to press the
     // cycle chord.
     ConversionSessionStore.clear()
+    // Session is gone; tear down any visible candidate panel so it isn't
+    // left floating over an unrelated context. Cheap on the tap thread —
+    // CandidatePanel.hide() hops to main internally.
+    CandidatePanel.shared.hide()
 
     return Unmanaged.passUnretained(event)
 }

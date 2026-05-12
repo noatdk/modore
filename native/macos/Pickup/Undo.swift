@@ -60,6 +60,10 @@ func performEscUndo() {
         session.candidateIndex = -1
         session.timestamp = Date()
     }
+    // Esc means "undo, I'm done with this conversion" — drop the
+    // candidate panel immediately so the user gets unambiguous feedback
+    // that the gesture took effect. Cycling afterwards still re-shows.
+    CandidatePanel.shared.hide()
 }
 
 /// AX-backed undo. Validates exactly: same focused element, text at the

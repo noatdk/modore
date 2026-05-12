@@ -160,6 +160,51 @@ tuning knob, so leaving it fixed keeps the fast-path predictable.
 values are ignored with a `[config]` log line and the previous default
 stays in effect. Unknown keys in `[clipboard]` are logged and ignored.
 
+## `[ui] candidate_panel`
+
+**Available**: macOS
+
+Controls whether the floating candidate-list panel appears alongside
+the conversion gesture. Default is `none` — pre-feature behavior, no
+panel.
+
+| Value        | Effect                                                                                                              |
+| ------------ | ------------------------------------------------------------------------------------------------------------------- |
+| `none`       | Panel disabled. Conversion + cycle + Esc-undo work exactly as before.                                               |
+| `on_cycle`   | Panel stays hidden on fresh conversions and reveals on the first cycle press, so it appears only when the user signals top-1 was wrong. |
+| `on_convert` | Panel appears on every successful conversion and stays for the lifetime of the session window.                      |
+
+The panel is non-activating — it floats above the focused app without
+stealing focus, so the user keeps typing normally and the cycle/undo
+hotkeys continue to drive selection. Positioned near the caret on the
+AX fast-path (via `kAXBoundsForRangeParameterizedAttribute`) and near
+the mouse cursor on the clipboard-fallback path. Hidden automatically
+on session clear (any non-chord keystroke, focus change, or expiry of
+`undo_window_ms`).
+
+**Validation**: unknown values are ignored with a `[config]` log line
+and the previous setting stays in effect. `--check-config` reports the
+resolved mode and exits `2` on a rejected value.
+
+## `[ui] candidate_panel_duration_ms`
+
+**Available**: macOS
+
+How long the candidate panel stays visible after each refresh (cycle
+press or conversion), in **milliseconds**. The timer resets on every
+refresh, so a chain of cycle presses keeps the panel alive for the
+full duration after the last press. Esc-undo hides the panel
+immediately regardless of this setting.
+
+Default: `1500` (1.5 seconds). Set `0` to disable auto-hide — the
+panel sticks until the session clears (any non-chord keystroke, focus
+change, or `undo_window_ms` expiry). Valid range: `0..30000`.
+
+**Validation**: non-integer or out-of-range values are ignored with a
+`[config]` log line; the previous value stays in effect.
+`--check-config` reports the resolved value and exits `2` on a
+rejected value.
+
 ## Preflight: `modore-host --check-config`
 
 **Available**: macOS
