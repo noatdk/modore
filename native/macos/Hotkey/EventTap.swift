@@ -43,16 +43,29 @@ let tapCallback: CGEventTapCallBack = { _, type, event, _ in
         return Unmanaged.passUnretained(event)
     }
 
+    let keyCode = CGKeyCode(event.getIntegerValueField(.keyboardEventKeycode))
+    let coreFlags = event.flags.intersection([
+        .maskCommand, .maskShift, .maskControl, .maskAlternate
+    ])
+
+    // Esc undo. Independent of Carbon — Carbon only grabs the conversion
+    // chord, Esc is always delivered to the tap. Gate cheaply on the
+    // window-enabled bool + a non-modifier keystroke + a present snapshot.
+    // The worker (`performEscUndo`) does the deeper validation and
+    // re-injects Esc on any fall-through so the user never sees a
+    // swallowed Esc.
+    if keyCode == kVK_Escape && coreFlags.isEmpty && gUndoWindowMs > 0 {
+        if LastConversionStore.peek(windowMs: gUndoWindowMs) != nil {
+            kHotkeyTapQueue.async { performEscUndo() }
+            return nil
+        }
+    }
+
     // When Carbon owns the hotkey the OS consumes the keystroke before we
     // see it here, so this branch is unreachable in the common case. We
     // still gate defensively in case that ever stops being true (e.g.
     // newer macOS versions changing tap ordering).
     if !gUsingCarbonHotkey {
-        let keyCode = CGKeyCode(event.getIntegerValueField(.keyboardEventKeycode))
-        let coreFlags = event.flags.intersection([
-            .maskCommand, .maskShift, .maskControl, .maskAlternate
-        ])
-
         if keyCode == gConversionKeyCode {
             if coreFlags == gConversionCoreFlags {
                 kHotkeyTapQueue.async { doPickup() }

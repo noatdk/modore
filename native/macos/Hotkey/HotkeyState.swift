@@ -52,6 +52,13 @@ var gCarbonHotkey: CarbonHotkey?
 /// via a snapshot copy at function entry, so a plain swap is race-free.
 var gClipboardTimings = ModoreConfig.ClipboardTimings()
 
+/// Max age (ms) of a last-conversion snapshot for Esc-undo to fire.
+/// 0 disables the feature — the tap callback's Esc branch checks `> 0`
+/// before touching any state. Read by the tap thread (Esc check) and by
+/// `performEscUndo` on the worker; written by the main thread on startup
+/// and watcher-driven reloads.
+var gUndoWindowMs: Int = ModoreConfig.defaultUndoWindowMs
+
 // MARK: - Secondary chord (katakana modifier)
 
 /// Build the katakana-variant chord by layering the configured modifier on top
@@ -191,9 +198,25 @@ func applyKatakanaModifierReload() {
     }
 }
 
+/// Reload `[conversion] undo_window_ms` from disk. Esc-undo state itself
+/// (the LastConversion snapshot) is unaffected by reloads; we just swap
+/// the window used to age it out. Logs only on actual change.
+func applyUndoWindowReload() {
+    let next = ModoreConfig.loadUndoWindowMs()
+    if next != gUndoWindowMs {
+        gUndoWindowMs = next
+        if next == 0 {
+            Log.config("undo window: disabled (undo_window_ms = 0)")
+        } else {
+            Log.config("undo window: \(next)ms")
+        }
+    }
+}
+
 /// Single entry point for the config watcher — reloads every section.
 func applyConfigReload() {
     applyConversionHotkeyReload()
     applyKatakanaModifierReload()
+    applyUndoWindowReload()
     applyClipboardTimingsReload()
 }

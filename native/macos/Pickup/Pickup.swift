@@ -210,6 +210,14 @@ func doPickup(_ request: PickupRequest = .init()) {
         Log.pickup("replace -> \(result.replacement)")
 
         if replaceRange(in: field.element, start: start, end: end, replacement: result.replacement) {
+            // Record for Esc-undo. Only the AX path snapshots — the
+            // clipboard fallback below has no stable span to revert to.
+            LastConversionStore.set(LastConversion(
+                element: field.element,
+                spanStart: start,
+                originalReading: spanText,
+                replacement: result.replacement,
+                timestamp: Date()))
             return
         }
         Log.pickup("AX replace failed; falling back to clipboard mode\(FrontmostApp.logSuffix())")

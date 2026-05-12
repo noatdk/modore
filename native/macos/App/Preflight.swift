@@ -52,6 +52,21 @@ func runConfigCheck() -> Never {
         exit_code = 2
     }
 
+    // Undo window — reports the value with a "disabled" gloss on 0 so
+    // the user doesn't have to remember what 0 means at a glance.
+    let (undoMs, undoIssues) = ModoreConfig.parseUndoWindowMs()
+    if undoMs == 0 {
+        print("  [conversion]  undo_window_ms=0 (Esc-undo disabled)")
+    } else {
+        print("  [conversion]  undo_window_ms=\(undoMs)")
+    }
+    for issue in undoIssues {
+        print("                \(issue)")
+    }
+    if !undoIssues.isEmpty && exit_code == 0 {
+        exit_code = 2
+    }
+
     let (timings, issues) = ModoreConfig.parseClipboardTimings()
     print("  [clipboard]   pre_copy=\(timings.preCopyDelayMs)ms"
         + " read_timeout=\(timings.readTimeoutMs)ms"

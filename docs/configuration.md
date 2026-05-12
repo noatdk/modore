@@ -80,6 +80,49 @@ secondary chord (or the collision reason). A malformed
 `katakana_modifier` value exits `2`, same as a malformed `[clipboard]`
 key.
 
+## `[conversion] undo_window_ms` (macOS only)
+
+How long after a successful conversion **Esc** still reverts the
+replacement back to the original reading. Mozc's top kanji candidate
+is sometimes wrong (homonyms like 回答/解答, 公開/後悔, 期待/機体);
+without undo the user has to delete and retype in hiragana to escape
+the choice. Esc within the window AX-replaces the kanji back with the
+reading that was picked up.
+
+**Default**: `5000` (5 s). **Range**: `0` – `30000`. **Unit**:
+milliseconds.
+
+`0` disables the feature entirely — Esc passes through to the focused
+app as normal, no snapshot is consulted. Useful for users who hit Esc
+constantly in vim/IDE modal UIs and don't want any latency added on
+the off chance their last conversion is still in scope.
+
+**Behavior**:
+
+| Situation                                                  | What Esc does                                  |
+| ---------------------------------------------------------- | ---------------------------------------------- |
+| Within window, replacement still at the recorded span      | Reverts to original reading; clears snapshot.  |
+| Within window, but caret/focus changed or text edited     | Passes Esc through to the app (re-injected).   |
+| Window expired                                             | Passes Esc through.                            |
+| No previous AX-path conversion this session                | Passes Esc through.                            |
+| Last conversion went through the clipboard fallback path   | Passes Esc through — fallback path doesn't snapshot. |
+
+The clipboard fallback exclusion is deliberate: that path injects via
+`postUnicode` into the focused app's keystroke stream rather than via
+AX, leaving no stable span to revert to. Undo support there would
+need a different mechanism (synthesizing backspaces + retyping the
+reading) with worse failure modes than just letting Esc pass through.
+
+**Logging**: every Esc outcome logs through the `[undo]` channel —
+`reverted '<kanji>' → '<reading>' after Nms` on success, `esc fell
+through: <reason>` for every fall-through path so a triage thread
+sees exactly which gate rejected the undo.
+
+**Validation**: non-integer or out-of-range values are ignored with a
+`[config]` log line; the previous value (or the default at startup)
+stays in effect. `--check-config` reports the resolved value and
+exits `2` on a rejected value.
+
 ## `[clipboard]` (macOS only)
 
 Timings for the clipboard fallback path — the route modore takes when the
@@ -197,6 +240,8 @@ together; sections are independent and only the changed one logs.
 | `[clipboard]` value malformed / unknown | Ignore that key. Logs `ignoring [clipboard] …`. Other keys still applied. |
 | `katakana_modifier` changed             | Re-bind secondary chord. Logs `katakana modifier: …` + `katakana chord registered/cleared`. |
 | `katakana_modifier` malformed           | Keep previous value. Logs `ignoring [conversion] katakana_modifier=…`.    |
+| `undo_window_ms` changed                | Swap window for the next Esc check. Logs `undo window: Nms` (or `disabled`). |
+| `undo_window_ms` malformed / out-of-range | Keep previous value. Logs `ignoring [conversion] undo_window_ms=…`.       |
 
 If the config file doesn't exist at startup, the watcher polls for it
 once a second and arms as soon as it appears. There's no need to restart

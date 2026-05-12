@@ -134,6 +134,11 @@ gConversionCoreFlags = modoreHotkey.coreFlags
 gKatakanaModifier = ModoreConfig.loadKatakanaModifier()
 Log.config("katakana modifier: \(gKatakanaModifier.displayName)")
 
+gUndoWindowMs = ModoreConfig.loadUndoWindowMs()
+Log.config(gUndoWindowMs == 0
+    ? "undo window: disabled (undo_window_ms = 0)"
+    : "undo window: \(gUndoWindowMs)ms")
+
 gClipboardTimings = ModoreConfig.loadClipboardTimings()
 Log.config("clipboard timings: pre_copy=\(gClipboardTimings.preCopyDelayMs)ms"
          + " read_timeout=\(gClipboardTimings.readTimeoutMs)ms"

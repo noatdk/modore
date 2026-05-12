@@ -78,6 +78,14 @@ enum ModoreConfig {
         }
     }
 
+    /// Max age (ms) of the most-recent-conversion snapshot for Esc-undo to
+    /// still fire. 0 disables the feature entirely (the tap callback's Esc
+    /// branch short-circuits before touching any state). Clamped to
+    /// [0, 30000] — anything past 30 s is well into "I forgot what I was
+    /// doing" territory and Esc means something else by then.
+    static let defaultUndoWindowMs: Int = 5000
+    static let undoWindowRange: ClosedRange<Int> = 0...30000
+
     /// Tunable timings for the clipboard fallback path in `doClipboardPickup`.
     /// Defaults match the previously hard-coded numbers, so omitting the
     /// `[clipboard]` section reproduces pre-config behavior exactly.
@@ -172,6 +180,38 @@ enum ModoreConfig {
             }
         }
         return (m, issues)
+    }
+
+    /// Parse `~/.config/modore/modore.conf` for `[conversion] undo_window_ms`.
+    /// Wrapper around `parseUndoWindowMs()` that logs issues via `Log.config`.
+    static func loadUndoWindowMs() -> Int {
+        let (n, issues) = parseUndoWindowMs()
+        for issue in issues {
+            Log.config(issue)
+        }
+        return n
+    }
+
+    /// Same parse as `loadUndoWindowMs()` but returns issues separately.
+    /// Missing file / missing key yields the default (5000); malformed or
+    /// out-of-range values yield the default with one issue string.
+    static func parseUndoWindowMs() -> (Int, [String]) {
+        var n: Int = defaultUndoWindowMs
+        var issues: [String] = []
+        let url = configFileURL()
+        _ = forEachKeyValue(url) { section, key, value in
+            guard section == "conversion" && key == "undo_window_ms" else { return }
+            guard let parsed = Int(value) else {
+                issues.append("ignoring [conversion] undo_window_ms=\(value) (expected integer)")
+                return
+            }
+            guard undoWindowRange.contains(parsed) else {
+                issues.append("ignoring [conversion] undo_window_ms=\(parsed) (out of range \(undoWindowRange.lowerBound)..\(undoWindowRange.upperBound))")
+                return
+            }
+            n = parsed
+        }
+        return (n, issues)
     }
 
     /// Parse `~/.config/modore/modore.conf` for `[clipboard]` timing keys.
