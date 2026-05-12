@@ -89,6 +89,18 @@ private func looksLikeLineCopy(_ s: String) -> Bool {
     return false
 }
 
+/// Bundle IDs where the Cmd+C-peek heuristic in step 1 below is unreliable
+/// because the app line-copies the caret's current line *without* a
+/// trailing newline (so `looksLikeLineCopy` misses it). Chrome's DevTools
+/// console is the discovered offender; the same Chromium behaviour
+/// presumably exists in other Chromium-hosted dev surfaces. AX-capable
+/// surfaces in these apps never reach this code path (they go through
+/// doPickup → readFocusedField), so blocklisting the whole bundle here
+/// only affects the already-unreliable clipboard-fallback regions.
+private let kPeekExistingSelectionBlocklist: Set<String> = [
+    "com.google.Chrome",
+]
+
 func doClipboardPickup(_ request: PickupRequest = .init()) {
     // Snapshot timings once at entry so the whole pickup runs against a
     // consistent set even if the watcher fires mid-flight on the main thread.
@@ -104,18 +116,26 @@ func doClipboardPickup(_ request: PickupRequest = .init()) {
 
     // Step 1: peek at the user's current selection (if any) with Cmd+C.
     // Aggressive timeout — apps with a real selection respond in <30ms.
-    // This is a heuristic threshold (no selection → fall through fast), not
-    // a tuning knob, so it stays hard-coded.
-    let baseline = pb.changeCount
-    postKey(kVK_ANSI_C, flags: .maskCommand)
-    if waitForClipboardChange(after: baseline, timeoutMs: 80),
-       let s = pb.string(forType: .string), !s.isEmpty {
-        if looksLikeLineCopy(s) {
-            Log.clipboard("Cmd+C looks like a line-copy (no real selection); will force-select previous word")
-        } else {
-            picked = s
-            Log.clipboard("using existing user selection: \(s)")
+    // Skipped when the frontmost app is on the blocklist (currently just
+    // Chrome — its DevTools console line-copies on Cmd+C without a
+    // trailing newline, defeating looksLikeLineCopy and causing the
+    // pickup to wrongly treat the line as a real selection).
+    let frontmostBundleID = FrontmostApp.describe()?.bundleID
+    let allowPeek = !(frontmostBundleID.map(kPeekExistingSelectionBlocklist.contains) ?? false)
+    if allowPeek {
+        let baseline = pb.changeCount
+        postKey(kVK_ANSI_C, flags: .maskCommand)
+        if waitForClipboardChange(after: baseline, timeoutMs: 80),
+           let s = pb.string(forType: .string), !s.isEmpty {
+            if looksLikeLineCopy(s) {
+                Log.clipboard("Cmd+C looks like a line-copy (no real selection); will force-select previous word")
+            } else {
+                picked = s
+                Log.clipboard("using existing user selection: \(s)")
+            }
         }
+    } else if let bid = frontmostBundleID {
+        Log.clipboard("skipping existing-selection peek (\(bid) line-copies without newline)")
     }
 
     // Step 2: no usable selection — force-select previous word, then copy.
@@ -142,7 +162,8 @@ func doClipboardPickup(_ request: PickupRequest = .init()) {
 
     guard var pickedText = picked else {
         Log.clipboard("nothing to convert (Cmd+C didn't update clipboard in time)\(FrontmostApp.logSuffix())")
-        // Don't leave the user with a stuck visible selection from our Shift+Opt+Left
+        // Drop the visible selection from our Shift+Opt+Left (if we made one)
+        // so the user doesn't see a stuck highlight.
         if didForceSelect {
             postKey(kVK_RightArrow)
         }
