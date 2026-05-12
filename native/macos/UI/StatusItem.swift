@@ -89,6 +89,17 @@ final class ModoreStatusItem: NSObject {
         revealItem.target = self
         menu.addItem(revealItem)
 
+        // modore-host logs via NSLog → Apple unified logging, not a file on
+        // disk (see docs/PARITY.md). Export pulls the last 24h via
+        // `log show --process modore-host` so bug reports have something to
+        // attach.
+        let exportLogItem = NSMenuItem(
+            title: "Export log…",
+            action: #selector(handleExportLog),
+            keyEquivalent: "")
+        exportLogItem.target = self
+        menu.addItem(exportLogItem)
+
         menu.addItem(NSMenuItem.separator())
 
         let quitItem = NSMenuItem(
@@ -192,6 +203,88 @@ final class ModoreStatusItem: NSObject {
             try? seed.write(to: url, atomically: true, encoding: .utf8)
         }
         NSWorkspace.shared.open(url)
+    }
+
+    /// Dump the last 24h of modore-host's unified-log output to a file the
+     /// user picks via NSSavePanel. macOS NSLog goes to the unified log, not
+     /// to `~/.config/modore/modore.log`, so without this menu item the only
+     /// way to attach logs to a bug report is `log show` in Terminal — and
+     /// users who hit "the hotkey didn't work" rarely have that workflow.
+    @objc private func handleExportLog() {
+        let panel = NSSavePanel()
+        let stamp = Self.exportTimestampFormatter.string(from: Date())
+        panel.nameFieldStringValue = "modore-host-\(stamp).log"
+        panel.allowedContentTypes = []
+        panel.canCreateDirectories = true
+        panel.title = "Export modore host log"
+        panel.message = "Save the last 24 hours of modore-host logs."
+        // .accessory activation policy keeps modore out of the Dock, which
+        // also keeps NSSavePanel from auto-focusing — bring the app forward
+        // so the sheet doesn't appear behind whatever the user was editing.
+        NSApp.activate(ignoringOtherApps: true)
+        guard panel.runModal() == .OK, let dest = panel.url else { return }
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let ok = Self.runLogShow(to: dest)
+            DispatchQueue.main.async {
+                if ok {
+                    NSWorkspace.shared.activateFileViewerSelecting([dest])
+                } else {
+                    self?.presentExportFailureAlert(at: dest)
+                }
+            }
+        }
+    }
+
+    private static let exportTimestampFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "yyyyMMdd-HHmmss"
+        f.locale = Locale(identifier: "en_US_POSIX")
+        return f
+    }()
+
+    /// Runs `log show --process modore-host --info --debug --last 24h`,
+    /// streaming stdout directly to `dest`. Returns true on a clean exit.
+    /// `--info --debug` so we capture the Df-level lines (clipboard/pickup/
+    /// ax/cycle traces) — without those flags `log show` defaults to
+    /// default-level only, which strips out almost everything modore writes.
+    private static func runLogShow(to dest: URL) -> Bool {
+        FileManager.default.createFile(atPath: dest.path, contents: nil)
+        guard let handle = try? FileHandle(forWritingTo: dest) else {
+            return false
+        }
+        defer { try? handle.close() }
+
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/log")
+        task.arguments = [
+            "show",
+            "--process", "modore-host",
+            "--info", "--debug",
+            "--last", "24h",
+            "--style", "compact",
+        ]
+        task.standardOutput = handle
+        task.standardError = Pipe()  // discard stderr noise
+        do {
+            try task.run()
+        } catch {
+            return false
+        }
+        task.waitUntilExit()
+        return task.terminationStatus == 0
+    }
+
+    private func presentExportFailureAlert(at dest: URL) {
+        let alert = NSAlert()
+        alert.messageText = "Couldn't export logs"
+        alert.informativeText =
+            "`log show` failed. The output (if any) is at:\n\(dest.path)\n\n" +
+            "You can also run this in Terminal:\n" +
+            "log show --process modore-host --info --debug --last 24h"
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
     }
 
     @objc private func handleRevealConfig() {
