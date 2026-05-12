@@ -13,6 +13,42 @@ struct FocusedField {
     let selEnd: Int
 }
 
+/// Electron's AX tree is gated behind a private attribute that assistive
+/// technologies are expected to set externally. Without it, even modern
+/// Electron apps return -25204/-25212 on `kAXFocusedUIElementAttribute`
+/// for the whole app, which is exactly why Slack/Discord/VSCode/Cursor
+/// fall to the clipboard path. After we set this attribute = true,
+/// subsequent AX reads start working (selection range may still be wrong
+/// per electron/electron#37465, but `kAXValue` and `kAXSelectedText` come
+/// through). The attribute is per-app and process-lifetime, so we cache
+/// the pids we've enabled.
+///
+/// See: https://github.com/electron/electron/blob/main/docs/tutorial/accessibility.md
+/// and the AXSwift / Hammerspoon community confirming this is the
+/// documented path for AT tools.
+private var gAXManualAccessibilityEnabledPids = Set<pid_t>()
+private let gAXManualAccessibilityLock = NSLock()
+
+/// Set `AXManualAccessibility = true` on the frontmost app's AXUIElement
+/// if we haven't already done so for that pid. Cheap no-op on apps that
+/// don't support the attribute (returns -25205 / attribute-unsupported);
+/// the success/failure status is logged but not acted on. Idempotent.
+func enableElectronAXIfNeeded() {
+    guard let pid = FrontmostApp.describe()?.pid else { return }
+    gAXManualAccessibilityLock.lock()
+    let already = gAXManualAccessibilityEnabledPids.contains(pid)
+    if !already { gAXManualAccessibilityEnabledPids.insert(pid) }
+    gAXManualAccessibilityLock.unlock()
+    if already { return }
+    let appElem = AXUIElementCreateApplication(pid)
+    let rc = AXUIElementSetAttributeValue(
+        appElem,
+        "AXManualAccessibility" as CFString,
+        kCFBooleanTrue
+    )
+    Log.ax("AXManualAccessibility set on pid=\(pid): rc=\(rc.rawValue)")
+}
+
 func readFocusedField() -> FocusedField? {
     let systemWide = AXUIElementCreateSystemWide()
     var focusedRef: CFTypeRef?

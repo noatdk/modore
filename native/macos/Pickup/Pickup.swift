@@ -237,7 +237,16 @@ func doPickup(_ request: PickupRequest = .init()) {
     if request.target == .katakana {
         Log.pickup("katakana modifier engaged")
     }
-    if let field = readFocusedField() {
+    // First AX attempt. If it fails — typically because the frontmost app
+    // is Electron and hasn't been opted into accessibility — flip the
+    // documented `AXManualAccessibility` switch on that app's pid and try
+    // again. Once-per-pid; cheap no-op for apps that don't support it.
+    var focusedField = readFocusedField()
+    if focusedField == nil {
+        enableElectronAXIfNeeded()
+        focusedField = readFocusedField()
+    }
+    if let field = focusedField {
         let utf16 = Array(field.value.utf16)
         let (start, end): (Int, Int)
         if field.selStart != field.selEnd {
