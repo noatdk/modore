@@ -297,6 +297,29 @@ extern "C" int mozc_bridge_convert_with_candidates_ex(
           return -1;
         }
     } else if (capture_cands) {
+        // Mozc segments the preedit aggressively — "nihongogashaberu" becomes
+        // ["にほんご" | "が" | "しゃべる"], etc. The second SPACE only opens
+        // the candidate window for the *focused* segment, so without
+        // collapsing first we'd capture seg-0 candidates and
+        // SUBMIT_CANDIDATE(0) would commit just that segment. Expand
+        // segment 0 with Shift+Right until only one segment remains, then
+        // open the candidate window — candidates are now whole-word and
+        // SUBMIT_CANDIDATE(0) commits the entire conversion.
+        //
+        // Kotoeri (macOS default keymap) and the other shipped keymaps all
+        // bind Shift+Right to SegmentWidthExpand in Conversion state. We
+        // cap the loop so a pathological preedit can't spin forever.
+        int segments = out.preedit().segment_size();
+        for (int guard = 0; segments > 1 && guard < 32; ++guard) {
+            mozc::commands::KeyEvent k;
+            k.set_special_key(mozc::commands::KeyEvent::RIGHT);
+            k.add_modifier_keys(mozc::commands::KeyEvent::SHIFT);
+            if (!send_key(client, k, &out, "expand")) {
+              reset_session_best_effort(client);
+              return -1;
+            }
+            segments = out.preedit().segment_size();
+        }
         // Open the candidate window so the full list is exposed.
         mozc::commands::KeyEvent k;
         k.set_special_key(mozc::commands::KeyEvent::SPACE);
