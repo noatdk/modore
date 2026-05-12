@@ -6,3 +6,12 @@
 
 [conversion]
 hotkey = Ctrl+Shift+grave
+
+# macOS only — tune the clipboard fallback path (used when the focused app
+# doesn't expose Accessibility text, e.g. Chromium/Electron). Defaults
+# shown; uncomment and adjust if force-select copies are flaky.
+# See docs/configuration.md → [clipboard] for what each knob controls.
+# [clipboard]
+# pre_copy_delay_ms = 20
+# read_timeout_ms = 250
+# restore_clipboard_delay_ms = 50

@@ -40,6 +40,11 @@ private var gUsingCarbonHotkey: Bool = false
 /// at startup (we then rely on the tap-based detector).
 private var gCarbonHotkey: CarbonHotkey?
 
+/// Live clipboard-fallback timings. Written on the main thread (startup and
+/// watcher-driven reloads); read by `doClipboardPickup` on a background queue
+/// via a snapshot copy at function entry, so a plain swap is race-free.
+private var gClipboardTimings = ModoreConfig.ClipboardTimings()
+
 private func applyConversionHotkeyChord(_ chord: ModoreConfig.ConversionHotkey) {
     gConversionKeyCode = chord.keyCode
     gConversionCoreFlags = chord.coreFlags
@@ -70,6 +75,24 @@ func applyConversionHotkeyReload() {
     case .invalid(let reason):
         Log.config("reload rejected: \(reason) — keeping previous hotkey")
     }
+}
+
+/// Reload `[clipboard]` timings from disk. Logs only on actual change so a
+/// no-op reload (e.g. user edited an unrelated section) stays quiet.
+func applyClipboardTimingsReload() {
+    let next = ModoreConfig.loadClipboardTimings()
+    if next != gClipboardTimings {
+        gClipboardTimings = next
+        Log.config("clipboard timings: pre_copy=\(next.preCopyDelayMs)ms"
+                 + " read_timeout=\(next.readTimeoutMs)ms"
+                 + " restore=\(next.restoreClipboardDelayMs)ms")
+    }
+}
+
+/// Single entry point for the config watcher — reloads every section.
+func applyConfigReload() {
+    applyConversionHotkeyReload()
+    applyClipboardTimingsReload()
 }
 
 // MARK: - Backend call shape
@@ -380,9 +403,13 @@ private func looksLikeLineCopy(_ s: String) -> Bool {
 }
 
 func doClipboardPickup() {
+    // Snapshot timings once at entry so the whole pickup runs against a
+    // consistent set even if the watcher fires mid-flight on the main thread.
+    let timings = gClipboardTimings
+
     // Snapshot the user's clipboard now; `defer` guarantees we restore it on
     // every exit path. No manual cleanup at the early-returns below.
-    let (_, restoreSavedClipboard) = guardClipboard()
+    let (_, restoreSavedClipboard) = guardClipboard(restoreDelayMs: timings.restoreClipboardDelayMs)
     defer { restoreSavedClipboard() }
 
     // The user is almost certainly still holding the conversion hotkey's
@@ -395,6 +422,8 @@ func doClipboardPickup() {
 
     // Step 1: peek at the user's current selection (if any) with Cmd+C.
     // Aggressive timeout — apps with a real selection respond in <30ms.
+    // This is a heuristic threshold (no selection → fall through fast), not
+    // a tuning knob, so it stays hard-coded.
     let baseline = pb.changeCount
     postKey(kVK_ANSI_C, flags: .maskCommand)
     if waitForClipboardChange(after: baseline, timeoutMs: 80),
@@ -415,11 +444,15 @@ func doClipboardPickup() {
         didForceSelect = true
         // Electron apps (Cursor/Slack/VSCode) need a moment for the selection
         // to land before the next Cmd+C is processed by the renderer thread.
-        Thread.sleep(forTimeInterval: 0.02)
+        // User-tunable via [clipboard] pre_copy_delay_ms.
+        if timings.preCopyDelayMs > 0 {
+            Thread.sleep(forTimeInterval: Double(timings.preCopyDelayMs) / 1000.0)
+        }
         let baseline2 = pb.changeCount
         postKey(kVK_ANSI_C, flags: .maskCommand)
-        // Slow apps may take well over 100 ms; previous 80 ms timeout occasionally lost.
-        if waitForClipboardChange(after: baseline2, timeoutMs: 250),
+        // Slow apps / heavy load may need more than the default 250 ms.
+        // User-tunable via [clipboard] read_timeout_ms.
+        if waitForClipboardChange(after: baseline2, timeoutMs: timings.readTimeoutMs),
            let s = pb.string(forType: .string), !s.isEmpty {
             picked = s
         }
@@ -599,6 +632,11 @@ let modoreHotkey = ModoreConfig.loadConversionHotkey()
 gConversionKeyCode = modoreHotkey.keyCode
 gConversionCoreFlags = modoreHotkey.coreFlags
 
+gClipboardTimings = ModoreConfig.loadClipboardTimings()
+Log.config("clipboard timings: pre_copy=\(gClipboardTimings.preCopyDelayMs)ms"
+         + " read_timeout=\(gClipboardTimings.readTimeoutMs)ms"
+         + " restore=\(gClipboardTimings.restoreClipboardDelayMs)ms")
+
 // First, check silently. If not trusted, prompt the user. macOS will add the
 // bundle to the Accessibility list at this point.
 if !isTrusted(prompt: false) {
@@ -633,7 +671,7 @@ if gCarbonHotkey?.register(modoreHotkey) == true {
 
 // Held for the lifetime of the process; tears down its DispatchSource on deinit.
 let gConfigWatcher = ConfigWatcher(path: ModoreConfig.configFileURL().path) {
-    applyConversionHotkeyReload()
+    applyConfigReload()
 }
 gConfigWatcher.start()
 

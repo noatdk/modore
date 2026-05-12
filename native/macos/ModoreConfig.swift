@@ -1,5 +1,8 @@
 // Loads ~/.config/modore/modore.conf (same path on macOS/Linux via XDG layout).
-// Section [conversion], key "hotkey" — same format as the Linux host.
+//
+// Sections:
+//   [conversion] hotkey=...        — global trigger chord (same format as Linux)
+//   [clipboard]  *_ms=<integer>    — fallback-path timings (macOS only)
 
 import Carbon
 import Foundation
@@ -34,6 +37,28 @@ enum ModoreConfig {
         case invalid(reason: String)
     }
 
+    /// Tunable timings for the clipboard fallback path in `doClipboardPickup`.
+    /// Defaults match the previously hard-coded numbers, so omitting the
+    /// `[clipboard]` section reproduces pre-config behavior exactly.
+    ///
+    /// The 80 ms initial-peek timeout is intentionally *not* exposed — it's a
+    /// heuristic ("real selection → app responds in <30 ms; if it takes longer
+    /// there's no selection, fall through to force-select"), not a tuning knob.
+    struct ClipboardTimings: Equatable {
+        /// Pause after `Shift+Opt+Left` before issuing `Cmd+C`, so the
+        /// renderer thread in Electron/Chromium apps has time to commit the
+        /// new selection. Bump this if force-select copies miss intermittently.
+        var preCopyDelayMs: Int = 20
+
+        /// Max wait for the clipboard `changeCount` to advance after the
+        /// force-select `Cmd+C`. Bump on slow machines / under heavy load.
+        var readTimeoutMs: Int = 250
+
+        /// Delay before writing the user's original clipboard back, so the
+        /// Unicode injection that consumed the selection has fully landed.
+        var restoreClipboardDelayMs: Int = 50
+    }
+
     private static let defaultChord = "Ctrl+Slash"
 
     static func defaultConversionHotkey() -> ConversionHotkey {
@@ -51,41 +76,48 @@ enum ModoreConfig {
             .appendingPathComponent(".config/modore/modore.conf")
     }
 
-    /// Parse `~/.config/modore/modore.conf` and report what we found.
+    /// Parse `~/.config/modore/modore.conf` and report the hotkey outcome.
     /// Pure — does not log, does not touch globals. Callers decide.
     static func loadConversionHotkeyOutcome() -> LoadOutcome {
         let url = configFileURL()
-        guard let data = try? Data(contentsOf: url),
-              let text = String(data: data, encoding: .utf8) else {
-            return .usingDefault(reason: "no config at \(url.path)")
-        }
-
-        var section = ""
-        for raw in text.split(whereSeparator: \.isNewline) {
-            var line = String(raw)
-            if let hash = line.firstIndex(of: "#") {
-                line = String(line[..<hash])
-            }
-            line = line.trimmingCharacters(in: .whitespaces)
-            if line.isEmpty { continue }
-
-            if line.hasPrefix("[") && line.hasSuffix("]") {
-                section = String(line.dropFirst().dropLast()).trimmingCharacters(in: .whitespaces).lowercased()
-                continue
-            }
-            let parts = line.split(separator: "=", maxSplits: 1).map { String($0).trimmingCharacters(in: .whitespaces) }
-            guard parts.count == 2 else { continue }
-            let key = parts[0].lowercased()
-            let value = parts[1]
+        var outcome: LoadOutcome? = nil
+        let parsed = forEachKeyValue(url) { section, key, value in
             if section == "conversion" && key == "hotkey" {
                 if let h = parseChord(value) {
-                    return .loaded(h, source: "[conversion] hotkey=\(value) (\(url.path))")
+                    outcome = .loaded(h, source: "[conversion] hotkey=\(value) (\(url.path))")
+                } else {
+                    outcome = .invalid(reason: "malformed [conversion] hotkey=\(value) in \(url.path)")
                 }
-                return .invalid(reason: "malformed [conversion] hotkey=\(value) in \(url.path)")
             }
         }
+        if !parsed {
+            return .usingDefault(reason: "no config at \(url.path)")
+        }
+        return outcome ?? .usingDefault(reason: "[conversion] hotkey not set in \(url.path)")
+    }
 
-        return .usingDefault(reason: "[conversion] hotkey not set in \(url.path)")
+    /// Parse `~/.config/modore/modore.conf` for `[clipboard]` timing keys.
+    /// Missing file / missing keys / malformed values all fall back to the
+    /// hard-coded defaults — never fails. Malformed values get a single
+    /// `[config]` log line so the user can see what was ignored.
+    static func loadClipboardTimings() -> ClipboardTimings {
+        var t = ClipboardTimings()
+        let url = configFileURL()
+        _ = forEachKeyValue(url) { section, key, value in
+            guard section == "clipboard" else { return }
+            guard let n = Int(value), n >= 0 else {
+                Log.config("ignoring [clipboard] \(key)=\(value) (expected non-negative integer)")
+                return
+            }
+            switch key {
+            case "pre_copy_delay_ms":          t.preCopyDelayMs = n
+            case "read_timeout_ms":            t.readTimeoutMs = n
+            case "restore_clipboard_delay_ms": t.restoreClipboardDelayMs = n
+            default:
+                Log.config("ignoring [clipboard] \(key)=\(value) (unknown key)")
+            }
+        }
+        return t
     }
 
     /// Convenience for startup: always returns a usable chord, logs the outcome,
@@ -102,6 +134,40 @@ enum ModoreConfig {
             Log.config("\(reason) — using default \(defaultChord)")
             return defaultConversionHotkey()
         }
+    }
+
+    /// Shared INI-line tokenizer. Calls `handler(section, key, value)` once per
+    /// `key = value` pair (sections lowercased, keys lowercased, values
+    /// preserved as-is). Returns `false` only if the file can't be read at all.
+    /// Comments (`# ...`), blank lines, and malformed lines (no `=`) are skipped.
+    private static func forEachKeyValue(
+        _ url: URL,
+        handler: (_ section: String, _ key: String, _ value: String) -> Void
+    ) -> Bool {
+        guard let data = try? Data(contentsOf: url),
+              let text = String(data: data, encoding: .utf8) else {
+            return false
+        }
+        var section = ""
+        for raw in text.split(whereSeparator: \.isNewline) {
+            var line = String(raw)
+            if let hash = line.firstIndex(of: "#") {
+                line = String(line[..<hash])
+            }
+            line = line.trimmingCharacters(in: .whitespaces)
+            if line.isEmpty { continue }
+
+            if line.hasPrefix("[") && line.hasSuffix("]") {
+                section = String(line.dropFirst().dropLast())
+                    .trimmingCharacters(in: .whitespaces).lowercased()
+                continue
+            }
+            let parts = line.split(separator: "=", maxSplits: 1)
+                .map { String($0).trimmingCharacters(in: .whitespaces) }
+            guard parts.count == 2 else { continue }
+            handler(section, parts[0].lowercased(), parts[1])
+        }
+        return true
     }
 
     private static func parseChord(_ s: String) -> ConversionHotkey? {

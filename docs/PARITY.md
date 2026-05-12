@@ -42,6 +42,7 @@ The Linux columns are the same binary on different display servers;
 | --------------------------------------------- | :---: | :---------: | :-------------: | :-----: |
 | `~/.config/modore/modore.conf` (XDG)          |   ✓   |     ✓       |       ✓         |    ✗    |
 | Auto-reload on config change                  |   ✓¹² |     ✗       |       ✗         |    ✗    |
+| Tunable clipboard-fallback timings            |   ✓¹⁴ |     ✗       |       ✗         |    ✗    |
 | Log file on disk (`modore.log`)               |   ✗¹⁰ |     ✓       |       ✓         |    ✗    |
 | First-run permission prompt                   |   ✓   |     —¹¹     |       —¹¹       |    ✗    |
 | systemd user unit shipped                     |   —   |     ✓       |       ✓         |    ✗    |
@@ -61,3 +62,5 @@ The Linux columns are the same binary on different display servers;
 ¹¹ AT-SPI uses session D-Bus; some desktops still need the user to enable Accessibility manually, but the host does not prompt.
 ¹² `DispatchSourceFileSystemObject` on `modore.conf` with 300 ms debounce; survives atomic-rename editors. Malformed reloads keep the previous chord. See [`configuration.md`](configuration.md) and `native/macos/ConfigWatcher.swift`.
 ¹³ Polls until the trigger's modifier keys are released before synthesizing Cmd+C (otherwise the held Ctrl/Shift from the conversion hotkey poisons the synthetic copy in many apps). 3 s timeout. Self-emitted CGEvents are tagged with an off-screen `location` so the tap callback can skip them and never re-trigger pickup.
+
+¹⁴ `[clipboard]` section: `pre_copy_delay_ms` (renderer catch-up after force-select), `read_timeout_ms` (max wait for `Cmd+C` to land on the clipboard), `restore_clipboard_delay_ms` (delay before restoring the user's clipboard). Reloads with `[conversion]`; malformed values are ignored. See [`configuration.md`](configuration.md).
