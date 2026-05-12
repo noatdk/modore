@@ -114,6 +114,27 @@ while held) and reflects the state in the menu bar: title flips to red
 and a `⚠ Blocked by <App>` line appears in the menu. The `[secure-input]`
 log tag records every transition.
 
+## Path printers (macOS)
+
+Two zero-side-effect flags for scripting and bug-report copy-paste:
+
+```text
+$ modore-host --print-config-path
+/Users/you/.config/modore/modore.conf
+# composes with the shell:
+$ $EDITOR "$(modore-host --print-config-path)"
+
+$ modore-host --print-paths
+config:        /Users/you/.config/modore/modore.conf
+mozc profile:  /Users/you/Library/Application Support/modore
+bundle:        /Users/you/.../modore.app
+executable:    /Users/you/.../modore.app/Contents/MacOS/modore-host
+```
+
+Both exit `0`. `--print-config-path` prints only the path (no labels,
+nothing on stderr) so it slots into shell substitutions; `--print-paths`
+labels every line for humans.
+
 ## Auto-reload
 
 **macOS only (today)**: edits to `modore.conf` are picked up live — no

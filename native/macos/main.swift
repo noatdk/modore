@@ -700,6 +700,25 @@ if CommandLine.arguments.contains("--secure-input-status") {
     }
 }
 
+// `--print-config-path` prints only the resolved conversion-config path on
+// stdout (no labels, no extra lines) so it composes with the shell:
+//
+//     $EDITOR "$(modore-host --print-config-path)"
+//
+// `--print-paths` prints every path the host knows about, labeled — useful
+// for poking around or for pasting into bug reports.
+if CommandLine.arguments.contains("--print-config-path") {
+    print(ModoreConfig.configFileURL().path)
+    exit(0)
+}
+if CommandLine.arguments.contains("--print-paths") {
+    print("config:        \(ModoreConfig.configFileURL().path)")
+    print("mozc profile:  \(MOZC_PROFILE_DIR)")
+    print("bundle:        \(Bundle.main.bundlePath)")
+    print("executable:    \(Bundle.main.executablePath ?? "?")")
+    exit(0)
+}
+
 // MARK: - Main
 
 let app = NSApplication.shared
