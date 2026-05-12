@@ -56,28 +56,3 @@ func guardClipboard(restoreDelayMs: Int = 50) -> (saved: [NSPasteboardItem], res
     return (saved, restore)
 }
 
-/// Block until Cmd/Ctrl/Shift/Option are all released, or `timeoutMs` elapses.
-/// Synthetic events inherit the *physical* modifier state of the user, so
-/// firing Cmd+C while Ctrl is still held becomes Ctrl+Cmd+C — which most
-/// apps won't honor as "copy".
-///
-/// Caller is expected to be on a background queue (we sleep here).
-func waitForModifiersToClear(timeoutMs: Int = 3000) {
-    let conflicting: CGEventFlags = [
-        .maskShift, .maskControl, .maskCommand, .maskAlternate
-    ]
-    let deadline = Date().addingTimeInterval(Double(timeoutMs) / 1000.0)
-    let start = Date()
-    while Date() < deadline {
-        let flags = CGEventSource.flagsState(.combinedSessionState)
-        if flags.intersection(conflicting).isEmpty {
-            let waitedMs = Int(Date().timeIntervalSince(start) * 1000)
-            if waitedMs > 0 {
-                Log.clipboard("waited \(waitedMs)ms for modifier release")
-            }
-            return
-        }
-        Thread.sleep(forTimeInterval: 0.02)
-    }
-    Log.clipboard("modifier-release wait hit \(timeoutMs)ms timeout; injecting anyway")
-}
