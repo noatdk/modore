@@ -17,8 +17,8 @@
 static bool set_sockaddr_un_path(const char* path, sockaddr_un* addr) {
   const size_t n = std::strlen(path);
   if (n >= sizeof(addr->sun_path)) {
-    modore_logf("socket path too long (%zu bytes; max %zu for AF_UNIX)", n,
-                sizeof(addr->sun_path) - 1);
+    modore_log("ipc", "socket path too long (%zu bytes; max %zu for AF_UNIX)", n,
+               sizeof(addr->sun_path) - 1);
     return false;
   }
   std::memcpy(addr->sun_path, path, n + 1);
@@ -112,14 +112,16 @@ int ipc_send_pickup() {
     }
     close(fd);
     MODORE_E2E_LOGF("ipc_send_pickup: connected + wrote pickup -> %s", path.c_str());
-    modore_logf("trigger: sent pickup to %s (if conversion does nothing, see host log for "
-                "pickup:/clipboard: lines)",
-                path.c_str());
+    modore_log("ipc",
+               "trigger: sent pickup to %s (if conversion does nothing, see host log for "
+               "pickup:/clipboard: lines)",
+               path.c_str());
     return 0;
   }
-  modore_logf("trigger: connect failed for all tried paths [%s] — is modore-host running? "
-              "(systemctl --user status modore-host)",
-              tried.c_str());
+  modore_log("ipc",
+             "trigger: connect failed for all tried paths [%s] — is modore-host running? "
+             "(systemctl --user status modore-host)",
+             tried.c_str());
   return 1;
 }
 
@@ -128,13 +130,13 @@ void ipc_start_background(std::function<void()> on_pickup) {
       [cb = std::move(on_pickup)]() mutable {
         char path[256]{};
         if (ipc_socket_path(path, sizeof(path)) == 0) {
-          modore_logf("ipc: could not build socket path");
+          modore_log("ipc", "could not build socket path");
           return;
         }
         ::unlink(path);
         const int srv = socket(AF_UNIX, SOCK_STREAM, 0);
         if (srv < 0) {
-          modore_logf("ipc: socket() failed");
+          modore_log("ipc", "socket() failed");
           return;
         }
         sockaddr_un addr{};
@@ -144,9 +146,10 @@ void ipc_start_background(std::function<void()> on_pickup) {
           return;
         }
         if (bind(srv, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
-          modore_logf("ipc: bind(%s) failed — another modore-host may be running, "
-                      "or stale socket; try removing the file.",
-                      path);
+          modore_log("ipc",
+                     "bind(%s) failed — another modore-host may be running, or stale socket; "
+                     "try removing the file.",
+                     path);
           close(srv);
           return;
         }
@@ -155,7 +158,7 @@ void ipc_start_background(std::function<void()> on_pickup) {
           close(srv);
           return;
         }
-        modore_logf("ipc listening on %s (--trigger / compositor exec)", path);
+        modore_log("ipc", "listening on %s (--trigger / compositor exec)", path);
         for (;;) {
           const int c = accept(srv, nullptr, nullptr);
           if (c < 0) {
@@ -165,14 +168,14 @@ void ipc_start_background(std::function<void()> on_pickup) {
           const ssize_t n = read(c, buf, sizeof(buf) - 1);
           close(c);
           if (n <= 0) {
-            modore_logf("ipc: accept closed before data (n=%zd)", static_cast<ssize_t>(n));
+            modore_log("ipc", "accept closed before data (n=%zd)", static_cast<ssize_t>(n));
             continue;
           }
           buf[n] = '\0';
           if (std::strncmp(buf, "pickup", 6) == 0) {
             cb();
           } else {
-            modore_logf("ipc: ignored non-pickup message (%.*s)", static_cast<int>(n), buf);
+            modore_log("ipc", "ignored non-pickup message (%.*s)", static_cast<int>(n), buf);
           }
         }
       })

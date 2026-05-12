@@ -69,7 +69,7 @@ int g_pickup_pipe[2] = {-1, -1};
 
 bool setup_pickup_pipe() {
   if (pipe(g_pickup_pipe) != 0) {
-    logf("pickup pipe: pipe() failed (%s)", std::strerror(errno));
+    modore_log("ipc", "pickup pipe: pipe() failed (%s)", std::strerror(errno));
     return false;
   }
   const int flags = fcntl(g_pickup_pipe[1], F_GETFL);
@@ -86,7 +86,7 @@ void notify_main_pickup_pending() {
   const char k = '\1';
   if (write(g_pickup_pipe[1], &k, 1) < 0) {
     if (errno != EAGAIN && errno != EWOULDBLOCK) {
-      logf("pickup pipe: write failed (%s)", std::strerror(errno));
+      modore_log("ipc", "pickup pipe: write failed (%s)", std::strerror(errno));
     }
   }
 }
@@ -103,13 +103,13 @@ void main_thread_run_pickup_after_wake() {
   const ssize_t n = read(g_pickup_pipe[0], buf, sizeof(buf));
   if (n <= 0) {
     if (n == 0) {
-      logf("pickup pipe EOF (internal error)");
+      modore_log("ipc", "pickup pipe EOF (internal error)");
       _Exit(1);
     }
     if (errno == EINTR) {
       return;
     }
-    logf("pickup pipe read: %s", std::strerror(errno));
+    modore_log("ipc", "pickup pipe read: %s", std::strerror(errno));
     return;
   }
   int n_triggers = 0;
@@ -119,16 +119,17 @@ void main_thread_run_pickup_after_wake() {
     }
   }
   if (n_triggers <= 0) {
-    logf("pickup pipe: ignoring %zd-byte non-trigger payload", static_cast<ssize_t>(n));
+    modore_log("ipc", "pickup pipe: ignoring %zd-byte non-trigger payload",
+               static_cast<ssize_t>(n));
     return;
   }
   constexpr int kMaxBatched = 6;
   if (n_triggers > kMaxBatched) {
-    logf("pickup pipe: capping batched triggers %d → %d", n_triggers, kMaxBatched);
+    modore_log("ipc", "pickup pipe: capping batched triggers %d → %d", n_triggers, kMaxBatched);
     n_triggers = kMaxBatched;
   }
   for (int t = 0; t < n_triggers; ++t) {
-    logf("pickup: IPC socket (--trigger)%s", t > 0 ? " (batched)" : "");
+    modore_log("pickup", "via IPC socket (--trigger)%s", t > 0 ? " (batched)" : "");
     run_ipc_pickup();
   }
 }
@@ -2775,41 +2776,45 @@ int main(int argc, char** argv) {
 
   const char* disp_env = std::getenv("DISPLAY");
   const char* wl_env = std::getenv("WAYLAND_DISPLAY");
-  logf("starting pid=%d DISPLAY=%s WAYLAND_DISPLAY=%s",
-       static_cast<int>(::getpid()), disp_env ? disp_env : "(unset)",
-       wl_env ? wl_env : "(unset)");
+  modore_log("boot", "starting pid=%d DISPLAY=%s WAYLAND_DISPLAY=%s",
+             static_cast<int>(::getpid()), disp_env ? disp_env : "(unset)",
+             wl_env ? wl_env : "(unset)");
   if (wl_env) {
-    logf("note: WAYLAND_DISPLAY is set — X11 hotkey grab may not fire when a native "
-         "Wayland window has focus. Use compositor exec → modore-host --trigger if needed.");
+    modore_log("boot",
+               "WAYLAND_DISPLAY is set — X11 hotkey grab may not fire when a native "
+               "Wayland window has focus. Use compositor exec → modore-host --trigger if needed.");
     const char* sig = std::getenv("HYPRLAND_INSTANCE_SIGNATURE");
-    logf("Wayland pickup: hyprctl_IPC=%s HYPRLAND_INSTANCE_SIGNATURE=%s wtype=%s wl-paste=%s",
-         hyprctl_ipc_alive_for_wayland_keys() ? "yes" : "no",
-         (sig && sig[0]) ? "set" : "(unset)",
-         wtype_is_available() ? "yes" : "no",
-         wl_clipboard_available() ? "yes" : "no");
+    modore_log("boot",
+               "Wayland pickup capabilities: hyprctl_IPC=%s HYPRLAND_INSTANCE_SIGNATURE=%s "
+               "wtype=%s wl-paste=%s",
+               hyprctl_ipc_alive_for_wayland_keys() ? "yes" : "no",
+               (sig && sig[0]) ? "set" : "(unset)",
+               wtype_is_available() ? "yes" : "no",
+               wl_clipboard_available() ? "yes" : "no");
     if (!hyprctl_ipc_alive_for_wayland_keys() && !wtype_is_available()) {
-      logf("Wayland: need `hyprctl` (Hyprland) or `wtype` for synthetic keys / clipboard pickup");
+      modore_log("boot",
+                 "Wayland: need `hyprctl` (Hyprland) or `wtype` for synthetic keys / clipboard pickup");
     }
   }
 
   std::string profile = default_profile_dir();
   if (mozc_bridge_init(profile.c_str()) != 0) {
-    logf("mozc_bridge_init failed: %s",
-         mozc_bridge_last_error() ? mozc_bridge_last_error() : "?");
+    modore_log("mozc", "bridge init failed: %s",
+               mozc_bridge_last_error() ? mozc_bridge_last_error() : "?");
     return 1;
   }
-  logf("mozc bridge OK (profile=%s)", profile.c_str());
+  modore_log("mozc", "bridge initialized (profile=%s)", profile.c_str());
 
   ModoreConfig modore_config;
   std::string cfg_err;
   if (!load_modore_config(&modore_config, &cfg_err)) {
-    logf("config: %s — using defaults", cfg_err.c_str());
+    modore_log("config", "%s — using defaults", cfg_err.c_str());
   }
-  logf("config: [conversion] hotkey=%s — ~/.config/modore/modore.conf",
-       modore_config.conversion_hotkey_description.c_str());
+  modore_log("config", "[conversion] hotkey=%s — ~/.config/modore/modore.conf",
+             modore_config.conversion_hotkey_description.c_str());
 
   if (atspi_init() != 0) {
-    logf("atspi_init failed");
+    modore_log("atspi", "init failed");
     return 1;
   }
 
@@ -2821,16 +2826,18 @@ int main(int argc, char** argv) {
   }
 
   if (opts.ipc_only) {
-    logf("IMPORTANT — ipc-only: the conversion hotkey in ~/.config/modore/modore.conf is NOT wired "
-         "to this mode. systemd/Omarchy almost always ships --ipc-only, so presses do nothing.");
-    logf(         "ipc-only fix: bind a chord in Hypr/Omarchy to exec your host trigger, for example "
-         "(avoid Ctrl+Shift+` in Edge — it opens devtools); adjust path if needed:\n"
-         "  binddp = CONTROL SHIFT ALT, J, Modore pickup, exec, %s/.local/bin/modore-host "
-         "--trigger",
-         getenv_string("HOME", "/HOME").c_str());
-    logf(
-        "ipc-only: waiting on socket — after adding the bind, log should show `pickup:` when keys "
-        "work");
+    modore_log("ipc",
+               "IMPORTANT — ipc-only: the conversion hotkey in ~/.config/modore/modore.conf is "
+               "NOT wired to this mode. systemd/Omarchy almost always ships --ipc-only, so "
+               "presses do nothing.");
+    modore_log("ipc",
+               "ipc-only fix: bind a chord in Hypr/Omarchy to exec your host trigger, for example "
+               "(avoid Ctrl+Shift+` in Edge — it opens devtools); adjust path if needed:\n"
+               "  binddp = CONTROL SHIFT ALT, J, Modore pickup, exec, %s/.local/bin/modore-host "
+               "--trigger",
+               getenv_string("HOME", "/HOME").c_str());
+    modore_log("ipc",
+               "waiting on socket — after adding the bind, log should show `pickup:` when keys work");
     for (;;) {
       main_thread_run_pickup_after_wake();
     }
@@ -2838,14 +2845,15 @@ int main(int argc, char** argv) {
 
   Display* d = XOpenDisplay(nullptr);
   if (!d) {
-    logf("XOpenDisplay failed — an X11 display is required for the hotkey grab "
-         "(or run with --ipc-only and trigger via socket)");
+    modore_log("hotkey",
+               "XOpenDisplay failed — an X11 display is required for the hotkey grab "
+               "(or run with --ipc-only and trigger via socket)");
     return 1;
   }
 
   int ignore = 0;
   if (!XTestQueryExtension(d, &ignore, &ignore, &ignore, &ignore)) {
-    logf("XTest extension unavailable — install libXtst");
+    modore_log("hotkey", "XTest extension unavailable — install libXtst");
     XCloseDisplay(d);
     return 1;
   }
@@ -2854,7 +2862,7 @@ int main(int argc, char** argv) {
   const KeySym hotkey_ks = static_cast<KeySym>(modore_config.conversion_hotkey.keysym);
   const KeyCode hotkey_kc = XKeysymToKeycode(d, hotkey_ks);
   if (!hotkey_kc) {
-    logf("no keycode for configured keysym — check ~/.config/modore/modore.conf");
+    modore_log("hotkey", "no keycode for configured keysym — check ~/.config/modore/modore.conf");
     XCloseDisplay(d);
     return 1;
   }
@@ -2877,9 +2885,10 @@ int main(int argc, char** argv) {
   XSetErrorHandler(prev_handler);
 
   if (!grabbed_any) {
-    logf("XGrabKey failed (X11 error). Another client may already hold this key, or the "
-         "compositor blocked the grab. Try a different hotkey in ~/.config/modore/modore.conf "
-         "or run under X11.");
+    modore_log("hotkey",
+               "XGrabKey failed (X11 error). Another client may already hold this key, or the "
+               "compositor blocked the grab. Try a different hotkey in ~/.config/modore/modore.conf "
+               "or run under X11.");
     XCloseDisplay(d);
     return 1;
   }
@@ -2888,8 +2897,8 @@ int main(int argc, char** argv) {
   XFlush(d);
 
   const char* ks_label = XKeysymToString(hotkey_ks);
-  logf("ready: XGrabKey active (%s · keysym=%s)",
-       modore_config.conversion_hotkey_description.c_str(), ks_label ? ks_label : "?");
+  modore_log("boot", "ready: XGrabKey active (%s · keysym=%s)",
+             modore_config.conversion_hotkey_description.c_str(), ks_label ? ks_label : "?");
 
   const int x_fd = ConnectionNumber(d);
 

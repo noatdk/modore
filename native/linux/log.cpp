@@ -81,7 +81,28 @@ FILE* log_file_stream() {
   return g_log_file;
 }
 
-constexpr const char kTag[] = "[modore]";
+// One place to change the line shape; touch this, not call sites.
+void write_log_line(const char* tag, const char* fmt, va_list ap) {
+  std::lock_guard<std::mutex> lock(g_log_mu);
+
+  char ts[32]{};
+  format_timestamp(ts, sizeof(ts));
+
+  va_list ap2;
+  va_copy(ap2, ap);
+  std::fprintf(stderr, "%s[%s] ", ts, tag);
+  std::vfprintf(stderr, fmt, ap);
+  std::fprintf(stderr, "\n");
+
+  FILE* out = log_file_stream();
+  if (out) {
+    std::fprintf(out, "%s[%s] ", ts, tag);
+    std::vfprintf(out, fmt, ap2);
+    std::fprintf(out, "\n");
+    std::fflush(out);
+  }
+  va_end(ap2);
+}
 
 }  // namespace
 
@@ -94,26 +115,18 @@ bool modore_e2e_trace_enabled() {
   return cached != 0;
 }
 
-void modore_logf(const char* fmt, ...) {
-  std::lock_guard<std::mutex> lock(g_log_mu);
-
-  char ts[32]{};
-  format_timestamp(ts, sizeof(ts));
-
+void modore_log(const char* tag, const char* fmt, ...) {
   va_list ap;
   va_start(ap, fmt);
-  std::fprintf(stderr, "%s%s ", ts, kTag);
-  std::vfprintf(stderr, fmt, ap);
-  std::fprintf(stderr, "\n");
+  write_log_line(tag, fmt, ap);
   va_end(ap);
+}
 
-  FILE* out = log_file_stream();
-  if (out) {
-    va_start(ap, fmt);
-    std::fprintf(out, "%s%s ", ts, kTag);
-    std::vfprintf(out, fmt, ap);
-    std::fprintf(out, "\n");
-    std::fflush(out);
-    va_end(ap);
-  }
+// Back-compat: untagged calls land in [host] until they're migrated. Same
+// renderer as modore_log so the format never diverges.
+void modore_logf(const char* fmt, ...) {
+  va_list ap;
+  va_start(ap, fmt);
+  write_log_line("host", fmt, ap);
+  va_end(ap);
 }
