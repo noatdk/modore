@@ -207,14 +207,33 @@ private let kVK_RightArrow: CGKeyCode = 0x7C
 /// when calling CGEventTapPostEvent from its own tap callback.
 private let kPostTap: CGEventTapLocation = .cgSessionEventTap
 
+/// Sentinel `CGEvent.location` we stamp on every synthetic event so the same
+/// process's tap callback can recognize and skip events it emitted itself
+/// (otherwise a future "synth a hotkey" feature would loop).
+private let kSyntheticEventMarker = CGPoint(x: -27469, y: 0)
+
+/// Stamp the marker on a freshly created event. Call before `post(tap:)`.
+private func markSynthetic(_ event: CGEvent) {
+    event.location = kSyntheticEventMarker
+}
+
+/// True if `event` was emitted by this process via `markSynthetic`.
+private func isSynthetic(_ event: CGEvent) -> Bool {
+    let loc = event.location
+    return abs(loc.x - kSyntheticEventMarker.x) < 0.001
+        && abs(loc.y - kSyntheticEventMarker.y) < 0.001
+}
+
 func postKey(_ keyCode: CGKeyCode, flags: CGEventFlags = []) {
     let src = CGEventSource(stateID: .combinedSessionState)
     if let down = CGEvent(keyboardEventSource: src, virtualKey: keyCode, keyDown: true) {
         down.flags = flags
+        markSynthetic(down)
         down.post(tap: kPostTap)
     }
     if let up = CGEvent(keyboardEventSource: src, virtualKey: keyCode, keyDown: false) {
         up.flags = flags
+        markSynthetic(up)
         up.post(tap: kPostTap)
     }
 }
@@ -222,18 +241,33 @@ func postKey(_ keyCode: CGKeyCode, flags: CGEventFlags = []) {
 /// Inject a Unicode string as keyboard input — OpenKey's technique.
 /// The receiving app treats it as typed text; replaces the active selection
 /// (if any) or inserts at the caret. No clipboard involved.
+///
+/// `CGEventKeyboardSetUnicodeString` silently truncates payloads longer than
+/// 20 UTF-16 code units (undocumented macOS limit). We chunk to defeat it.
+private let kUnicodeChunkMax = 20
+
 func postUnicode(_ s: String) {
     let src = CGEventSource(stateID: .combinedSessionState)
     let utf16 = Array(s.utf16)
-    if let down = CGEvent(keyboardEventSource: src, virtualKey: 0, keyDown: true) {
-        down.flags = []
-        down.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: utf16)
-        down.post(tap: kPostTap)
-    }
-    if let up = CGEvent(keyboardEventSource: src, virtualKey: 0, keyDown: false) {
-        up.flags = []
-        up.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: utf16)
-        up.post(tap: kPostTap)
+    guard !utf16.isEmpty else { return }
+
+    var i = 0
+    while i < utf16.count {
+        let end = min(i + kUnicodeChunkMax, utf16.count)
+        let chunk = Array(utf16[i..<end])
+        if let down = CGEvent(keyboardEventSource: src, virtualKey: 0, keyDown: true) {
+            down.flags = []
+            down.keyboardSetUnicodeString(stringLength: chunk.count, unicodeString: chunk)
+            markSynthetic(down)
+            down.post(tap: kPostTap)
+        }
+        if let up = CGEvent(keyboardEventSource: src, virtualKey: 0, keyDown: false) {
+            up.flags = []
+            up.keyboardSetUnicodeString(stringLength: chunk.count, unicodeString: chunk)
+            markSynthetic(up)
+            up.post(tap: kPostTap)
+        }
+        i = end
     }
 }
 
@@ -269,6 +303,51 @@ func restoreClipboard(_ items: [NSPasteboardItem]) {
     }
 }
 
+/// Returns snapshot of the current clipboard and a closure that restores it after
+/// `delayMs`. Intended use:
+///
+///     let (saved, restore) = guardClipboard()
+///     defer { restore() }
+///
+/// `defer` guarantees the restore runs on every exit path, including
+/// early-returns and thrown errors.
+func guardClipboard(restoreDelayMs: Int = 50) -> (saved: [NSPasteboardItem], restore: () -> Void) {
+    let saved = snapshotClipboard()
+    let restore: () -> Void = {
+        if restoreDelayMs > 0 {
+            Thread.sleep(forTimeInterval: Double(restoreDelayMs) / 1000.0)
+        }
+        restoreClipboard(saved)
+    }
+    return (saved, restore)
+}
+
+/// Block until Cmd/Ctrl/Shift/Option are all released, or `timeoutMs` elapses.
+/// Synthetic events inherit the *physical* modifier state of the user, so
+/// firing Cmd+C while Ctrl is still held becomes Ctrl+Cmd+C — which most
+/// apps won't honor as "copy".
+///
+/// Caller is expected to be on a background queue (we sleep here).
+func waitForModifiersToClear(timeoutMs: Int = 3000) {
+    let conflicting: CGEventFlags = [
+        .maskShift, .maskControl, .maskCommand, .maskAlternate
+    ]
+    let deadline = Date().addingTimeInterval(Double(timeoutMs) / 1000.0)
+    let start = Date()
+    while Date() < deadline {
+        let flags = CGEventSource.flagsState(.combinedSessionState)
+        if flags.intersection(conflicting).isEmpty {
+            let waitedMs = Int(Date().timeIntervalSince(start) * 1000)
+            if waitedMs > 0 {
+                Log.clipboard("waited \(waitedMs)ms for modifier release")
+            }
+            return
+        }
+        Thread.sleep(forTimeInterval: 0.02)
+    }
+    Log.clipboard("modifier-release wait hit \(timeoutMs)ms timeout; injecting anyway")
+}
+
 // MARK: - Clipboard-based fallback (works in any app that supports Cmd+C / Cmd+V)
 
 /// Heuristic: a Cmd+C result that contains a newline or is huge is almost
@@ -281,9 +360,17 @@ private func looksLikeLineCopy(_ s: String) -> Bool {
 }
 
 func doClipboardPickup() {
-    let pb = NSPasteboard.general
-    let saved = snapshotClipboard()
+    // Snapshot the user's clipboard now; `defer` guarantees we restore it on
+    // every exit path. No manual cleanup at the early-returns below.
+    let (_, restoreSavedClipboard) = guardClipboard()
+    defer { restoreSavedClipboard() }
 
+    // The user is almost certainly still holding the conversion hotkey's
+    // modifiers when we get here. Synthesizing Cmd+C now would land as
+    // (heldModifiers)+Cmd+C and silently no-op in many apps.
+    waitForModifiersToClear()
+
+    let pb = NSPasteboard.general
     var picked: String? = nil
 
     // Step 1: peek at the user's current selection (if any) with Cmd+C.
@@ -324,7 +411,6 @@ func doClipboardPickup() {
         if didForceSelect {
             postKey(kVK_RightArrow)
         }
-        restoreClipboard(saved)
         return
     }
 
@@ -339,7 +425,6 @@ func doClipboardPickup() {
         if didForceSelect {
             postKey(kVK_RightArrow)
         }
-        restoreClipboard(saved)
         return
     }
     Log.clipboard("replace -> \(result.replacement)")
@@ -348,11 +433,6 @@ func doClipboardPickup() {
     // keystroke into the session event tap. No clipboard touch on the replace
     // path → no flicker, no race with the user's clipboard contents.
     postUnicode(result.replacement)
-
-    // Restore the user's original clipboard after the injected event lands.
-    DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-        restoreClipboard(saved)
-    }
 }
 
 // MARK: - Pickup pipeline
@@ -420,6 +500,13 @@ private let tapCallback: CGEventTapCallBack = { _, type, event, _ in
     }
 
     guard type == .keyDown else {
+        return Unmanaged.passUnretained(event)
+    }
+
+    // Events we synthesized via `markSynthetic` pass straight through. Without
+    // this, any future feature that synths a key matching the conversion
+    // chord would re-enter doPickup and loop.
+    if isSynthetic(event) {
         return Unmanaged.passUnretained(event)
     }
 
