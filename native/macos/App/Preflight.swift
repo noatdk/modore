@@ -52,6 +52,41 @@ func runConfigCheck() -> Never {
         exit_code = 2
     }
 
+    // Cycle modifier — same shape as katakana, including the collision
+    // explanation when the user configured a modifier we can't bind.
+    let (cycleMod, cycleIssues) = ModoreConfig.parseCycleModifier()
+    if let primary = resolvedPrimary, let extra = cycleMod.cgFlag {
+        let katExtra = katakanaMod.cgFlag
+        if primary.coreFlags.contains(extra) {
+            print("  [conversion]  cycle_modifier=\(cycleMod.displayName) (no cycle chord: primary already includes \(cycleMod.displayName))")
+        } else if let katExtra = katExtra, katExtra == extra {
+            print("  [conversion]  cycle_modifier=\(cycleMod.displayName) (no cycle chord: same modifier as katakana_modifier)")
+        } else {
+            let cycleFlags = primary.coreFlags.union(extra)
+            let cycleChord = ModoreConfig.ConversionHotkey(
+                keyCode: primary.keyCode, coreFlags: cycleFlags,
+                displayName: "\(cycleMod.displayName)+\(primary.displayName)")
+            print("  [conversion]  cycle_modifier=\(cycleMod.displayName) → \(cycleChord.displayName)")
+        }
+    } else {
+        print("  [conversion]  cycle_modifier=\(cycleMod.displayName)")
+    }
+    for issue in cycleIssues {
+        print("                \(issue)")
+    }
+    if !cycleIssues.isEmpty && exit_code == 0 {
+        exit_code = 2
+    }
+
+    let (cycleFromUndone, cycleFromUndoneIssues) = ModoreConfig.parseCycleFromUndone()
+    print("  [conversion]  cycle_from_undone=\(cycleFromUndone.displayName)")
+    for issue in cycleFromUndoneIssues {
+        print("                \(issue)")
+    }
+    if !cycleFromUndoneIssues.isEmpty && exit_code == 0 {
+        exit_code = 2
+    }
+
     // Undo window — reports the value with a "disabled" gloss on 0 so
     // the user doesn't have to remember what 0 means at a glance.
     let (undoMs, undoIssues) = ModoreConfig.parseUndoWindowMs()

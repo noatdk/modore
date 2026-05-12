@@ -55,33 +55,57 @@ let tapCallback: CGEventTapCallBack = { _, type, event, _ in
     // re-injects Esc on any fall-through so the user never sees a
     // swallowed Esc.
     if keyCode == kVK_Escape && coreFlags.isEmpty && gUndoWindowMs > 0 {
-        if LastConversionStore.peek(windowMs: gUndoWindowMs) != nil {
+        if ConversionSessionStore.peek(windowMs: gUndoWindowMs) != nil {
             kHotkeyTapQueue.async { performEscUndo() }
             return nil
         }
     }
 
-    // When Carbon owns the hotkey the OS consumes the keystroke before we
-    // see it here, so this branch is unreachable in the common case. We
-    // still gate defensively in case that ever stops being true (e.g.
-    // newer macOS versions changing tap ordering).
-    if !gUsingCarbonHotkey {
-        if keyCode == gConversionKeyCode {
-            if coreFlags == gConversionCoreFlags {
+    // Recognize our own chords regardless of who's *dispatching* them.
+    // The session tap at `.headInsertEventTap` fires before Carbon's
+    // app-target handler (verified on macOS 14), so when Carbon owns
+    // the chord the tap still sees the keystroke first. If we only
+    // matched chords on the !gUsingCarbonHotkey path, the session-clear
+    // at the bottom of this callback would wipe the live session before
+    // Carbon ever gets to cycle it — that was the "stuck on first
+    // candidate" bug.
+    if keyCode == gConversionKeyCode {
+        if coreFlags == gConversionCoreFlags {
+            if !gUsingCarbonHotkey {
                 kHotkeyTapQueue.async { doPickup() }
                 return nil // swallow — host app must not see the "/"
             }
-            // Same key + the configured katakana modifier (Shift). Same
-            // tap-fallback shape: swallow and dispatch with the katakana
-            // target set on the request.
-            if let secondary = gKatakanaChordFlags, coreFlags == secondary {
+            // Carbon will dispatch; we just don't clear.
+            return Unmanaged.passUnretained(event)
+        }
+        if let secondary = gKatakanaChordFlags, coreFlags == secondary {
+            if !gUsingCarbonHotkey {
                 kHotkeyTapQueue.async {
                     doPickup(PickupRequest(target: .katakana))
                 }
                 return nil
             }
+            return Unmanaged.passUnretained(event)
+        }
+        if let cycle = gCycleChordFlags, coreFlags == cycle {
+            if !gUsingCarbonHotkey {
+                kHotkeyTapQueue.async { performCycleNext() }
+                return nil
+            }
+            return Unmanaged.passUnretained(event)
         }
     }
+
+    // Any other keyDown that reaches this point — letters being typed,
+    // backspace, arrow keys, Cmd+anything, an Esc when no session is in
+    // scope — ends any active conversion session. The next press of the
+    // primary chord will then do a fresh conversion at whatever caret
+    // position the user is now at, rather than cycling against a stale
+    // span. Pure modifier presses (Shift, Ctrl, Alt, Cmd alone) fire
+    // `flagsChanged` events rather than keyDown, so this rule never
+    // clears the session just because the user is *about* to press the
+    // cycle chord.
+    ConversionSessionStore.clear()
 
     return Unmanaged.passUnretained(event)
 }

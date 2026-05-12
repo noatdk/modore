@@ -18,6 +18,11 @@ import ApplicationServices
 struct ConvertResult {
     let replacement: String
     let cursorOffset: Int?
+    /// Top-N alternatives Mozc offered, captured between SPACE and ENTER.
+    /// Usually starts with `replacement` (Mozc's top candidate); may be
+    /// empty when the AX path didn't request candidates or Mozc had no
+    /// alternatives to offer.
+    let candidates: [String]
 }
 
 /// Per-invocation request threaded through the pickup pipeline. Built at the
@@ -43,10 +48,37 @@ func wordBounds(_ utf16: [UInt16], caret: Int) -> (Int, Int) {
     let isWS: (UInt16) -> Bool = { ch in
         ch == 0x20 || ch == 0x09 || ch == 0x0A || ch == 0x0D
     }
+    // Stop the word walk on a script transition (ASCII ↔ non-ASCII), not
+    // just whitespace. Without this, typing `kaitou`→Ctrl+/→`hentai`
+    // grabs `回答hentai` as one word and Mozc returns it unchanged.
+    //
+    // TODO: this is a coarse split — every BMP code point ≥ 0x80 reads
+    // as "non-ASCII" (kana, kanji, fullwidth, latin-1 supplement, …).
+    // Fine for romaji→kana flow today; revisit when boundary cycling
+    // against Mozc's segment output lands, since that will subsume this logic.
+    // Whitespace is handled by the outer `while` (`!isWS(utf16[start-1])`
+    // / `!isWS(utf16[end])`). scriptBreak is strictly about the
+    // ASCII↔non-ASCII transition — otherwise a caret sitting just
+    // before a newline would break out at start = caret and collapse
+    // the span.
+    let isASCII: (UInt16) -> Bool = { $0 < 0x80 }
+    let scriptBreak: (UInt16, UInt16) -> Bool = { a, b in
+        isASCII(a) != isASCII(b)
+    }
     var start = c
-    while start > 0 && !isWS(utf16[start - 1]) { start -= 1 }
+    while start > 0 && !isWS(utf16[start - 1]) {
+        if start < utf16.count, scriptBreak(utf16[start - 1], utf16[start]) {
+            break
+        }
+        start -= 1
+    }
     var end = c
-    while end < utf16.count && !isWS(utf16[end]) { end += 1 }
+    while end < utf16.count && !isWS(utf16[end]) {
+        if end > 0, scriptBreak(utf16[end - 1], utf16[end]) {
+            break
+        }
+        end += 1
+    }
     if start == end {
         if c < utf16.count { return (c, c + 1) }
         if c > 0 { return (c - 1, c) }
@@ -71,11 +103,27 @@ func sliceUTF16(_ text: String, start: Int, end: Int) -> String? {
 /// slicing the span text out of whatever surface they read (AX field value,
 /// clipboard contents, …) and for filling any additional context fields on
 /// `request` — `callBackend` is now a thin wrapper, not a slicing helper.
-func callBackend(_ span: String, request: PickupRequest = .init()) -> ConvertResult? {
+///
+/// `wantCandidates` triggers the candidate-capturing bridge path. The AX
+/// path always wants candidates (snapshot powers Esc-undo + cycle); the
+/// clipboard fallback path passes `false` because it can't snapshot
+/// anyway (no AX element to retain).
+func callBackend(
+    _ span: String,
+    request: PickupRequest = .init(),
+    wantCandidates: Bool = false
+) -> ConvertResult? {
     guard !span.isEmpty else { return nil }
     do {
+        if wantCandidates {
+            let r = try MozcBridge.convertWithCandidates(span, target: request.target)
+            return ConvertResult(
+                replacement: r.committed,
+                cursorOffset: nil,
+                candidates: r.candidates)
+        }
         let converted = try MozcBridge.convert(span, target: request.target)
-        return ConvertResult(replacement: converted, cursorOffset: nil)
+        return ConvertResult(replacement: converted, cursorOffset: nil, candidates: [])
     } catch {
         Log.mozc("bridge error: \(String(describing: error))")
         return nil
@@ -102,11 +150,6 @@ func doClipboardPickup(_ request: PickupRequest = .init()) {
     // every exit path. No manual cleanup at the early-returns below.
     let (_, restoreSavedClipboard) = guardClipboard(restoreDelayMs: timings.restoreClipboardDelayMs)
     defer { restoreSavedClipboard() }
-
-    // The user is almost certainly still holding the conversion hotkey's
-    // modifiers when we get here. Synthesizing Cmd+C now would land as
-    // (heldModifiers)+Cmd+C and silently no-op in many apps.
-    waitForModifiersToClear()
 
     let pb = NSPasteboard.general
     var picked: String? = nil
@@ -163,24 +206,58 @@ func doClipboardPickup(_ request: PickupRequest = .init()) {
 
     Log.clipboard("pick: \(pickedText)")
 
-    guard let result = callBackend(pickedText, request: request) else {
+    // Fetch candidates so the cycle gesture has something to work with in
+    // this app too. Esc-undo and cycle on the clipboard path use a
+    // backspace + retype strategy (the alternative — re-running the
+    // selection + Cmd+C dance — would be much slower per cycle press).
+    guard let result = callBackend(pickedText, request: request, wantCandidates: true) else {
         Log.clipboard("backend returned no result")
         if didForceSelect {
             postKey(kVK_RightArrow)
         }
         return
     }
-    Log.clipboard("replace -> \(result.replacement)")
+    Log.clipboard("replace -> \(result.replacement) (alts=\(result.candidates.count))")
 
     // Replace the active selection by injecting the replacement as a Unicode
     // keystroke into the session event tap. No clipboard touch on the replace
     // path → no flicker, no race with the user's clipboard contents.
     postUnicode(result.replacement)
+
+    // Open a clipboard-backed session for follow-up gestures. The frontmost
+    // app's pid + bundle ID are the identity check Esc-undo / cycle use to
+    // refuse to act on the wrong window. Same single-element-list fallback
+    // as the AX path for inputs Mozc didn't offer alternatives on.
+    let snapshotCandidates: [String] =
+        result.candidates.isEmpty ? [result.replacement] : result.candidates
+    let frontmost = FrontmostApp.describe()
+    ConversionSessionStore.set(ConversionSession(
+        backing: .clipboard(
+            frontmostBundleId: frontmost?.bundleID,
+            frontmostPid: frontmost?.pid ?? 0),
+        originalReading: pickedText,
+        candidates: snapshotCandidates,
+        candidateIndex: 0,
+        timestamp: Date()))
 }
 
 // MARK: - Pickup pipeline
 
 func doPickup(_ request: PickupRequest = .init()) {
+    // Single-key cycle: if an active session exists and gates hold, the
+    // primary chord advances the candidate instead of doing a fresh
+    // conversion. Katakana presses always fresh-convert (no cycle in
+    // katakana mode). Failure to cycle (no session, expired window,
+    // gates broke) falls through silently to fresh convert below — the
+    // tap callback clears the session on any non-chord keystroke, so by
+    // the time we get here a stale session almost always means "user is
+    // legitimately starting a new conversion."
+    if request.target != .katakana {
+        if cycleNext(verbose: false) {
+            return
+        }
+    }
+
     if request.target == .katakana {
         Log.pickup("katakana modifier engaged")
     }
@@ -203,20 +280,30 @@ func doPickup(_ request: PickupRequest = .init()) {
         }
         Log.pickup("pick [\(start)..\(end)] \(spanText)")
 
-        guard let result = callBackend(spanText, request: request) else {
+        // AX path requests candidates so the snapshot can power Esc-undo
+        // and the cycle gesture. Clipboard fallback below skips this —
+        // no stable span to act on.
+        guard let result = callBackend(spanText, request: request, wantCandidates: true) else {
             Log.pickup("backend returned no result")
             return
         }
-        Log.pickup("replace -> \(result.replacement)")
+        Log.pickup("replace -> \(result.replacement) (alts=\(result.candidates.count))")
 
         if replaceRange(in: field.element, start: start, end: end, replacement: result.replacement) {
-            // Record for Esc-undo. Only the AX path snapshots — the
-            // clipboard fallback below has no stable span to revert to.
-            LastConversionStore.set(LastConversion(
-                element: field.element,
-                spanStart: start,
+            // Open a session so Esc-undo and the cycle gesture have
+            // something to act on. `candidates` is the full list captured
+            // from Mozc; if Mozc returned nothing (rare — only trivial
+            // single-kana inputs), we still snapshot the committed string
+            // as a single-element list so the index/identity math stays
+            // simple. `candidateIndex = 0` means "candidates[0] is what
+            // got written to the span."
+            let snapshotCandidates: [String] =
+                result.candidates.isEmpty ? [result.replacement] : result.candidates
+            ConversionSessionStore.set(ConversionSession(
+                backing: .ax(element: field.element, spanStart: start),
                 originalReading: spanText,
-                replacement: result.replacement,
+                candidates: snapshotCandidates,
+                candidateIndex: 0,
                 timestamp: Date()))
             return
         }

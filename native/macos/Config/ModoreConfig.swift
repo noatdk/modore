@@ -78,6 +78,54 @@ enum ModoreConfig {
         }
     }
 
+    /// Extra modifier that, layered on top of the primary chord, fires the
+    /// cycle-next gesture (advance to the next Mozc candidate at the same
+    /// span). Same shape as `KatakanaModifier` — `.none` disables the
+    /// chord. Defaults to `.alt`, so `Alt+<primary>` is the conventional
+    /// "next candidate" chord on a fresh install. Validated against
+    /// `KatakanaModifier` at parse time: same flag bit can't drive two
+    /// gestures, so the second to load loses (logged).
+    enum CycleModifier: Equatable {
+        case none
+        case shift
+        case alt
+        case control
+
+        var cgFlag: CGEventFlags? {
+            switch self {
+            case .none:    return nil
+            case .shift:   return .maskShift
+            case .alt:     return .maskAlternate
+            case .control: return .maskControl
+            }
+        }
+
+        var displayName: String {
+            switch self {
+            case .none:    return "none"
+            case .shift:   return "Shift"
+            case .alt:     return "Alt"
+            case .control: return "Ctrl"
+            }
+        }
+    }
+
+    /// What pressing the cycle chord does when the session is in the
+    /// undone state (`candidateIndex = -1`, post-Esc). `redo` snaps back
+    /// to `candidates[0]` — fast undo-of-undo. `pass` makes the cycle
+    /// chord a no-op so the user's Esc decision sticks.
+    enum CycleFromUndone: Equatable {
+        case redo
+        case pass
+
+        var displayName: String {
+            switch self {
+            case .redo: return "redo"
+            case .pass: return "pass"
+            }
+        }
+    }
+
     /// Max age (ms) of the most-recent-conversion snapshot for Esc-undo to
     /// still fire. 0 disables the feature entirely (the tap callback's Esc
     /// branch short-circuits before touching any state). Clamped to
@@ -180,6 +228,68 @@ enum ModoreConfig {
             }
         }
         return (m, issues)
+    }
+
+    /// Parse `[conversion] cycle_modifier`. Wrapper that logs issues.
+    static func loadCycleModifier() -> CycleModifier {
+        let (m, issues) = parseCycleModifier()
+        for issue in issues { Log.config(issue) }
+        return m
+    }
+
+    /// Same parse as `loadCycleModifier()` but returns issues separately.
+    /// Default `.none`: the primary chord doubles as the cycle gesture
+    /// while a session is active, so a fresh install needs no extra
+    /// chord. Set this to bind an *additional* dedicated cycle chord
+    /// alongside the primary's same-key cycle.
+    static func parseCycleModifier() -> (CycleModifier, [String]) {
+        var m: CycleModifier = .none
+        var issues: [String] = []
+        let url = configFileURL()
+        _ = forEachKeyValue(url) { section, key, value in
+            guard section == "conversion" && key == "cycle_modifier" else { return }
+            switch value.lowercased() {
+            case "none":                 m = .none
+            case "shift":                m = .shift
+            case "alt", "option":        m = .alt
+            case "control", "ctrl":      m = .control
+            case "":
+                // Empty value (e.g. `cycle_modifier =`) — treat as
+                // explicit "leave default" rather than an issue. Matches
+                // the behavior of katakana_modifier=.
+                break
+            default:
+                issues.append("ignoring [conversion] cycle_modifier=\(value) (expected none|shift|alt|control)")
+            }
+        }
+        return (m, issues)
+    }
+
+    /// Parse `[conversion] cycle_from_undone`. Wrapper that logs issues.
+    static func loadCycleFromUndone() -> CycleFromUndone {
+        let (m, issues) = parseCycleFromUndone()
+        for issue in issues { Log.config(issue) }
+        return m
+    }
+
+    /// Same parse as `loadCycleFromUndone()` but returns issues separately.
+    /// Default `.redo` (cycle from undone → candidates[0]). `pass`
+    /// silences cycle while in the undone state so an explicit Esc isn't
+    /// trivially reversed.
+    static func parseCycleFromUndone() -> (CycleFromUndone, [String]) {
+        var v: CycleFromUndone = .redo
+        var issues: [String] = []
+        let url = configFileURL()
+        _ = forEachKeyValue(url) { section, key, value in
+            guard section == "conversion" && key == "cycle_from_undone" else { return }
+            switch value.lowercased() {
+            case "redo": v = .redo
+            case "pass": v = .pass
+            default:
+                issues.append("ignoring [conversion] cycle_from_undone=\(value) (expected redo|pass)")
+            }
+        }
+        return (v, issues)
     }
 
     /// Parse `~/.config/modore/modore.conf` for `[conversion] undo_window_ms`.

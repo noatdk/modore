@@ -22,16 +22,19 @@ import Cocoa
 
 enum FrontmostApp {
 
-    /// Returns `(localizedName, bundleIdentifier)` of the current frontmost
-    /// app, or `nil` if AppKit reports no frontmost (e.g. Mission Control,
-    /// app-switcher transitions, or login window).
+    /// Returns `(localizedName, bundleIdentifier, pid)` of the current
+    /// frontmost app, or `nil` if AppKit reports no frontmost (e.g.
+    /// Mission Control, app-switcher transitions, or login window).
     ///
     /// `localizedName` is the user-visible name (e.g. "Cursor", "Safari").
     /// `bundleIdentifier` is the reverse-DNS identifier (e.g.
     /// "com.todesktop.230313mzl4w4u92") — necessary because two apps can
     /// share a display name (Microsoft Office variants, custom Electron
     /// shells) and the bundle id is the only reliable way to pin which.
-    static func describe() -> (name: String, bundleID: String)? {
+    /// `pid` lets clipboard-fallback gestures verify that the focused app
+    /// is still the same process that received the original injection,
+    /// even if the user has briefly switched away and back.
+    static func describe() -> (name: String, bundleID: String, pid: pid_t)? {
         guard let app = NSWorkspace.shared.frontmostApplication else {
             return nil
         }
@@ -39,7 +42,7 @@ enum FrontmostApp {
             ?? app.bundleURL?.deletingPathExtension().lastPathComponent
             ?? "?"
         let bundleID = app.bundleIdentifier ?? "?"
-        return (name: name, bundleID: bundleID)
+        return (name: name, bundleID: bundleID, pid: app.processIdentifier)
     }
 
     /// One-shot string suitable for direct interpolation in a log line:
@@ -57,5 +60,12 @@ enum FrontmostApp {
             return " [\(info.name) / \(info.bundleID)]"
         }
         return " [no frontmost app]"
+    }
+
+    /// Pid of the frontmost app, or `nil` when AppKit reports no
+    /// frontmost. Convenience for callers (clipboard-session cycle/undo)
+    /// that only need the pid for identity comparison.
+    static func currentPid() -> pid_t? {
+        return NSWorkspace.shared.frontmostApplication?.processIdentifier
     }
 }

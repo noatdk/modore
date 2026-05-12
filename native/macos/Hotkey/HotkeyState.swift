@@ -59,6 +59,22 @@ var gClipboardTimings = ModoreConfig.ClipboardTimings()
 /// and watcher-driven reloads.
 var gUndoWindowMs: Int = ModoreConfig.defaultUndoWindowMs
 
+/// Current `[conversion] cycle_modifier` setting. Drives the optional
+/// dedicated cycle chord. Default `.none` — the primary chord doubles
+/// as the cycle gesture while a session is active, so most users won't
+/// need a separate chord. Setting this binds an additional chord on
+/// top of the primary's same-key cycle behavior.
+var gCycleModifier: ModoreConfig.CycleModifier = .none
+
+/// Tertiary-chord flags (primary + the configured cycle modifier).
+/// `nil` when cycle is disabled or collides with primary/secondary
+/// modifiers. Read by the tap-fallback path; written on the main thread.
+var gCycleChordFlags: CGEventFlags? = nil
+
+/// Current `[conversion] cycle_from_undone`. Consulted by
+/// `performCycleNext` when the session is in the undone state.
+var gCycleFromUndone: ModoreConfig.CycleFromUndone = .redo
+
 // MARK: - Secondary chord (katakana modifier)
 
 /// Build the katakana-variant chord by layering the configured modifier on top
@@ -102,7 +118,7 @@ func applyKatakanaSecondaryChord(
     if let secondary = secondary {
         gKatakanaChordFlags = secondary.coreFlags
         if let ck = gCarbonHotkey {
-            let ok = ck.registerSecondary(secondary) {
+            let ok = ck.register(role: "katakana", chord: secondary) {
                 kHotkeyTapQueue.async {
                     doPickup(PickupRequest(target: .katakana))
                 }
@@ -115,11 +131,76 @@ func applyKatakanaSecondaryChord(
         }
     } else {
         gKatakanaChordFlags = nil
-        gCarbonHotkey?.unregisterSecondary()
+        gCarbonHotkey?.unregister(role: "katakana")
         if modifier != .none && prevFlags != nil {
             Log.hotkey("katakana chord cleared (collides with primary modifiers)")
         } else if prevFlags != nil {
             Log.hotkey("katakana chord cleared")
+        }
+    }
+}
+
+// MARK: - Tertiary chord (cycle modifier)
+
+/// Build the cycle chord by layering the cycle modifier on top of the
+/// primary chord. Returns nil when the modifier is `.none`, when the
+/// primary already includes that modifier (would shadow the primary),
+/// or when the modifier collides with whatever the katakana chord
+/// already uses (would mean one chord drives two gestures).
+func makeCycleChord(
+    primary: ModoreConfig.ConversionHotkey,
+    cycle: ModoreConfig.CycleModifier,
+    katakana: ModoreConfig.KatakanaModifier
+) -> ModoreConfig.ConversionHotkey? {
+    guard let extra = cycle.cgFlag else { return nil }
+    if primary.coreFlags.contains(extra) { return nil }
+    if let katakanaFlag = katakana.cgFlag, katakanaFlag == extra { return nil }
+    let flags = primary.coreFlags.union(extra)
+    return ModoreConfig.ConversionHotkey(
+        keyCode: primary.keyCode,
+        coreFlags: flags,
+        displayName: "\(cycle.displayName)+\(primary.displayName)")
+}
+
+/// Status-item helper, parallel to `secondaryChordForStatus`. Surfaces
+/// the cycle chord only when it's actually Carbon-grabbed.
+func cycleChordForStatus(primary: ModoreConfig.ConversionHotkey)
+    -> ModoreConfig.ConversionHotkey?
+{
+    guard gCycleChordFlags != nil else { return nil }
+    return makeCycleChord(primary: primary, cycle: gCycleModifier, katakana: gKatakanaModifier)
+}
+
+/// (Re)register the cycle chord. Same lifecycle as the katakana
+/// secondary: state changes (registered / cleared / collision-rejected)
+/// log a single `[hotkey]` line; no-op reloads stay quiet.
+func applyCycleChord(
+    primary: ModoreConfig.ConversionHotkey,
+    cycle: ModoreConfig.CycleModifier,
+    katakana: ModoreConfig.KatakanaModifier
+) {
+    let chord = makeCycleChord(primary: primary, cycle: cycle, katakana: katakana)
+    let prevFlags = gCycleChordFlags
+
+    if let chord = chord {
+        gCycleChordFlags = chord.coreFlags
+        if let ck = gCarbonHotkey {
+            let ok = ck.register(role: "cycle", chord: chord) {
+                kHotkeyTapQueue.async { performCycleNext() }
+            }
+            if !ok {
+                Log.hotkey("RegisterEventHotKey failed for cycle chord \(chord.displayName)")
+            } else if prevFlags != chord.coreFlags {
+                Log.hotkey("cycle chord registered: \(chord.displayName)")
+            }
+        }
+    } else {
+        gCycleChordFlags = nil
+        gCarbonHotkey?.unregister(role: "cycle")
+        if cycle != .none && prevFlags != nil {
+            Log.hotkey("cycle chord cleared (collides with primary or katakana modifier)")
+        } else if prevFlags != nil {
+            Log.hotkey("cycle chord cleared")
         }
     }
 }
@@ -130,19 +211,23 @@ func applyConversionHotkeyChord(_ chord: ModoreConfig.ConversionHotkey) {
     gConversionKeyCode = chord.keyCode
     gConversionCoreFlags = chord.coreFlags
     if let ck = gCarbonHotkey {
-        let ok = ck.register(chord)
+        let ok = ck.register(role: "primary", chord: chord) {
+            kHotkeyTapQueue.async { doPickup() }
+        }
         gUsingCarbonHotkey = ok
         if !ok {
             Log.hotkey("RegisterEventHotKey failed — falling back to tap-based detection")
         }
     }
-    // The secondary chord rides on top of the primary, so any primary
-    // re-registration rebinds the secondary too.
+    // Derived chords ride on top of the primary, so any primary
+    // re-registration rebinds them too.
     applyKatakanaSecondaryChord(primary: chord, modifier: gKatakanaModifier)
+    applyCycleChord(primary: chord, cycle: gCycleModifier, katakana: gKatakanaModifier)
     gStatusItem?.refresh(
         hotkey: chord,
         usingCarbonHotkey: gUsingCarbonHotkey,
-        katakanaChord: secondaryChordForStatus(primary: chord))
+        katakanaChord: secondaryChordForStatus(primary: chord),
+        cycleChord: cycleChordForStatus(primary: chord))
 }
 
 // MARK: - Section reloaders (one per [section] in modore.conf)
@@ -182,7 +267,9 @@ func applyClipboardTimingsReload() {
 /// Reload `[conversion] katakana_modifier` from disk. The secondary chord
 /// re-registers if and only if the modifier changed; the registration
 /// itself logs through `applyKatakanaSecondaryChord`. The `[config]` log
-/// line here just records the user-facing setting.
+/// line here just records the user-facing setting. Cycle chord also
+/// re-applies because its collision check depends on the katakana
+/// modifier flag.
 func applyKatakanaModifierReload() {
     let next = ModoreConfig.loadKatakanaModifier()
     if next != gKatakanaModifier {
@@ -191,15 +278,46 @@ func applyKatakanaModifierReload() {
         let primary = ModoreConfig.ConversionHotkey(
             keyCode: gConversionKeyCode, coreFlags: gConversionCoreFlags)
         applyKatakanaSecondaryChord(primary: primary, modifier: next)
+        applyCycleChord(primary: primary, cycle: gCycleModifier, katakana: next)
         gStatusItem?.refresh(
             hotkey: primary,
             usingCarbonHotkey: gUsingCarbonHotkey,
-            katakanaChord: secondaryChordForStatus(primary: primary))
+            katakanaChord: secondaryChordForStatus(primary: primary),
+            cycleChord: cycleChordForStatus(primary: primary))
+    }
+}
+
+/// Reload `[conversion] cycle_modifier` from disk. Mirrors the katakana
+/// reload — re-bind the chord and refresh the status item if it changed.
+func applyCycleModifierReload() {
+    let next = ModoreConfig.loadCycleModifier()
+    if next != gCycleModifier {
+        gCycleModifier = next
+        Log.config("cycle modifier: \(next.displayName)")
+        let primary = ModoreConfig.ConversionHotkey(
+            keyCode: gConversionKeyCode, coreFlags: gConversionCoreFlags)
+        applyCycleChord(primary: primary, cycle: next, katakana: gKatakanaModifier)
+        gStatusItem?.refresh(
+            hotkey: primary,
+            usingCarbonHotkey: gUsingCarbonHotkey,
+            katakanaChord: secondaryChordForStatus(primary: primary),
+            cycleChord: cycleChordForStatus(primary: primary))
+    }
+}
+
+/// Reload `[conversion] cycle_from_undone` from disk. Pure state swap —
+/// no chord re-binding, no UI refresh. The next cycle press picks up the
+/// new behavior.
+func applyCycleFromUndoneReload() {
+    let next = ModoreConfig.loadCycleFromUndone()
+    if next != gCycleFromUndone {
+        gCycleFromUndone = next
+        Log.config("cycle_from_undone: \(next.displayName)")
     }
 }
 
 /// Reload `[conversion] undo_window_ms` from disk. Esc-undo state itself
-/// (the LastConversion snapshot) is unaffected by reloads; we just swap
+/// (the ConversionSession snapshot) is unaffected by reloads; we just swap
 /// the window used to age it out. Logs only on actual change.
 func applyUndoWindowReload() {
     let next = ModoreConfig.loadUndoWindowMs()
@@ -217,6 +335,8 @@ func applyUndoWindowReload() {
 func applyConfigReload() {
     applyConversionHotkeyReload()
     applyKatakanaModifierReload()
+    applyCycleModifierReload()
+    applyCycleFromUndoneReload()
     applyUndoWindowReload()
     applyClipboardTimingsReload()
 }

@@ -14,144 +14,107 @@
 // to the tap's match-and-swallow path. If Carbon succeeds, the OS consumes
 // the keystroke before the tap sees it, so there's no double-fire risk.
 //
-// Two chords are supported: a `primary` chord that triggers the normal
-// conversion, and an optional `secondary` chord that triggers a variant
-// (currently used for the katakana-forcing modifier). Each chord has its
-// own callback. They share one event handler — the handler looks up the
-// firing `EventHotKeyID` and dispatches to the matching closure.
+// Multiple chord slots are supported, keyed by `role` (e.g. "primary",
+// "katakana", "cycle"). Each slot carries its own callback. They share
+// one Carbon event handler — the handler reads the firing
+// `EventHotKeyID` and dispatches to the matching closure.
 
 import Carbon
 import Foundation
 
 final class CarbonHotkey {
 
-    private let onPrimary: () -> Void
-    private var onSecondary: (() -> Void)?
+    /// One registered chord. Held in `slots` until explicitly replaced
+    /// or unregistered; the destructor releases the `EventHotKeyRef`.
+    private struct Slot {
+        let id: UInt32
+        let ref: EventHotKeyRef
+        let callback: () -> Void
+    }
 
-    private var primaryRef: EventHotKeyRef?
-    private var secondaryRef: EventHotKeyRef?
+    private var slots: [String: Slot] = [:]
     private var handlerRef: EventHandlerRef?
 
+    /// Monotonic counter for `EventHotKeyID.id`. Carbon uses this to tell
+    /// us which chord fired in the shared event handler; new
+    /// registrations always get a fresh id so a stale event from a
+    /// just-replaced binding can't dispatch to the new callback.
     private static var nextHotkeyID: UInt32 = 1
-    private var primaryID: UInt32 = 0
-    private var secondaryID: UInt32 = 0
 
     /// FourCharCode signature for our hotkeys ('modr'). Visible in tools that
     /// list system hotkeys; helps users identify what's claimed the chord.
     private static let signature: OSType = 0x6D6F6472  // 'modr'
 
-    init(onFire: @escaping () -> Void) {
-        self.onPrimary = onFire
+    init() {
         installHandler()
     }
 
     deinit {
-        unregister()
-        unregisterSecondary()
+        for slot in slots.values {
+            UnregisterEventHotKey(slot.ref)
+        }
+        slots.removeAll()
         if let h = handlerRef {
             RemoveEventHandler(h)
             handlerRef = nil
         }
     }
 
-    /// Register (or re-register) the primary chord. Returns `true` on success.
-    /// On failure, leaves no primary registration active; caller falls back
-    /// to whatever other detector is in place. The secondary chord (if any)
-    /// is unaffected — they're independent registrations.
+    /// Register (or re-register) a chord under a given role name.
+    /// Replaces any existing chord with the same role. Returns `true`
+    /// on success — failure leaves the role with no active registration
+    /// (callers can fall back to whatever other detector is in place).
     @discardableResult
-    func register(_ chord: ModoreConfig.ConversionHotkey) -> Bool {
-        if let ref = primaryRef {
-            UnregisterEventHotKey(ref)
-            primaryRef = nil
-        }
+    func register(
+        role: String,
+        chord: ModoreConfig.ConversionHotkey,
+        onFire: @escaping () -> Void
+    ) -> Bool {
+        unregister(role: role)
 
         CarbonHotkey.nextHotkeyID &+= 1
-        primaryID = CarbonHotkey.nextHotkeyID
+        let id = CarbonHotkey.nextHotkeyID
 
         var ref: EventHotKeyRef?
-        let id = EventHotKeyID(signature: CarbonHotkey.signature, id: primaryID)
+        let eventID = EventHotKeyID(signature: CarbonHotkey.signature, id: id)
         let status = RegisterEventHotKey(
             UInt32(chord.keyCode),
             chord.carbonModifierMask,
-            id,
+            eventID,
             GetApplicationEventTarget(),
             0,
             &ref
         )
-        if status == noErr, let ref = ref {
-            primaryRef = ref
-            return true
-        }
-        return false
-    }
-
-    /// Register a secondary chord with its own callback. Calling this with
-    /// `chord == nil` (or before `register(_:)`) tears down any existing
-    /// secondary registration. Returns `true` on successful registration.
-    ///
-    /// The secondary callback is held by the instance for the duration of the
-    /// registration; replacing or clearing the secondary releases the prior
-    /// closure.
-    @discardableResult
-    func registerSecondary(
-        _ chord: ModoreConfig.ConversionHotkey?,
-        onFire: (() -> Void)? = nil
-    ) -> Bool {
-        unregisterSecondary()
-        guard let chord = chord, let onFire = onFire else {
+        guard status == noErr, let ref = ref else {
             return false
         }
-
-        CarbonHotkey.nextHotkeyID &+= 1
-        secondaryID = CarbonHotkey.nextHotkeyID
-
-        var ref: EventHotKeyRef?
-        let id = EventHotKeyID(signature: CarbonHotkey.signature, id: secondaryID)
-        let status = RegisterEventHotKey(
-            UInt32(chord.keyCode),
-            chord.carbonModifierMask,
-            id,
-            GetApplicationEventTarget(),
-            0,
-            &ref
-        )
-        if status == noErr, let ref = ref {
-            secondaryRef = ref
-            onSecondary = onFire
-            return true
-        }
-        // Failed: leak no closure ref, leave the slot disarmed.
-        secondaryID = 0
-        onSecondary = nil
-        return false
+        slots[role] = Slot(id: id, ref: ref, callback: onFire)
+        return true
     }
 
-    func unregister() {
-        if let ref = primaryRef {
-            UnregisterEventHotKey(ref)
-            primaryRef = nil
+    /// Tear down the chord under `role` (no-op if not registered).
+    func unregister(role: String) {
+        if let slot = slots.removeValue(forKey: role) {
+            UnregisterEventHotKey(slot.ref)
         }
-        primaryID = 0
     }
 
-    func unregisterSecondary() {
-        if let ref = secondaryRef {
-            UnregisterEventHotKey(ref)
-            secondaryRef = nil
-        }
-        secondaryID = 0
-        onSecondary = nil
+    /// True if a chord is currently registered under `role`. Used by
+    /// HotkeyState when deciding whether a re-register is needed.
+    func isRegistered(role: String) -> Bool {
+        return slots[role] != nil
     }
 
     /// Called from the Carbon event handler with the firing hotkey's id.
-    /// Dispatches to `onPrimary` or `onSecondary`. Unknown ids (which would
-    /// happen if a stale event arrives after a re-register) are dropped
+    /// Walks the slot table and fires the matching callback. Unknown ids
+    /// (stale events from a just-replaced registration) are dropped
     /// silently — they're not actionable.
     fileprivate func dispatch(hotkeyID: UInt32) {
-        if hotkeyID == primaryID {
-            onPrimary()
-        } else if hotkeyID == secondaryID, let cb = onSecondary {
-            cb()
+        for slot in slots.values {
+            if slot.id == hotkeyID {
+                slot.callback()
+                return
+            }
         }
     }
 
@@ -181,9 +144,9 @@ final class CarbonHotkey {
                 &firedID
             )
             if status != noErr {
-                // Without an id we can't tell primary from secondary; fall
-                // back to primary so the common chord still fires.
-                me.dispatch(hotkeyID: me.primaryID)
+                // No id available — drop. Without knowing which slot
+                // fired we'd risk dispatching the wrong callback; better
+                // to no-op than to misfire.
                 return noErr
             }
             me.dispatch(hotkeyID: firedID.id)

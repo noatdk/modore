@@ -30,6 +30,10 @@ final class ModoreStatusItem: NSObject {
     /// the second chord so the user can see at a glance which combination
     /// forces katakana. Hidden when no secondary chord is active.
     private let katakanaMenuItem: NSMenuItem
+    /// Shown only when `[conversion] cycle_modifier` is bound — surfaces
+    /// the chord that cycles to the next Mozc candidate. Hidden when
+    /// cycle is disabled or its modifier collides.
+    private let cycleMenuItem: NSMenuItem
     private let deliveryMenuItem: NSMenuItem
     /// Shown only while SecureInput is held by another app — surfaces *why*
     /// the hotkey is silently failing in password fields / sudo prompts.
@@ -45,6 +49,7 @@ final class ModoreStatusItem: NSObject {
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         hotkeyMenuItem      = NSMenuItem(title: "Hotkey: —",   action: nil, keyEquivalent: "")
         katakanaMenuItem    = NSMenuItem(title: "",            action: nil, keyEquivalent: "")
+        cycleMenuItem       = NSMenuItem(title: "",            action: nil, keyEquivalent: "")
         deliveryMenuItem    = NSMenuItem(title: "Delivery: —", action: nil, keyEquivalent: "")
         secureInputMenuItem = NSMenuItem(title: "",            action: nil, keyEquivalent: "")
         super.init()
@@ -56,11 +61,14 @@ final class ModoreStatusItem: NSObject {
         hotkeyMenuItem.isEnabled = false
         katakanaMenuItem.isEnabled = false
         katakanaMenuItem.isHidden = true
+        cycleMenuItem.isEnabled = false
+        cycleMenuItem.isHidden = true
         deliveryMenuItem.isEnabled = false
         secureInputMenuItem.isEnabled = false
         secureInputMenuItem.isHidden = true
         menu.addItem(hotkeyMenuItem)
         menu.addItem(katakanaMenuItem)
+        menu.addItem(cycleMenuItem)
         menu.addItem(deliveryMenuItem)
         menu.addItem(secureInputMenuItem)
         menu.addItem(NSMenuItem.separator())
@@ -93,12 +101,13 @@ final class ModoreStatusItem: NSObject {
     }
 
     /// Update the live menu after a chord change or Carbon-registration flip.
-    /// `katakanaChord` is the secondary chord (if any) — pass `nil` when no
-    /// katakana modifier is bound. Main-thread only.
+    /// Pass `nil` for any derived chord that isn't bound — the corresponding
+    /// menu line is hidden. Main-thread only.
     func refresh(
         hotkey: ModoreConfig.ConversionHotkey,
         usingCarbonHotkey: Bool,
-        katakanaChord: ModoreConfig.ConversionHotkey? = nil
+        katakanaChord: ModoreConfig.ConversionHotkey? = nil,
+        cycleChord: ModoreConfig.ConversionHotkey? = nil
     ) {
         currentHotkeyLabel = hotkey.displayName
         hotkeyMenuItem.title = "Hotkey: \(hotkey.displayName)"
@@ -108,6 +117,13 @@ final class ModoreStatusItem: NSObject {
         } else {
             katakanaMenuItem.title = ""
             katakanaMenuItem.isHidden = true
+        }
+        if let cycle = cycleChord {
+            cycleMenuItem.title = "Cycle next: \(cycle.displayName)"
+            cycleMenuItem.isHidden = false
+        } else {
+            cycleMenuItem.title = ""
+            cycleMenuItem.isHidden = true
         }
         deliveryMenuItem.title = "Delivery: " + (usingCarbonHotkey
             ? "Carbon (system grab)"

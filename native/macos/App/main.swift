@@ -134,6 +134,12 @@ gConversionCoreFlags = modoreHotkey.coreFlags
 gKatakanaModifier = ModoreConfig.loadKatakanaModifier()
 Log.config("katakana modifier: \(gKatakanaModifier.displayName)")
 
+gCycleModifier = ModoreConfig.loadCycleModifier()
+Log.config("cycle modifier: \(gCycleModifier.displayName)")
+
+gCycleFromUndone = ModoreConfig.loadCycleFromUndone()
+Log.config("cycle_from_undone: \(gCycleFromUndone.displayName)")
+
 gUndoWindowMs = ModoreConfig.loadUndoWindowMs()
 Log.config(gUndoWindowMs == 0
     ? "undo window: disabled (undo_window_ms = 0)"
@@ -166,20 +172,21 @@ if !installEventTap() {
 // Install Carbon hotkey grab. If it succeeds the tap's hotkey-match branch
 // becomes a no-op (gated by `gUsingCarbonHotkey`); if it fails we fall back
 // to the tap's existing behavior with no functional change for the user.
-gCarbonHotkey = CarbonHotkey {
+gCarbonHotkey = CarbonHotkey()
+if gCarbonHotkey?.register(role: "primary", chord: modoreHotkey, onFire: {
     kHotkeyTapQueue.async { doPickup() }
-}
-if gCarbonHotkey?.register(modoreHotkey) == true {
+}) == true {
     gUsingCarbonHotkey = true
     Log.hotkey("Carbon hotkey registered — using RegisterEventHotKey for delivery")
 } else {
     Log.hotkey("Carbon hotkey unavailable — using CGEventTap fallback")
 }
 
-// Secondary chord (katakana modifier) — bound after the primary so its
-// callback can reuse the same dispatch queue. No-op when the modifier is
-// `.none` or collides with the primary's flags.
+// Derived chords (katakana, cycle) — bound after the primary so their
+// callbacks can reuse the same dispatch queue. Each is a no-op when its
+// modifier is `.none` or collides with another modifier in use.
 applyKatakanaSecondaryChord(primary: modoreHotkey, modifier: gKatakanaModifier)
+applyCycleChord(primary: modoreHotkey, cycle: gCycleModifier, katakana: gKatakanaModifier)
 
 // Menu-bar item. Created after Carbon registration so the very first
 // refresh shows the correct delivery path; subsequent refreshes come from
@@ -188,7 +195,8 @@ gStatusItem = ModoreStatusItem()
 gStatusItem?.refresh(
     hotkey: modoreHotkey,
     usingCarbonHotkey: gUsingCarbonHotkey,
-    katakanaChord: secondaryChordForStatus(primary: modoreHotkey))
+    katakanaChord: secondaryChordForStatus(primary: modoreHotkey),
+    cycleChord: cycleChordForStatus(primary: modoreHotkey))
 Log.boot("status item installed in menu bar")
 
 // SecureInput watcher. Starts polling immediately so a password prompt
