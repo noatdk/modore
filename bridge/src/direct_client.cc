@@ -37,9 +37,17 @@ std::unique_ptr<mozc::SessionHandler> CreateSessionHandler() {
 }
 
 mozc::SessionHandler* GetSessionHandler() {
-  static std::unique_ptr<mozc::SessionHandler> g_session_handler =
-      CreateSessionHandler();
-  return g_session_handler.get();
+  // Intentionally leaked. `MozcDirectClient`'s namespace-scope owner lives
+  // in mozc_bridge.cc; at exit, the order in which these two statics get
+  // destroyed across translation units is unspecified. When the handler
+  // tore down first, `~MozcDirectClient → DeleteSession → Call →
+  // GetSessionHandler()->EvalCommand` deref'd a dangling vtable and
+  // segfaulted at offset 0x8 — see the at-quit crash reports in
+  // ~/Library/Logs/DiagnosticReports/modore-host-*.ips. SessionHandler is
+  // process-lifetime by intent; never destroying it sidesteps the order.
+  static mozc::SessionHandler *g_session_handler =
+      CreateSessionHandler().release();
+  return g_session_handler;
 }
 
 }  // namespace
