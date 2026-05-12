@@ -154,14 +154,14 @@ func readFocusedField() -> FocusedField? {
         &focusedRef
     )
     if r1 != .success {
-        Log.ax("focused-element lookup failed: \(r1.rawValue)")
+        Log.ax("focused-element lookup failed: \(r1.rawValue)\(FrontmostApp.logSuffix())")
         if r1 == .apiDisabled || r1 == .cannotComplete {
             Log.ax("appears disabled for this process; restart the host after granting permission")
         }
         return nil
     }
     guard let focused = focusedRef else {
-        Log.ax("returned no focused element")
+        Log.ax("returned no focused element\(FrontmostApp.logSuffix())")
         return nil
     }
     let element = focused as! AXUIElement
@@ -178,11 +178,11 @@ func readFocusedField() -> FocusedField? {
         &valueRef
     )
     guard r2 == .success else {
-        Log.ax("value lookup failed on role=\(role): \(r2.rawValue)")
+        Log.ax("value lookup failed on role=\(role): \(r2.rawValue)\(FrontmostApp.logSuffix())")
         return nil
     }
     guard let s = valueRef as? String else {
-        Log.ax("value on role=\(role) is not a String (type=\(String(describing: type(of: valueRef!))))")
+        Log.ax("value on role=\(role) is not a String (type=\(String(describing: type(of: valueRef!))))\(FrontmostApp.logSuffix())")
         return nil
     }
 
@@ -471,7 +471,7 @@ func doClipboardPickup() {
     }
 
     guard var pickedText = picked else {
-        Log.clipboard("nothing to convert (Cmd+C didn't update clipboard in time)")
+        Log.clipboard("nothing to convert (Cmd+C didn't update clipboard in time)\(FrontmostApp.logSuffix())")
         // Don't leave the user with a stuck visible selection from our Shift+Opt+Left
         if didForceSelect {
             postKey(kVK_RightArrow)
@@ -528,10 +528,10 @@ func doPickup() {
         if replaceRange(in: field.element, start: start, end: end, replacement: result.replacement) {
             return
         }
-        Log.pickup("AX replace failed; falling back to clipboard mode")
+        Log.pickup("AX replace failed; falling back to clipboard mode\(FrontmostApp.logSuffix())")
     }
 
-    Log.pickup("using clipboard fallback (app does not expose AX text)")
+    Log.pickup("using clipboard fallback (app does not expose AX text)\(FrontmostApp.logSuffix())")
     doClipboardPickup()
 }
 
