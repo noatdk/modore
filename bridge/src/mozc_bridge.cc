@@ -143,6 +143,16 @@ extern "C" int mozc_bridge_convert(const char *romaji,
                                    char *out_buf,
                                    size_t out_cap,
                                    size_t *out_len) {
+    return mozc_bridge_convert_ex(romaji, romaji_len, out_buf, out_cap, out_len,
+                                  /*flags=*/0u);
+}
+
+extern "C" int mozc_bridge_convert_ex(const char *romaji,
+                                      size_t romaji_len,
+                                      char *out_buf,
+                                      size_t out_cap,
+                                      size_t *out_len,
+                                      unsigned int flags) {
     if (!g_initialized || !g_client) {
         set_error("mozc_bridge_init has not been called");
         return -1;
@@ -188,7 +198,21 @@ extern "C" int mozc_bridge_convert(const char *romaji,
         }
     }
 
-    // 2) SPACE → enter conversion mode (top candidate becomes preedit).
+    // 2) Conversion key(s). Two flows:
+    //
+    //    Default (kanji): SPACE selects the top kanji candidate. Crucially,
+    //    SPACE also flushes any half-formed romaji left in the composer —
+    //    e.g. the trailing "n" of "henkan" becomes "ん" because Mozc treats
+    //    it as word-final once SPACE enters conversion mode.
+    //
+    //    Katakana: F7 alone (which is what JIS keyboards send for "convert
+    //    to katakana") *only* operates on what's already kana. The trailing
+    //    pending "n" of "henkan" would survive into the output as a
+    //    full-width Latin "ｎ" (e.g. "henkan" → "ヘンカｎ"). To get the same
+    //    pending-romaji flush behavior the kanji path gets, send SPACE
+    //    first to enter conversion state (which flushes), then F7 to swap
+    //    the segment's form to full-width katakana.
+    const bool force_katakana = (flags & MOZC_CONVERT_FLAG_KATAKANA) != 0u;
     {
         mozc::commands::KeyEvent k;
         k.set_special_key(mozc::commands::KeyEvent::SPACE);
@@ -197,9 +221,17 @@ extern "C" int mozc_bridge_convert(const char *romaji,
           return -1;
         }
     }
+    if (force_katakana) {
+        mozc::commands::KeyEvent k;
+        k.set_special_key(mozc::commands::KeyEvent::F7);
+        if (!send_key(client, k, &out, "f7")) {
+          reset_session_best_effort(client);
+          return -1;
+        }
+    }
 
-    // 3) ENTER → commit top candidate. result.value() holds the committed
-    //    Japanese text.
+    // 3) ENTER → commit the active candidate. result.value() holds the
+    //    committed Japanese text.
     {
         mozc::commands::KeyEvent k;
         k.set_special_key(mozc::commands::KeyEvent::ENTER);

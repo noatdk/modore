@@ -47,6 +47,29 @@ int mozc_bridge_convert(const char *romaji,
                         size_t out_cap,
                         size_t *out_len);
 
+// Flag bits accepted by mozc_bridge_convert_ex.
+//
+// Combine with bitwise OR; pass 0 for the default (top-candidate kanji
+// conversion — same behavior as mozc_bridge_convert).
+//
+// KATAKANA: instead of letting Mozc pick its top kanji candidate, transform
+// the entire composition to full-width katakana and commit that. Useful for
+// loanwords where Mozc's top-1 is a forced kanji ("シドッチ" vs "史奉行").
+#define MOZC_CONVERT_FLAG_KATAKANA 0x1u
+
+// Convert a romaji span with explicit conversion-shape flags.
+//
+// Semantics, parameters, and return contract are identical to
+// mozc_bridge_convert. The only addition is `flags` — a bitfield of
+// MOZC_CONVERT_FLAG_* values controlling the target form. `flags = 0` is
+// exactly equivalent to mozc_bridge_convert.
+int mozc_bridge_convert_ex(const char *romaji,
+                           size_t romaji_len,
+                           char *out_buf,
+                           size_t out_cap,
+                           size_t *out_len,
+                           unsigned int flags);
+
 // Releases the engine. Optional — process exit is fine too.
 void mozc_bridge_shutdown(void);
 
