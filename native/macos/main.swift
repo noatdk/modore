@@ -621,6 +621,52 @@ func describeSelf() {
     Log.boot("bundle path=\(bundle.bundlePath)")
 }
 
+// MARK: - --check-config (preflight)
+//
+// Parse-before-swap as a user-facing feature, not just a runtime invariant:
+// validate the config without starting the engine. Parses both sections,
+// prints each one's outcome to stdout, and exits non-zero on a hard error so
+// callers like `pre-commit` hooks can fail loudly. Same code path the watcher
+// uses on a live reload — what `--check-config` accepts is exactly what the
+// running host would accept.
+
+/// Run preflight config validation, print a human-readable report to stdout,
+/// and exit. Exit code: 0 on a healthy load (including "no config, defaults
+/// will be used"), 1 if the file contains a `[conversion] hotkey` that
+/// doesn't parse, 2 if any `[clipboard]` key is rejected.
+func runConfigCheck() -> Never {
+    let url = ModoreConfig.configFileURL()
+    print("config path: \(url.path)")
+
+    var exit_code: Int32 = 0
+    switch ModoreConfig.loadConversionHotkeyOutcome() {
+    case .loaded(_, let source):
+        print("  [conversion]  ok      \(source)")
+    case .usingDefault(let reason):
+        print("  [conversion]  default \(reason)")
+    case .invalid(let reason):
+        print("  [conversion]  INVALID \(reason)")
+        exit_code = 1
+    }
+
+    let (timings, issues) = ModoreConfig.parseClipboardTimings()
+    print("  [clipboard]   pre_copy=\(timings.preCopyDelayMs)ms"
+        + " read_timeout=\(timings.readTimeoutMs)ms"
+        + " restore=\(timings.restoreClipboardDelayMs)ms")
+    for issue in issues {
+        print("                \(issue)")
+    }
+    if !issues.isEmpty && exit_code == 0 {
+        exit_code = 2
+    }
+
+    exit(exit_code)
+}
+
+if CommandLine.arguments.contains("--check-config") {
+    runConfigCheck()
+}
+
 // MARK: - Main
 
 let app = NSApplication.shared

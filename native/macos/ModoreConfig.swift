@@ -101,12 +101,23 @@ enum ModoreConfig {
     /// hard-coded defaults — never fails. Malformed values get a single
     /// `[config]` log line so the user can see what was ignored.
     static func loadClipboardTimings() -> ClipboardTimings {
+        let (t, issues) = parseClipboardTimings()
+        for issue in issues {
+            Log.config(issue)
+        }
+        return t
+    }
+
+    /// Same parse as `loadClipboardTimings()` but returns the validation
+    /// issues separately instead of logging them. Used by `--check-config`.
+    static func parseClipboardTimings() -> (ClipboardTimings, [String]) {
         var t = ClipboardTimings()
+        var issues: [String] = []
         let url = configFileURL()
         _ = forEachKeyValue(url) { section, key, value in
             guard section == "clipboard" else { return }
             guard let n = Int(value), n >= 0 else {
-                Log.config("ignoring [clipboard] \(key)=\(value) (expected non-negative integer)")
+                issues.append("ignoring [clipboard] \(key)=\(value) (expected non-negative integer)")
                 return
             }
             switch key {
@@ -114,10 +125,10 @@ enum ModoreConfig {
             case "read_timeout_ms":            t.readTimeoutMs = n
             case "restore_clipboard_delay_ms": t.restoreClipboardDelayMs = n
             default:
-                Log.config("ignoring [clipboard] \(key)=\(value) (unknown key)")
+                issues.append("ignoring [clipboard] \(key)=\(value) (unknown key)")
             }
         }
-        return t
+        return (t, issues)
     }
 
     /// Convenience for startup: always returns a usable chord, logs the outcome,

@@ -60,6 +60,28 @@ tuning knob, so leaving it fixed keeps the fast-path predictable.
 values are ignored with a `[config]` log line and the previous default
 stays in effect. Unknown keys in `[clipboard]` are logged and ignored.
 
+## Preflight: `modore-host --check-config` (macOS)
+
+Validate the config without starting the host. Reads the same file the
+running host would, prints what it found, and exits with a status that
+scripts (pre-commit hooks, dotfiles tests) can branch on:
+
+```text
+$ modore-host --check-config
+config path: /Users/you/.config/modore/modore.conf
+  [conversion]  ok      [conversion] hotkey=Ctrl+Shift+grave (/Users/you/.config/modore/modore.conf)
+  [clipboard]   pre_copy=30ms read_timeout=400ms restore=60ms
+```
+
+| Exit code | Meaning                                                                   |
+| :-------: | ------------------------------------------------------------------------- |
+| `0`       | Healthy load (or no file → defaults will be used at runtime).             |
+| `1`       | `[conversion] hotkey` parsed but is malformed.                            |
+| `2`       | A `[clipboard]` key was rejected (`hotkey` itself was fine).              |
+
+This is the "parse-before-swap" path made explicit: same code that runs
+on a live reload, but as a one-shot you can invoke from CI.
+
 ## Auto-reload
 
 **macOS only (today)**: edits to `modore.conf` are picked up live — no
@@ -85,3 +107,20 @@ the host after creating the file for the first time.
 
 Linux auto-reload is on the parity list ([`PARITY.md`](PARITY.md)) but
 not implemented yet.
+
+## Process supervision
+
+modore runs as a single process (no daemon/worker split). The runtime
+contains no internal supervisor; if the host process exits, it stays
+exited until restarted. Two recommended options:
+
+- **macOS — `launchd` user agent**. Drop a `~/Library/LaunchAgents/local.modore.host.plist`
+  with `KeepAlive = true` and `RunAtLoad = true` pointing at
+  `modore.app/Contents/MacOS/modore-host`, then `launchctl bootstrap
+  gui/$UID <plist>`. `launchd` restarts the binary on crash and at login.
+- **Linux — `systemd` user unit**. Already shipped; see [`linux.md`](linux.md).
+  `Restart=always` gives the same behavior.
+
+If/when we observe Mozc crashes destabilizing the hotkey listener, a
+daemon/worker split becomes worth implementing internally. Until then
+the platform supervisor is enough.

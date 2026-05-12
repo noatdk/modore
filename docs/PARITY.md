@@ -43,6 +43,7 @@ The Linux columns are the same binary on different display servers;
 | `~/.config/modore/modore.conf` (XDG)          |   ✓   |     ✓       |       ✓         |    ✗    |
 | Auto-reload on config change                  |   ✓¹² |     ✗       |       ✗         |    ✗    |
 | Tunable clipboard-fallback timings            |   ✓¹⁴ |     ✗       |       ✗         |    ✗    |
+| `--check-config` preflight (no engine start)  |   ✓¹⁵ |     ✗       |       ✗         |    ✗    |
 | Log file on disk (`modore.log`)               |   ✗¹⁰ |     ✓       |       ✓         |    ✗    |
 | First-run permission prompt                   |   ✓   |     —¹¹     |       —¹¹       |    ✗    |
 | systemd user unit shipped                     |   —   |     ✓       |       ✓         |    ✗    |
@@ -64,3 +65,5 @@ The Linux columns are the same binary on different display servers;
 ¹³ Polls until the trigger's modifier keys are released before synthesizing Cmd+C (otherwise the held Ctrl/Shift from the conversion hotkey poisons the synthetic copy in many apps). 3 s timeout. Self-emitted CGEvents are tagged with an off-screen `location` so the tap callback can skip them and never re-trigger pickup.
 
 ¹⁴ `[clipboard]` section: `pre_copy_delay_ms` (renderer catch-up after force-select), `read_timeout_ms` (max wait for `Cmd+C` to land on the clipboard), `restore_clipboard_delay_ms` (delay before restoring the user's clipboard). Reloads with `[conversion]`; malformed values are ignored. See [`configuration.md`](configuration.md).
+
+¹⁵ `modore-host --check-config` parses the same file the running host would and reports each section's outcome. Exits 0 on healthy load, 1 on malformed hotkey, 2 on rejected `[clipboard]` key. Useful for pre-commit hooks and dotfiles tests.
