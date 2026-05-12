@@ -9,6 +9,18 @@ enum ModoreConfig {
     struct ConversionHotkey: Equatable {
         var keyCode: CGKeyCode
         var coreFlags: CGEventFlags
+
+        /// Carbon `RegisterEventHotKey` expects a modifier mask using
+        /// `cmdKey` / `controlKey` / `shiftKey` / `optionKey` constants —
+        /// different bit layout from `CGEventFlags`. One place to translate.
+        var carbonModifierMask: UInt32 {
+            var mask: UInt32 = 0
+            if coreFlags.contains(.maskControl)   { mask |= UInt32(controlKey) }
+            if coreFlags.contains(.maskShift)     { mask |= UInt32(shiftKey)   }
+            if coreFlags.contains(.maskCommand)   { mask |= UInt32(cmdKey)     }
+            if coreFlags.contains(.maskAlternate) { mask |= UInt32(optionKey)  }
+            return mask
+        }
     }
 
     /// Three-way result for both startup and reload.

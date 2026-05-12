@@ -48,7 +48,7 @@ The Linux columns are the same binary on different display servers;
 
 ---
 
-¹ `CGEventTap` at session level — `native/macos/main.swift:416`.
+¹ Carbon `RegisterEventHotKey` (system-level grab) — `native/macos/CarbonHotkey.swift`. CGEventTap stays installed as a fallback (if Carbon registration ever fails) and as the self-event filter for synthesized CGEvents.
 ² `XGrabKey` with NumLock/CapsLock variants — `native/linux/main.cpp:2867`.
 ³ Native-Wayland windows don't see X11 grabs; use `--trigger` from a compositor bind.
 ⁴ AT-SPI only sees the field when the toolkit publishes it; native-Wayland Chromium/Electron usually doesn't, and we fall through to clipboard.

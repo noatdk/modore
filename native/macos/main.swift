@@ -30,21 +30,41 @@ let MOZC_PROFILE_DIR: String = {
 private var gConversionKeyCode: CGKeyCode = CGKeyCode(kVK_ANSI_Slash)
 private var gConversionCoreFlags: CGEventFlags = .maskControl
 
+/// True when the Carbon hotkey grab is active. The tap callback consults
+/// this to decide whether to also match-and-swallow the chord. If Carbon
+/// succeeded, the OS consumes the keystroke before the tap sees it anyway;
+/// gating the tap path defensively avoids a double-fire if that ever changes.
+private var gUsingCarbonHotkey: Bool = false
+
+/// Held for the lifetime of the process. `nil` if RegisterEventHotKey failed
+/// at startup (we then rely on the tap-based detector).
+private var gCarbonHotkey: CarbonHotkey?
+
+private func applyConversionHotkeyChord(_ chord: ModoreConfig.ConversionHotkey) {
+    gConversionKeyCode = chord.keyCode
+    gConversionCoreFlags = chord.coreFlags
+    if let ck = gCarbonHotkey {
+        let ok = ck.register(chord)
+        gUsingCarbonHotkey = ok
+        if !ok {
+            Log.hotkey("RegisterEventHotKey failed — falling back to tap-based detection")
+        }
+    }
+}
+
 func applyConversionHotkeyReload() {
     let prev = ModoreConfig.ConversionHotkey(
         keyCode: gConversionKeyCode, coreFlags: gConversionCoreFlags)
     switch ModoreConfig.loadConversionHotkeyOutcome() {
     case .loaded(let next, let source):
         if next != prev {
-            gConversionKeyCode = next.keyCode
-            gConversionCoreFlags = next.coreFlags
+            applyConversionHotkeyChord(next)
             Log.config("reloaded \(source)")
         }
     case .usingDefault(let reason):
         let def = ModoreConfig.defaultConversionHotkey()
         if def != prev {
-            gConversionKeyCode = def.keyCode
-            gConversionCoreFlags = def.coreFlags
+            applyConversionHotkeyChord(def)
             Log.config("reload: \(reason) — reverted to default")
         }
     case .invalid(let reason):
@@ -470,17 +490,20 @@ func doPickup() {
     doClipboardPickup()
 }
 
-// MARK: - Global hotkey (CGEventTap)
+// MARK: - Global hotkey (CGEventTap, fallback to CarbonHotkey)
 //
-// We use a CGEventTap at the session level instead of Carbon's
-// RegisterEventHotKey. Two reasons:
+// Primary delivery is Carbon's `RegisterEventHotKey` (see CarbonHotkey.swift)
+// — it's OS-grabbed, so the focused app never sees the keystroke and the
+// delivery path doesn't depend on a CGEventTap that macOS can timeout-disable
+// under load.
 //
-//   1. Symmetry with our event posting: we inject through the session tap
-//      (kPostTap above) so Chromium/Electron honors synthetic events, and we
-//      observe at the same level so our hotkey detection is consistent with
-//      what apps actually see.
-//   2. We can swallow the configured conversion keystroke cleanly by returning
-//      nil from the callback — the target key is not delivered to the app.
+// We still install this tap as:
+//
+//   1. A fallback hotkey detector if Carbon registration fails (chord already
+//      claimed by another app, etc.).
+//   2. The self-event filter for synthesized CGEvents (markSynthetic /
+//      isSynthetic). The marker is cheap insurance against any future feature
+//      that synthesizes the conversion chord.
 //
 // The callback must return promptly (~1s budget before macOS disables the
 // tap), so we dispatch the slow pickup work onto a background queue.
@@ -510,15 +533,20 @@ private let tapCallback: CGEventTapCallBack = { _, type, event, _ in
         return Unmanaged.passUnretained(event)
     }
 
-    let keyCode = CGKeyCode(event.getIntegerValueField(.keyboardEventKeycode))
-    let coreFlags = event.flags.intersection([
-        .maskCommand, .maskShift, .maskControl, .maskAlternate
-    ])
+    // When Carbon owns the hotkey the OS consumes the keystroke before we
+    // see it here, so this branch is unreachable in the common case. We
+    // still gate defensively in case that ever stops being true (e.g.
+    // newer macOS versions changing tap ordering).
+    if !gUsingCarbonHotkey {
+        let keyCode = CGKeyCode(event.getIntegerValueField(.keyboardEventKeycode))
+        let coreFlags = event.flags.intersection([
+            .maskCommand, .maskShift, .maskControl, .maskAlternate
+        ])
 
-    // Match configured chord (modifiers: Cmd / Shift / Ctrl / Option only).
-    if keyCode == gConversionKeyCode && coreFlags == gConversionCoreFlags {
-        kHotkeyTapQueue.async { doPickup() }
-        return nil // swallow — host app must not see the "/"
+        if keyCode == gConversionKeyCode && coreFlags == gConversionCoreFlags {
+            kHotkeyTapQueue.async { doPickup() }
+            return nil // swallow — host app must not see the "/"
+        }
     }
 
     return Unmanaged.passUnretained(event)
@@ -588,6 +616,19 @@ if !isTrusted(prompt: false) {
 if !installEventTap() {
     Log.hotkey("failed to create event tap — Accessibility permission missing?")
     exit(1)
+}
+
+// Install Carbon hotkey grab. If it succeeds the tap's hotkey-match branch
+// becomes a no-op (gated by `gUsingCarbonHotkey`); if it fails we fall back
+// to the tap's existing behavior with no functional change for the user.
+gCarbonHotkey = CarbonHotkey {
+    kHotkeyTapQueue.async { doPickup() }
+}
+if gCarbonHotkey?.register(modoreHotkey) == true {
+    gUsingCarbonHotkey = true
+    Log.hotkey("Carbon hotkey registered — using RegisterEventHotKey for delivery")
+} else {
+    Log.hotkey("Carbon hotkey unavailable — using CGEventTap fallback")
 }
 
 // Held for the lifetime of the process; tears down its DispatchSource on deinit.
