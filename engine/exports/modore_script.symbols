@@ -1,3 +1,10 @@
-_modore_script_init
-_modore_script_shutdown
-_modore_script_abi_version
+_mdr_init
+_mdr_shutdown
+_mdr_abi_version
+_mdr_set_log_callback
+_mdr_set_defaults
+_mdr_load_dir
+_mdr_pickup
+_mdr_replacement
+_mdr_route
+_mdr_candidates

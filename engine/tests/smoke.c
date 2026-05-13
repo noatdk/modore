@@ -2,7 +2,7 @@
  *
  * Asserts: init returns non-null, abi_version matches header, shutdown
  * is idempotent on NULL. Exits 0 on success, 1 on failure. No external
- * test framework dep on purpose — keeps Phase 01 self-contained.
+ * test framework dep on purpose.
  */
 
 #include "modore_script.h"
@@ -16,16 +16,16 @@ static int fail(const char* msg) {
 }
 
 int main(void) {
-    if (modore_script_abi_version() != MODORE_SCRIPT_ABI_VERSION) {
+    if (mdr_abi_version() != MDR_ABI_VERSION) {
         return fail("abi_version mismatch with header");
     }
 
-    modore_script_t* eng = modore_script_init();
+    mdr_engine_t* eng = mdr_init();
     if (!eng) return fail("init returned NULL");
 
-    modore_script_shutdown(eng);
-    modore_script_shutdown(NULL); /* idempotent on NULL */
+    mdr_shutdown(eng);
+    mdr_shutdown(NULL); /* idempotent on NULL */
 
-    printf("smoke: ok (abi=%d)\n", MODORE_SCRIPT_ABI_VERSION);
+    printf("smoke: ok (abi=%d)\n", MDR_ABI_VERSION);
     return 0;
 }

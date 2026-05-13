@@ -78,6 +78,9 @@ add_dependencies(luajit luajit_build)
 
 add_library(modore_script SHARED
     src/engine.c
+    src/sandbox.c
+    src/marshal.c
+    src/reload.c
 )
 target_include_directories(modore_script
     PUBLIC  ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -88,7 +91,7 @@ set_target_properties(modore_script PROPERTIES
     OUTPUT_NAME   modore_script
     C_VISIBILITY_PRESET hidden
 )
-target_compile_definitions(modore_script PRIVATE MODORE_SCRIPT_BUILDING)
+target_compile_definitions(modore_script PRIVATE MDR_BUILDING)
 
 # macOS: link Cocoa? not needed — pure C. LuaJIT needs libm/dl on Linux.
 if(UNIX AND NOT APPLE)
@@ -119,8 +122,12 @@ endif()
 
 if(MODORE_SCRIPT_BUILD_TESTS)
     enable_testing()
-    add_executable(smoke tests/smoke.c)
-    target_link_libraries(smoke PRIVATE modore_script)
-    target_include_directories(smoke PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
-    add_test(NAME smoke COMMAND smoke)
+    foreach(t smoke test_pickup test_replacement test_route test_candidates test_sandbox test_engine)
+        add_executable(${t} tests/${t}.c)
+        target_link_libraries(${t} PRIVATE modore_script)
+        target_include_directories(${t} PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/include
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+        add_test(NAME ${t} COMMAND ${t})
+    endforeach()
 endif()

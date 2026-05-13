@@ -22,17 +22,12 @@ pay the clone (~3 MB).
 ```
 engine/
 ├── CMakeLists.txt
-├── include/modore_script.h    ABI header (Phase 01 stub; pinned in Phase 02)
+├── include/modore_script.h    ABI v1 header
 ├── src/engine.c               init/shutdown wrapping a lua_State
 ├── tests/smoke.c              non-null + idempotent shutdown check
 └── README.md
 ```
 
-## Caveats
+## Features (ABI v1)
 
-- macOS arm64 only this phase. Dual-arch fat lib comes later if needed.
-- JIT toggleable via `-DMODORE_SCRIPT_JIT=OFF`. Default ON. Apple Silicon
-  app needs `com.apple.security.cs.allow-jit` entitlement (added in
-  Phase 03).
-- Scripts and hooks come in Phase 02. Right now the lib only opens an
-  empty Lua state with stdlib loaded.
+Scripts live in `~/.config/modore/scripts/` with optional per-app overrides: `default.lua` (fallback) and `<app_id>.lua` (e.g., `md.obsidian.lua`). Hooks are independently optional — define any subset of `modore.on_pickup`, `modore.on_replacement`, `modore.route_for_app`, `modore.on_candidates`. Missing, undefined, or error-returning hooks silently fall through to host defaults. Logging via `modore.log.{info,warn,error}` and trampoline access via `modore.default.{pickup,replacement,route}`. LuaJIT 2.1 interpreter or JIT (toggleable; Apple Silicon needs `com.apple.security.cs.allow-jit` entitlement). Sandbox strips `io`, `os.execute`, `os.popen`, `package`, `require`, `ffi`, and `debug`. Host wiring (integration with macOS/Linux/Windows shells) is still pending.

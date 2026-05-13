@@ -1,8 +1,15 @@
-MODORE_SCRIPT_1 {
+MDR_1 {
     global:
-        modore_script_init;
-        modore_script_shutdown;
-        modore_script_abi_version;
+        mdr_init;
+        mdr_shutdown;
+        mdr_abi_version;
+        mdr_set_log_callback;
+        mdr_set_defaults;
+        mdr_load_dir;
+        mdr_pickup;
+        mdr_replacement;
+        mdr_route;
+        mdr_candidates;
     local:
         *;
 };
