@@ -65,6 +65,7 @@ hotkey grammar, modifier aliases, and key names in
 
 ```
 bridge/             Cross-platform C ABI around Mozc. CMake build.
+engine/             Lua scripting (in development). Phase 01 complete; host API in Phase 02.
 native/macos/       Swift host: event tap + Accessibility + clipboard fallback.
 native/linux/       C++ host: X11 grab + Unix socket IPC + AT-SPI2 + clipboard fallback.
 third_party/        fcitx5-mozc submodule (provides CMake build of Mozc engine).

@@ -1,0 +1,8 @@
+MODORE_SCRIPT_1 {
+    global:
+        modore_script_init;
+        modore_script_shutdown;
+        modore_script_abi_version;
+    local:
+        *;
+};

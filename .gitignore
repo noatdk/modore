@@ -3,6 +3,9 @@ native/macos/build/
 bridge/build/
 build/
 
+# Lazily fetched scripting engine deps (see `make fetch-luajit`).
+third_party/luajit/
+
 # CMake spill — defensive, in case anything ever configures in-tree
 CMakeCache.txt
 CMakeFiles/

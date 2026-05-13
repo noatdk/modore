@@ -29,7 +29,8 @@ BRIDGE_DIR := bridge
 export PATH := $(CURDIR)/$(BRIDGE_DIR)/build-tools:$(PATH)
 
 .PHONY: help build run open bridge clean clean-bridge distclean signing \
-        check-platform macos linux install-user-bin test-puppeteer
+        check-platform macos linux install-user-bin test-puppeteer \
+        fetch-luajit engine engine-test clean-engine
 
 .DEFAULT_GOAL := help
 
@@ -72,13 +73,58 @@ bridge:
 	@cmake -S $(BRIDGE_DIR) -B $(BRIDGE_DIR)/build -G "Unix Makefiles" -DCMAKE_BUILD_TYPE=Release
 	@cmake --build $(BRIDGE_DIR)/build -j
 
+# ---- scripting engine -------------------------------------------------------
+# libmodore_script.{dylib,so}: Lua scripting engine, sibling to the Mozc
+# bridge. LuaJIT source is fetched lazily here, NOT a submodule — only users
+# who want scripting pay the clone.
+
+LUAJIT_DIR     := third_party/luajit
+# GitHub mirror used for shallow-clone support (luajit.org git server
+# advertises dumb HTTP, which rejects --depth=1).
+LUAJIT_REPO    := https://github.com/LuaJIT/LuaJIT.git
+LUAJIT_BRANCH  := v2.1
+# Pinned commit on v2.1. Bump deliberately; do not let the branch drift.
+LUAJIT_SHA     := 18b087cd2cd4ddc4a79782bf155383a689d5093d
+ENGINE_DIR     := engine
+ENGINE_BUILD   := build/engine
+
+fetch-luajit:
+	@if [ -d $(LUAJIT_DIR)/.git ]; then \
+	    have=$$(git -C $(LUAJIT_DIR) rev-parse HEAD); \
+	    if [ "$$have" = "$(LUAJIT_SHA)" ]; then \
+	        echo "luajit: already at pinned SHA $(LUAJIT_SHA)"; \
+	    else \
+	        echo "luajit: re-pinning $$have -> $(LUAJIT_SHA)"; \
+	        git -C $(LUAJIT_DIR) fetch --depth=1 origin $(LUAJIT_SHA) || \
+	            git -C $(LUAJIT_DIR) fetch origin $(LUAJIT_BRANCH); \
+	        git -C $(LUAJIT_DIR) checkout --detach $(LUAJIT_SHA); \
+	    fi; \
+	else \
+	    echo "luajit: cloning $(LUAJIT_REPO) @ $(LUAJIT_SHA)"; \
+	    git clone --branch $(LUAJIT_BRANCH) $(LUAJIT_REPO) $(LUAJIT_DIR); \
+	    git -C $(LUAJIT_DIR) checkout --detach $(LUAJIT_SHA); \
+	fi
+
+engine:
+	@if [ ! -d $(LUAJIT_DIR)/.git ]; then \
+	    echo "luajit not fetched. Run: make fetch-luajit"; exit 1; \
+	fi
+	@cmake -S $(ENGINE_DIR) -B $(ENGINE_BUILD) -G "Unix Makefiles" -DCMAKE_BUILD_TYPE=Release
+	@cmake --build $(ENGINE_BUILD) -j
+
+engine-test: engine
+	@ctest --test-dir $(ENGINE_BUILD) --output-on-failure
+
+clean-engine:
+	@rm -rf $(ENGINE_BUILD)
+
 clean: check-platform
 	@$(MAKE) --no-print-directory -C $(NATIVE_DIR) clean
 
 clean-bridge:
 	@rm -rf $(BRIDGE_DIR)/build
 
-distclean: clean clean-bridge
+distclean: clean clean-bridge clean-engine
 	@echo "Wiped all build outputs. Next 'make' will rebuild Mozc (~5 min)."
 
 # One-time setup: create the self-signed code-signing identity macOS needs
@@ -111,6 +157,9 @@ help:
 	@echo "  make linux      build the Linux host explicitly"
 	@echo "  make install-user-bin   Linux: install to ~/.local (modore-host + bridge .so)"
 	@echo "  make bridge     build only the cross-platform Mozc bridge"
+	@echo "  make fetch-luajit  lazy clone LuaJIT 2.1 into third_party/luajit/"
+	@echo "  make engine     build libmodore_script (requires fetch-luajit first)"
+	@echo "  make engine-test  run engine smoke harness"
 	@echo
 	@echo "Run:"
 	@echo "  make run        build and launch the host app"

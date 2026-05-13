@@ -40,6 +40,12 @@ The Linux columns are the same binary on different display servers;
 | Floating candidate panel                      |   ✓   |     ✗       |       ✗         |    ✗    |
 | Bootstrap from existing Mozc / GJI profile    |   ✗   |     ✗       |       ✗         |    ✗    |
 
+## Scripting
+
+| Feature                                       | macOS | Linux (X11) | Linux (Wayland) | Windows |
+| --------------------------------------------- | :---: | :---------: | :-------------: | :-----: |
+| Lua scripting engine (scaffolded)             |   ◐   |     ◐       |       ◐         |    ◐    |
+
 ## Config & lifecycle
 
 | Feature                                       | macOS | Linux (X11) | Linux (Wayland) | Windows |
