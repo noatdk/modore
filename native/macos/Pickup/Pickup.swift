@@ -308,7 +308,20 @@ func runConversionOnAcquiredText(_ raw: String, request: PickupRequest, appId: S
         appId: appId, list: baseCandidates, currentIndex: 0) ?? baseCandidates
 
     Log.pickup("scripted acquire replace → \(replacement) (alts=\(snapshotCandidates.count))")
+
+    // Observability for CodeMirror one-row-drift investigation: capture the
+    // AX selection range immediately before postUnicode, and again ~80ms
+    // after the synthetic events have had a chance to be processed. The
+    // *before* snapshot is the load-bearing one — if `sel.len` exceeds the
+    // visible line length, the editor's range straddles a boundary that
+    // postUnicode will replace. The *after* snapshot shows what survived.
+    let pickedU16Len = pickedText.utf16.count
+    let replacementU16Len = replacement.utf16.count
+    axSelectionSnapshot(label: "pre-postUnicode pickedU16=\(pickedU16Len)")
     postUnicode(replacement)
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+        axSelectionSnapshot(label: "post-postUnicode replacementU16=\(replacementU16Len)")
+    }
 
     // Frontmost-app captured at doPickup entry (passed in as `appId`) so a
     // mid-flight app switch can't tag the session against the wrong window.
@@ -358,6 +371,11 @@ func doPickup(_ request: PickupRequest = .init()) {
     // copy / read routine using `modore.host.*` and return the picked
     // text. The script is expected to leave the focused-app selection
     // ACTIVE so postUnicode below can overwrite it.
+    // Snapshot AX state *before* on_acquire runs. Compared against the
+    // pre-postUnicode snapshot inside runConversionOnAcquiredText, this
+    // pinpoints whether the script's send_chord sequence ends in a
+    // selection that's larger than the line content.
+    axSelectionSnapshot(label: "pre-acquire")
     if let picked = ModoreScript.acquire(appId: appId) {
         Log.pickup("scripted acquire → \(picked.count) chars\(FrontmostApp.logSuffix())")
         runConversionOnAcquiredText(picked, request: request, appId: appId)

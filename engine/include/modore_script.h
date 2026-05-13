@@ -193,6 +193,15 @@ typedef struct {
 
     /* Write text to clipboard. Returns 1 on success. */
     int  (*clipboard_write)(void* host_ud, const char* text, size_t len);
+
+    /* Read the focused-element's currently selected text via the host's
+     * accessibility surface (no clipboard touch). Lets scripts pick up the
+     * active selection without sending Cmd+C, which in some editors
+     * (Obsidian/CodeMirror) silently extends the range linewise and
+     * corrupts the replacement boundary. Returns NUL-terminated UTF-8 in
+     * out_buf; NUL-terminator counted in out_cap. Returns 1 on success,
+     * 0 if AX is unavailable / no element focused / nothing selected. */
+    int  (*read_selection)(void* host_ud, char* out_buf, size_t out_cap, size_t* out_len);
 } mdr_host_ops_t;
 
 MDR_EXPORT int mdr_set_host_ops(mdr_engine_t*, const mdr_host_ops_t* ops, void* host_userdata);

@@ -189,6 +189,117 @@ func replaceRange(in element: AXUIElement, start: Int, end: Int, replacement: St
     return true
 }
 
+/// Diagnostic-only snapshot of the focused field's AX state. Reads role,
+/// value length (utf16), and selection range — each soft-failing — and
+/// logs a single line tagged `[ax-snap label]`. Used by the imperative
+/// pickup path to disambiguate where the one-row drift comes from in
+/// CodeMirror-based editors: the *length* of the selection at the moment
+/// postUnicode fires tells us whether the editor's internal range
+/// extends past the visible line content (trailing-newline theory) or
+/// starts before line-start (leading-newline theory), or neither.
+func axSelectionSnapshot(label: String) {
+    let systemWide = AXUIElementCreateSystemWide()
+    var focusedRef: CFTypeRef?
+    let r1 = AXUIElementCopyAttributeValue(
+        systemWide, kAXFocusedUIElementAttribute as CFString, &focusedRef)
+    guard r1 == .success, let focused = focusedRef else {
+        Log.ax("snap[\(label)] focused-element lookup failed: \(r1.rawValue)")
+        return
+    }
+    let element = focused as! AXUIElement
+
+    // Element identity. CFHash isn't a stable address but two AXUIElements
+    // for the same underlying view hash equal, so this is enough to spot
+    // "the focused node changed between snapshots."
+    let eid = String(CFHash(element), radix: 16)
+
+    func readString(_ attr: String) -> String? {
+        var ref: CFTypeRef?
+        if AXUIElementCopyAttributeValue(element, attr as CFString, &ref) == .success {
+            return ref as? String
+        }
+        return nil
+    }
+
+    let role     = readString(kAXRoleAttribute as String) ?? "?"
+    let subrole  = readString(kAXSubroleAttribute as String) ?? "-"
+    let title    = readString(kAXTitleAttribute as String) ?? "-"
+    let desc     = readString(kAXDescriptionAttribute as String) ?? "-"
+    let helpStr  = readString(kAXHelpAttribute as String) ?? "-"
+    let ident    = readString(kAXIdentifierAttribute as String) ?? "-"
+
+    // Parent role helps disambiguate sibling text-area-like nodes
+    // (CodeMirror's contenteditable vs. a popup vs. an offscreen label).
+    var parentRole = "-"
+    var parentRef: CFTypeRef?
+    if AXUIElementCopyAttributeValue(
+        element, kAXParentAttribute as CFString, &parentRef) == .success,
+       let parent = parentRef {
+        let parentEl = parent as! AXUIElement
+        var pRoleRef: CFTypeRef?
+        if AXUIElementCopyAttributeValue(
+            parentEl, kAXRoleAttribute as CFString, &pRoleRef) == .success {
+            parentRole = (pRoleRef as? String) ?? "?"
+        }
+    }
+
+    var valueLen = -1
+    var valueSample = "-"
+    if let s = readString(kAXValueAttribute as String) {
+        valueLen = s.utf16.count
+        // Truncate to a single log-friendly line. Replace newlines with
+        // ⏎ so a line break in the value doesn't break log parsing.
+        let oneLine = s.replacingOccurrences(of: "\n", with: "⏎")
+                       .replacingOccurrences(of: "\r", with: "␍")
+        valueSample = oneLine.count > 120
+            ? String(oneLine.prefix(120)) + "…"
+            : oneLine
+    }
+
+    var selDesc = "?"
+    var rangeRef: CFTypeRef?
+    if AXUIElementCopyAttributeValue(
+        element, kAXSelectedTextRangeAttribute as CFString, &rangeRef) == .success,
+       let rv = rangeRef {
+        var cfRange = CFRange(location: 0, length: 0)
+        if AXValueGetValue(rv as! AXValue, .cfRange, &cfRange) {
+            selDesc = "[\(cfRange.location),\(cfRange.location + cfRange.length)] len=\(cfRange.length)"
+        }
+    }
+
+    var selTextLen = -1
+    if let s = readString(kAXSelectedTextAttribute as String) {
+        selTextLen = s.utf16.count
+    }
+
+    Log.ax("snap[\(label)] eid=\(eid) role=\(role)/\(subrole) parent=\(parentRole) "
+         + "title='\(title)' desc='\(desc)' help='\(helpStr)' id='\(ident)' "
+         + "valueLen=\(valueLen) sel=\(selDesc) selTextLen=\(selTextLen) "
+         + "value='\(valueSample)'")
+}
+
+/// Read `kAXSelectedTextAttribute` from the system-wide focused element.
+/// Returns nil if AX read fails or the attribute is absent. Used by the
+/// `modore.host.read_selection` Lua primitive so scripts can pick up the
+/// active selection without going through Cmd+C — in editors that apply
+/// linewise-copy heuristics on Cmd+C (Obsidian's CodeMirror), the
+/// clipboard path silently extends the editor's range past the visible
+/// selection and corrupts the subsequent postUnicode replacement.
+func readFocusedSelection() -> String? {
+    let systemWide = AXUIElementCreateSystemWide()
+    var focusedRef: CFTypeRef?
+    let r1 = AXUIElementCopyAttributeValue(
+        systemWide, kAXFocusedUIElementAttribute as CFString, &focusedRef)
+    guard r1 == .success, let focused = focusedRef else { return nil }
+    let element = focused as! AXUIElement
+
+    var selRef: CFTypeRef?
+    let r2 = AXUIElementCopyAttributeValue(
+        element, kAXSelectedTextAttribute as CFString, &selRef)
+    guard r2 == .success else { return nil }
+    return selRef as? String
+}
+
 /// Ask the OS whether this process is allowed to use Accessibility APIs.
 /// With `prompt: true`, macOS shows the "grant access" sheet on first call.
 func isTrusted(prompt: Bool) -> Bool {

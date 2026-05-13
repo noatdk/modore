@@ -24,6 +24,7 @@ enum ModoreScript {
     // acquire/release pairing that makes the boot-time write visible.
     // If a second writer is ever introduced, this needs a lock.
     private static var engine: OpaquePointer? = nil
+    private static var scriptsDir: String? = nil
 
     static func boot(scriptDir: String) {
         guard let h = mdr_init() else {
@@ -31,10 +32,24 @@ enum ModoreScript {
             return
         }
         engine = h
+        scriptsDir = scriptDir
         _ = mdr_set_log_callback(h, logTrampoline, nil)
         registerHostOps(h)
         _ = mdr_load_dir(h, scriptDir)
         Log.tagged("scripting", "engine ABI v\(mdr_abi_version()) loaded (dir=\(scriptDir))")
+        if gAxTraceEnabled {
+            Log.tagged("scripting", "MODORE_AX_TRACE=1 → per-chord AX snapshots ENABLED")
+        }
+    }
+
+    /// True iff `<appId>.lua` exists in the scripts dir. Used by the status
+    /// item to surface that a per-app script will run for the frontmost app.
+    /// `default.lua` does NOT count — it'd light up the indicator for every
+    /// app and stop being a useful signal.
+    static func hasScript(forAppId appId: String) -> Bool {
+        guard let dir = scriptsDir, !appId.isEmpty else { return false }
+        let path = (dir as NSString).appendingPathComponent("\(appId).lua")
+        return FileManager.default.fileExists(atPath: path)
     }
 
     /// Wire the four imperative primitives Lua scripts can compose inside
@@ -72,6 +87,19 @@ enum ModoreScript {
                 let pb = NSPasteboard.general
                 pb.clearContents()
                 return pb.setString(s, forType: .string) ? 1 : 0
+            },
+            read_selection: { _, outBuf, cap, outLen in
+                guard let buf = outBuf, let lenOut = outLen, cap > 0 else { return 0 }
+                guard let s = readFocusedSelection(), !s.isEmpty else { return 0 }
+                let bytes = Array(s.utf8)
+                let n = min(bytes.count, cap - 1)
+                bytes.withUnsafeBytes { src in
+                    guard let base = src.baseAddress else { return }
+                    UnsafeMutableRawPointer(buf).copyMemory(from: base, byteCount: n)
+                }
+                buf[n] = 0
+                lenOut.pointee = n
+                return 1
             }
         )
         _ = mdr_set_host_ops(h, &ops, nil)
@@ -242,12 +270,32 @@ enum ModoreScript {
 /// Parse a chord string and synthesize it via postKey. Falls back to a
 /// log line when the chord is unparseable so scripts surface their typos
 /// instead of silently no-op'ing.
+/// Set `MODORE_AX_TRACE=1` to log an AX snapshot after every host-driven
+/// chord. The post-chord state is taken after a short sleep to give the
+/// receiving app's event loop a tick to commit the selection change.
+fileprivate let gAxTraceEnabled: Bool = {
+    if let v = ProcessInfo.processInfo.environment["MODORE_AX_TRACE"] {
+        return v == "1" || v.lowercased() == "true"
+    }
+    return false
+}()
+
 fileprivate func hostSendChord(_ chord: String) {
     guard let hk = ModoreConfig.parseChord(chord) else {
         Log.tagged("scripting", "send_chord: unparseable '\(chord)'")
         return
     }
+    if gAxTraceEnabled {
+        axSelectionSnapshot(label: "pre-chord '\(chord)'")
+    }
     postKey(hk.keyCode, flags: hk.coreFlags)
+    if gAxTraceEnabled {
+        // Tiny delay so the receiving app's event loop has a tick to
+        // commit selection state before we read it back. 20ms is enough
+        // for CodeMirror's transaction batching in informal tests.
+        Thread.sleep(forTimeInterval: 0.020)
+        axSelectionSnapshot(label: "post-chord '\(chord)'")
+    }
 }
 
 // MARK: - Log trampoline
@@ -265,6 +313,16 @@ private let logTrampoline: mdr_log_cb = { _, level, tag, msg in
     default: prefix = ""
     }
     Log.tagged("scripting:" + tagStr, prefix + msgStr)
+
+    // Engine emits `reloading '<path>'` from ms_maybe_reload on every
+    // content-edit pickup. The directory-level fs watcher misses these
+    // (editing a file inside the dir doesn't bump dir metadata), so this
+    // is the one place we can catch them. Bounce to main for the UI poke.
+    if tagStr == "engine" && msgStr.hasPrefix("reloading ") {
+        DispatchQueue.main.async {
+            gStatusItem?.flashReload(kind: "scripts")
+        }
+    }
     return 0
 }
 

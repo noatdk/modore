@@ -195,6 +195,18 @@ static int host_clipboard_write(lua_State* L) {
     return 1;
 }
 
+static int host_read_selection(lua_State* L) {
+    mdr_engine_t* eng = get_engine(L);
+    if (!eng || !eng->host_ops.read_selection) { lua_pushnil(L); return 1; }
+    char buf[4096];
+    size_t n = 0;
+    int rc = eng->host_ops.read_selection(eng->host_ops_ud, buf, sizeof(buf), &n);
+    if (rc != 1) { lua_pushnil(L); return 1; }
+    if (n >= sizeof(buf)) n = sizeof(buf) - 1;
+    lua_pushlstring(L, buf, n);
+    return 1;
+}
+
 /* ---- one-time global registration ------------------------------------ */
 
 void ms_register_modore_globals(mdr_engine_t* eng) {
@@ -219,11 +231,12 @@ void ms_register_modore_globals(mdr_engine_t* eng) {
     lua_setfield(L, LUA_REGISTRYINDEX, RK_MODORE_DEFAULT);
 
     /* Shared `modore.host` table — imperative primitives for on_acquire. */
-    lua_createtable(L, 0, 4);
+    lua_createtable(L, 0, 5);
     lua_pushcfunction(L, host_send_chord);      lua_setfield(L, -2, "send_chord");
     lua_pushcfunction(L, host_sleep_ms);        lua_setfield(L, -2, "sleep_ms");
     lua_pushcfunction(L, host_clipboard_read);  lua_setfield(L, -2, "clipboard_read");
     lua_pushcfunction(L, host_clipboard_write); lua_setfield(L, -2, "clipboard_write");
+    lua_pushcfunction(L, host_read_selection);  lua_setfield(L, -2, "read_selection");
     lua_setfield(L, LUA_REGISTRYINDEX, RK_MODORE_HOST);
 }
 
