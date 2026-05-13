@@ -93,12 +93,16 @@ private func looksLikeLineCopy(_ s: String) -> Bool {
 /// because the app line-copies the caret's current line *without* a
 /// trailing newline (so `looksLikeLineCopy` misses it). Chrome's DevTools
 /// console is the discovered offender; the same Chromium behaviour
-/// presumably exists in other Chromium-hosted dev surfaces. AX-capable
-/// surfaces in these apps never reach this code path (they go through
-/// doPickup → readFocusedField), so blocklisting the whole bundle here
-/// only affects the already-unreliable clipboard-fallback regions.
+/// presumably exists in other Chromium-hosted dev surfaces. Obsidian's
+/// CodeMirror editor behaves the same way — and on top of that it
+/// silently rejects AXValue writes, so every conversion lands here.
+/// AX-capable surfaces in these apps never reach this code path (they
+/// go through doPickup → readFocusedField), so blocklisting the whole
+/// bundle here only affects the already-unreliable clipboard-fallback
+/// regions.
 private let kPeekExistingSelectionBlocklist: Set<String> = [
     "com.google.Chrome",
+    "md.obsidian",
 ]
 
 func doClipboardPickup(_ request: PickupRequest = .init()) {
