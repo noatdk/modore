@@ -1,99 +1,100 @@
 # modore
 
-Modeless Japanese IME pickup. Type romaji into any app, hit the conversion
-hotkey (default `Ctrl+/`), and the word at the caret is replaced with its Mozc
-top-candidate conversion.
+![demo](docs/clip.gif)
 
-## Status
+English: [README.en.md](README.en.md)
 
+モードレスな日本語IME。ローマ字をそのまま打ってホットキー（デフォルトは
+`Ctrl+/`）を押すと、カーソル位置の単語がMozcのトップ候補に置き換わる。
+モード切り替えなし、変換中の下線UIなし、必要なときだけ呼ぶ方式。
 
-| Host    | State                                                              |
-| ------- | ------------------------------------------------------------------ |
-| macOS   | shipping; configurable hotkey, candidate cycling + Esc-undo + optional candidate panel |
-| Linux   | shipping; X11 grab + AT-SPI2 + Unix socket IPC + Wayland fallbacks |
-| Windows | planned, not started                                               |
+## ステータス
 
+| OS      | 状態                                                                 |
+| ------- | -------------------------------------------------------------------- |
+| macOS   | 動作中。ホットキー設定、候補サイクル、Escでアンドゥ、候補パネル付き    |
+| Linux   | 動作中。X11 grab + AT-SPI2 + Unixソケット IPC + Waylandフォールバック |
+| Windows | 未着手                                                               |
 
-Per-host feature matrix: [docs/PARITY.md](docs/PARITY.md). Update it in the
-same commit that adds or removes a capability.
+機能比較は [docs/PARITY.md](docs/PARITY.md)。機能を足したり外したりした
+コミットで一緒に更新すること。
 
-## Build & run
+## ビルドと起動
 
 ```sh
-make             # print the list of available targets
-make build       # build the host app for the current platform
-make run         # build and launch (Linux + macOS)
-make open        # macOS only: build and open the .app bundle
+make             # 使えるターゲット一覧を表示
+make build       # ホストアプリをビルド
+make run         # ビルドして起動（Linux + macOS）
+make open        # macOSのみ：.appバンドルを開く
 ```
 
-First build pulls ~150 MB of Mozc + protobuf + abseil source and downloads
-the ~48 MB Mozc OSS dictionary. Subsequent builds are incremental and finish
-in a few seconds.
+初回ビルドだけMozc + protobuf + abseilのソース（合計 ~150 MB）を取ってきて、
+Mozc OSS辞書（~48 MB）も落としてくる。2回目以降はインクリメンタルで数秒。
 
-**macOS** prompts for Accessibility permission on first launch — required for
-reading/writing the focused text field. Grant it in *System Settings → Privacy
-& Security → Accessibility*, then re-launch. Once running, a **ﾓﾄﾞﾚ** label
-appears in the menu bar; its menu shows the live hotkey + delivery path
-(Carbon vs tap fallback) and has shortcuts for editing/revealing the config
-and quitting. The label flips to red while another app holds Secure Keyboard
-Entry (sudo prompts, password fields) — the OS blocks injection in that
-state, so the menu surfaces which app to release.
+**macOS**: 初回起動でアクセシビリティ権限を聞いてくる。フォーカス中の
+テキストフィールドを読み書きするのに必須なので、*システム設定 →
+プライバシーとセキュリティ → アクセシビリティ* で許可して起動し直す。
+起動後はメニューバーに **ﾓﾄﾞﾚ** ラベルが出る。メニューには現在のホット
+キー、配送経路（Carbon / イベントタップ・フォールバック）、設定の編集や
+場所表示、終了が並んでいる。他アプリがSecure Keyboard Entry（sudoの
+プロンプトやパスワード欄）を握っている間はラベルが赤くなる。OSがその間
+キー注入をブロックするので、どのアプリを離せばいいかメニューですぐわかる。
 
-**Linux** runs from your graphical login (AT-SPI needs the session D-Bus).
-For Wayland compositors, Hyprland binds, the `--trigger` socket, Chromium/
-Electron quirks, and the systemd user unit, see [docs/linux.md](docs/linux.md).
+**Linux**: GUIログインから起動する（AT-SPIがセッションD-Busを使うため）。
+Waylandコンポジタ、Hyprlandのバインド、`--trigger`ソケット、Chromium /
+Electron周りの癖、systemdユーザーユニットは [docs/linux.md](docs/linux.md)
+に書いてある。
 
-## Configuration
+## 設定
 
-`~/.config/modore/modore.conf` (or `$XDG_CONFIG_HOME/modore/modore.conf`),
-INI-style, only `[conversion]` is defined today:
+`~/.config/modore/modore.conf`（または `$XDG_CONFIG_HOME/modore/modore.conf`）。
+INI形式。今のところ `[conversion]` セクションだけ：
 
 ```ini
 [conversion]
 hotkey = Ctrl+Shift+grave
 ```
 
-Default is `Ctrl+Slash`. Full hotkey grammar, modifier aliases, and key names
-in [docs/configuration.md](docs/configuration.md).
+デフォルトは `Ctrl+Slash`。ホットキー文法、修飾キーの別名、キー名は
+[docs/configuration.md](docs/configuration.md) に。
 
-## Layout
+## 構成
 
 ```
-bridge/             Cross-platform C ABI around Mozc. CMake build.
-native/macos/       Swift host: event tap + Accessibility + clipboard fallback.
-native/linux/       C++ host: X11 grab + Unix socket IPC + AT-SPI2 + clipboard fallback.
-third_party/        fcitx5-mozc submodule (provides CMake build of Mozc engine).
+bridge/             Mozcを包むC ABIラッパー。クロスプラットフォーム、CMakeビルド。
+native/macos/       Swiftホスト：イベントタップ + アクセシビリティ + クリップボードフォールバック。
+native/linux/       C++ホスト：X11 grab + Unixソケット IPC + AT-SPI2 + クリップボードフォールバック。
+third_party/        fcitx5-mozc submodule（Mozcエンジンのビルドはここ経由）。
 ```
 
-The bridge is a shared library (`libmozc_bridge.dylib` on macOS,
-`libmozc_bridge.so` on Linux, ~25 MB) that statically links the Mozc engine,
-abseil, and protobuf. Frontends only need to consume the flat C ABI in
-`bridge/include/mozc_bridge.h`.
+bridgeは共有ライブラリ（macOSは `libmozc_bridge.dylib`、Linuxは
+`libmozc_bridge.so`、~25 MB）。Mozcエンジン・abseil・protobufは静的に
+リンク済み。フロントエンドからは `bridge/include/mozc_bridge.h` の
+フラットなC ABIだけ叩けばよい。
 
-## References
+## 参考
 
-Implementation notes draw on:
+実装で参考にしたもの：
 
-- [espanso](https://github.com/espanso/espanso) — Carbon hotkey delivery,
-synthetic-event marker, modifier-release wait, Unicode-injection chunking,
-SecureInput watcher.
-- [OpenKey](https://github.com/tuyenvm/OpenKey) — session-tap posting
-location for synthetic key events (the path that reaches Chromium /
-Electron).
-- [ibus-hiragana](https://github.com/esrille/ibus-hiragana) — conversion-time
-UX ideas (candidate cycling, MRU history, okurigana handling, per-conversion
-katakana modifier).
+- [espanso](https://github.com/espanso/espanso) — Carbonホットキー配送、
+合成イベントの目印、修飾キー解放待ち、Unicode注入のチャンキング、
+SecureInputウォッチャー。
+- [OpenKey](https://github.com/tuyenvm/OpenKey) — 合成キーイベントを
+セッションタップに流す位置（Chromium / Electronまで届く経路）。
+- [ibus-hiragana](https://github.com/esrille/ibus-hiragana) — 変換まわりの
+UX（候補サイクル、MRU履歴、送り仮名、変換ごとのカタカナ修飾）。
 
-## Requirements
+## 必要なもの
 
 - CMake 3.22+
-- Python 3 (Mozc's build scripts invoke `python`)
+- Python 3（Mozcのビルドスクリプトが `python` を呼ぶ）
 - **macOS**: Xcode Command Line Tools
-- **Linux**: GCC or Clang with C++20, X11 + XTest dev (`libX11`, `libXtst`),
-AT-SPI (`atspi-2`, GLib), and `pkg-config`. Clipboard helpers: `xclip` (X11)
-and/or `wl-clipboard` (`wl-paste` / `wl-copy`) on Wayland compositors.
+- **Linux**: C++20が通るGCCかClang、X11 + XTest開発ヘッダ（`libX11`,
+`libXtst`）、AT-SPI（`atspi-2`, GLib）、`pkg-config`。クリップボード
+補助はX11なら `xclip`、Waylandなら `wl-clipboard`（`wl-paste` /
+`wl-copy`）。
 
-## License
+## ライセンス
 
-MIT, see [LICENSE](LICENSE). Bundled third-party code (Mozc, fcitx5-mozc,
-abseil-cpp, protobuf) is BSD-3-Clause; see [bridge/NOTICE.md](bridge/NOTICE.md).
+MIT、[LICENSE](LICENSE) 参照。同梱の3rdパーティ（Mozc、fcitx5-mozc、
+abseil-cpp、protobuf）はBSD-3-Clause、詳細は [bridge/NOTICE.md](bridge/NOTICE.md)。
