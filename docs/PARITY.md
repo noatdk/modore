@@ -42,9 +42,13 @@ The Linux columns are the same binary on different display servers;
 
 ## Scripting
 
-| Feature                                       | macOS | Linux (X11) | Linux (Wayland) | Windows |
-| --------------------------------------------- | :---: | :---------: | :-------------: | :-----: |
-| Lua scripting engine (ABI + sandbox + reload) |   ✓   |     ◐²⁰      |       ◐²⁰       |    ◐    |
+| Feature                                          | macOS | Linux (X11) | Linux (Wayland) | Windows |
+| ------------------------------------------------ | :---: | :---------: | :-------------: | :-----: |
+| Lua scripting engine (LuaJIT 2.1 + sandbox)      |   ✓   |     ◐²⁰     |       ◐²⁰       |    ✗    |
+| Hooks: pickup / replacement / route              |   ✓   |     ◐²⁰     |       ◐²⁰       |    ✗    |
+| Hooks: candidates / acquire + host primitives    |   ✓   |     ✗       |       ✗         |    ✗    |
+| Per-app `<app-id>.lua` lookup                    |   ✓   |     ✗²¹     |       ✗²¹       |    ✗    |
+| Hot-reload on content edit + dir add/remove      |   ✓   |     ◐²²     |       ◐²²       |    ✗    |
 
 ## Config & lifecycle
 
@@ -85,5 +89,9 @@ The Linux columns are the same binary on different display servers;
 ¹⁸ Leading `[A-Z][A-Z0-9&/.+\-_:@#]*` head followed by lowercase is held back from Mozc and re-attached to the result, so `R&Diraisho` → `R&D依頼書` and `APIkaitou` → `API回答`. Single-uppercase words (`Karen`) are not split. Phase 2 plans a user dict at `~/.config/modore/non-japanese.txt` for tokens this heuristic misses. See `native/macos/Pickup/SpanSplit.swift::splitAcronymHead`.
 
 ²⁰ Code integrated; build verification pending on Linux.
+
+²¹ wm-class probe not yet plumbed on Linux, so the engine receives NULL app_id and only `default.lua` ever matches. macOS reads bundle id via `NSWorkspace.frontmostApplication`.
+
+²² Per-file content edits reload on the next hotkey press (engine's mtime poll). The macOS host also watches the scripts directory itself via `ConfigWatcher`, so adding or removing files is picked up live; the Linux host has no equivalent watcher yet, so new files only appear after a host restart.
 
 ¹⁷ Polls `IORegistry → IOConsoleUsers → kCGSSessionSecureInputPID` on a background timer (3 s idle / 1 s while held). When held by another app (sudo prompts in Terminal/iTerm, password fields in 1Password/Bitwarden/Safari, the Lock Screen, Touch ID) the menu-bar title flips to red and a `⚠ Blocked by <App>` line appears in the menu — so the user knows why the hotkey is silently failing. `modore-host --secure-input-status` is a one-shot diagnostic. See `native/macos/SecureInputMonitor.swift`. The feature is "—" on Linux/Windows because Secure Keyboard Entry is a macOS-only OS concept.
