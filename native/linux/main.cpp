@@ -13,6 +13,7 @@
 #include "config.hpp"
 #include "ipc.hpp"
 #include "log.hpp"
+#include "scripting.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -1402,20 +1403,50 @@ bool try_pickup_atspi(bool* direct_done, std::string* inject_utf8,
 
   glong span_start = 0;
   glong span_end = 0;
-  gint n_sel = atspi_text_get_n_selections(text, &err);
-  g_clear_error(&err);
-  if (n_sel > 0) {
-    AtspiRange* range = atspi_text_get_selection(text, 0, &err);
-    if (!err && range) {
-      span_start = range->start_offset;
-      span_end = range->end_offset;
-      g_free(range);
+
+  // Script-driven pickup span override. Engine ABI speaks UTF-8 byte
+  // offsets; AT-SPI speaks Unicode-char offsets. Convert at the boundary
+  // via g_utf8_offset_to_pointer / g_utf8_pointer_to_offset.
+  bool scripted_pickup = false;
+  {
+    const gsize full_bytes = std::strlen(full);
+    // Clamp the AT-SPI caret to [0, n_chars] before glib's offset walk,
+    // which otherwise reads past the NUL terminator if the app reports a
+    // caret beyond the field's character count.
+    const glong safe_caret = std::clamp<glong>(caret, 0, n_chars);
+    const gsize caret_byte =
+        static_cast<gsize>(g_utf8_offset_to_pointer(full, safe_caret) - full);
+    auto scripted = modore_script::pickup_span(
+        std::string(full, full_bytes), caret_byte, /*app_id*/ nullptr, /*katakana*/ false);
+    if (scripted) {
+      const std::size_t sb = std::min(scripted->first,  full_bytes);
+      const std::size_t eb = std::min(scripted->second, full_bytes);
+      if (sb <= eb) {
+        span_start = g_utf8_pointer_to_offset(full, full + sb);
+        span_end   = g_utf8_pointer_to_offset(full, full + eb);
+        scripted_pickup = true;
+        logf("AT-SPI: script pickup span chars=[%ld..%ld] bytes=[%zu..%zu]",
+             static_cast<long>(span_start), static_cast<long>(span_end), sb, eb);
+      }
+    }
+  }
+
+  if (!scripted_pickup) {
+    gint n_sel = atspi_text_get_n_selections(text, &err);
+    g_clear_error(&err);
+    if (n_sel > 0) {
+      AtspiRange* range = atspi_text_get_selection(text, 0, &err);
+      if (!err && range) {
+        span_start = range->start_offset;
+        span_end = range->end_offset;
+        g_free(range);
+      } else {
+        g_clear_error(&err);
+        word_range_chars(full, caret, n_chars, &span_start, &span_end);
+      }
     } else {
-      g_clear_error(&err);
       word_range_chars(full, caret, n_chars, &span_start, &span_end);
     }
-  } else {
-    word_range_chars(full, caret, n_chars, &span_start, &span_end);
   }
 
   // Edge/Chromium often report caret=0 immediately after focus or typing — `word_range_chars`
@@ -1454,7 +1485,12 @@ bool try_pickup_atspi(bool* direct_done, std::string* inject_utf8,
   }
 
   std::string romaji;
-  utf8_substr_bytes(full, span_start, span_end, &romaji);
+  const gchar* span_a = g_utf8_offset_to_pointer(full, span_start);
+  const gchar* span_b = g_utf8_offset_to_pointer(full, span_end);
+  // Byte offsets stashed for the scripting layer (engine ABI is UTF-8 bytes).
+  const std::size_t span_start_byte = static_cast<std::size_t>(span_a - full);
+  const std::size_t span_end_byte   = static_cast<std::size_t>(span_b - full);
+  romaji.assign(span_a, span_b - span_a);
   g_free(full);
   MODORE_E2E_LOGF("try_pickup_atspi: span_start=%ld span_end=%ld romaji_bytes=%zu", static_cast<long>(span_start),
                   static_cast<long>(span_end), romaji.size());
@@ -1466,6 +1502,21 @@ bool try_pickup_atspi(bool* direct_done, std::string* inject_utf8,
       g_object_unref(focus);
       return false;
     }
+
+    // Script-driven replacement override. Mozc's top candidate is what the
+    // host would write; scripts can rewrite it before the AT-SPI delete +
+    // insert. nullopt → keep Mozc's choice.
+    {
+      const std::vector<std::string> cands = { converted };
+      auto scripted = modore_script::replacement(
+          /*app_id*/ nullptr, span_start_byte, span_end_byte, cands);
+      if (scripted) {
+        logf("AT-SPI: script replacement override (was '%s', now '%s')",
+             converted.c_str(), scripted->c_str());
+        converted = std::move(*scripted);
+      }
+    }
+
     gboolean ok1 = atspi_editable_text_delete_text(ed, span_start, span_end, &err);
     if (!ok1) {
       g_clear_error(&err);
@@ -2560,6 +2611,25 @@ static void snapshot_clip_for_restore(std::string* clip_saved) {
 void do_pickup(Display* d) {
   std::lock_guard<std::mutex> lock(g_pickup_mu);
   MODORE_E2E_LOGF("do_pickup: enter d=%s", d ? "X11" : "null");
+
+  // Per-app routing override. Today wm-class isn't plumbed (passing NULL);
+  // scripts can still branch on env or always-on rules. A script returning
+  // "clipboard" skips the AT-SPI try and goes straight to the clipboard
+  // fallback — useful for apps where AT-SPI lies about success. "ax" and
+  // "keystroke" are no-ops here (existing flow already tries AT-SPI first
+  // then falls back to clipboard/keystroke).
+  auto scripted_route = modore_script::route_for(nullptr);
+  if (scripted_route && *scripted_route == modore_script::Route::Clipboard) {
+    modore_log("scripting", "route → clipboard (user script)");
+    if (std::getenv("WAYLAND_DISPLAY")) {
+      nap_after_compose_event(std::chrono::milliseconds(1));
+    }
+    std::string clip_saved;
+    snapshot_clip_for_restore(&clip_saved);
+    do_clipboard_pickup(d, clip_saved, false);
+    return;
+  }
+
   // macOS always tries Accessibility first for the real selection + direct replace. Linux used to
   // skip AT-SPI when DISPLAY was omitted (native Wayland), which forced the slow clipboard/Ctrl+C
   // pipeline. Try AT-SPI regardless of X11 Display; fall back to synthetic keys only when needed.
@@ -2812,6 +2882,19 @@ int main(int argc, char** argv) {
   }
   modore_log("config", "[conversion] hotkey=%s — ~/.config/modore/modore.conf",
              modore_config.conversion_hotkey_description.c_str());
+
+  // Scripting engine. Empty / missing dir is a pass-through no-op.
+  {
+    std::string scripts_dir;
+    const char* xdg = std::getenv("XDG_CONFIG_HOME");
+    if (xdg && *xdg) {
+      scripts_dir = std::string(xdg) + "/modore/scripts";
+    } else {
+      const char* home = std::getenv("HOME");
+      scripts_dir = std::string(home ? home : "") + "/.config/modore/scripts";
+    }
+    modore_script::boot(scripts_dir);
+  }
 
   if (atspi_init() != 0) {
     modore_log("atspi", "init failed");

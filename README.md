@@ -65,7 +65,7 @@ hotkey = Ctrl+Shift+grave
 
 ```
 bridge/             Mozc用のC ABIラッパー。クロスプラットフォーム、CMakeビルド。
-engine/             Lua スクリプティング。ABI v1 完成。macOS統合済み；Linux + Windows は保留中。
+engine/             Lua スクリプティング。ABI v1 完成。macOS統合済み、Linux はコード統合済み（要動作検証）、Windows は保留中。
 native/macos/       Swiftホスト：イベントタップ + アクセシビリティ + クリップボードフォールバック。
 native/linux/       C++ホスト：X11 grab + Unixソケット IPC + AT-SPI2 + クリップボードフォールバック。
 third_party/        fcitx5-mozcサブモジュール（Mozcエンジンのビルドを提供）。
