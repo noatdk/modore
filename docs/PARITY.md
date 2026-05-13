@@ -33,6 +33,7 @@ The Linux columns are the same binary on different display servers;
 | Feature                                       | macOS | Linux (X11) | Linux (Wayland) | Windows |
 | --------------------------------------------- | :---: | :---------: | :-------------: | :-----: |
 | Top-candidate Mozc conversion (in-process)    |   ✓   |     ✓       |       ✓         |    ✗    |
+| Acronym/code prefix preserved (`R&Diraisho`)  |   ✓¹⁸ |     ✗       |       ✗         |    ✗    |
 | Cycle through Mozc candidates (repeat hotkey) |   ✓   |     ✗       |       ✗         |    ✗    |
 | Esc to undo last conversion                   |   ✓   |     ✗       |       ✗         |    ✗    |
 | Katakana modifier (Shift+hotkey → カタカナ)   |   ✓   |     ✗       |       ✗         |    ✗    |
@@ -74,5 +75,7 @@ The Linux columns are the same binary on different display servers;
 ¹⁵ `modore-host --check-config` parses the same file the running host would and reports each section's outcome. Exits 0 on healthy load, 1 on malformed hotkey, 2 on rejected `[clipboard]` key. Useful for pre-commit hooks and dotfiles tests.
 
 ¹⁶ `NSStatusItem` showing "ﾓﾄﾞﾚ" (half-width katakana for "modore") in the menu bar; menu lists the live hotkey, delivery path (Carbon vs CGEventTap), and shortcuts for opening / revealing the config plus Quit. Refreshes automatically on config reload. See `native/macos/StatusItem.swift`.
+
+¹⁸ Leading `[A-Z][A-Z0-9&/.+\-_:@#]*` head followed by lowercase is held back from Mozc and re-attached to the result, so `R&Diraisho` → `R&D依頼書` and `APIkaitou` → `API回答`. Single-uppercase words (`Karen`) are not split. Phase 2 plans a user dict at `~/.config/modore/non-japanese.txt` for tokens this heuristic misses. See `native/macos/Pickup/SpanSplit.swift::splitAcronymHead`.
 
 ¹⁷ Polls `IORegistry → IOConsoleUsers → kCGSSessionSecureInputPID` on a background timer (3 s idle / 1 s while held). When held by another app (sudo prompts in Terminal/iTerm, password fields in 1Password/Bitwarden/Safari, the Lock Screen, Touch ID) the menu-bar title flips to red and a `⚠ Blocked by <App>` line appears in the menu — so the user knows why the hotkey is silently failing. `modore-host --secure-input-status` is a one-shot diagnostic. See `native/macos/SecureInputMonitor.swift`. The feature is "—" on Linux/Windows because Secure Keyboard Entry is a macOS-only OS concept.

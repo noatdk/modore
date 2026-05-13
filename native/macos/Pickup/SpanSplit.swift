@@ -74,6 +74,51 @@ func splitTrailingASCII(_ s: String) -> (prefix: String, tail: String) {
     return (prefix, tail)
 }
 
+/// Split off a leading acronym/code head from an ASCII string so Mozc only
+/// sees the trailing romaji. `"R&Diraisho"` → `("R&D", "iraisho")`,
+/// `"APIkaitou"` → `("API", "kaitou")`, `"iraisho"` → `("", "iraisho")`.
+///
+/// A head qualifies only if it (a) starts with an uppercase letter, (b) is
+/// at least two chars long, (c) contains at least one upper/digit/symbol
+/// beyond the first char, and (d) is followed by a lowercase letter. Rules
+/// (b)+(c) keep ordinary capitalised words like `Karen` from being split.
+/// Romaji never contains uppercase, digits, or these ASCII symbols, so the
+/// transition is a strong signal that the head is not romaji-for-kana.
+///
+/// Symbols accepted in the head are the ones that appear in real acronyms
+/// (`R&D`, `Wi-Fi`, `C++`, `.NET`, `IPv6`) but never in Hepburn / kunrei
+/// romaji. Phase 2 will add a user dictionary at
+/// `~/.config/modore/non-japanese.txt` for tokens this heuristic misses.
+func splitAcronymHead(_ ascii: String) -> (head: String, tail: String) {
+    let chars = Array(ascii.unicodeScalars)
+    guard chars.count >= 2 else { return ("", ascii) }
+    let isUpper: (Unicode.Scalar) -> Bool = { $0.value >= 0x41 && $0.value <= 0x5A }
+    let isLower: (Unicode.Scalar) -> Bool = { $0.value >= 0x61 && $0.value <= 0x7A }
+    let isDigit: (Unicode.Scalar) -> Bool = { $0.value >= 0x30 && $0.value <= 0x39 }
+    let acronymSymbols: Set<Unicode.Scalar> = ["&", "-", ".", "_", "+", "/", ":", "@", "#"]
+    let isAcronymSym: (Unicode.Scalar) -> Bool = { acronymSymbols.contains($0) }
+
+    guard isUpper(chars[0]) else { return ("", ascii) }
+    var i = 1
+    var sawNonLetter = false
+    while i < chars.count {
+        let c = chars[i]
+        if isUpper(c) {
+            i += 1
+        } else if isDigit(c) || isAcronymSym(c) {
+            sawNonLetter = true
+            i += 1
+        } else {
+            break
+        }
+    }
+    guard i >= 2, i < chars.count, isLower(chars[i]) else { return ("", ascii) }
+    guard i >= 3 || sawNonLetter else { return ("", ascii) }
+    let head = String(String.UnicodeScalarView(chars[0..<i]))
+    let tail = String(String.UnicodeScalarView(chars[i..<chars.count]))
+    return (head, tail)
+}
+
 /// UTF-16 substring helper, matching the AX/JS index domain used throughout
 /// the pickup pipeline. Returns `nil` if the bounds are out of range or empty.
 func sliceUTF16(_ text: String, start: Int, end: Int) -> String? {

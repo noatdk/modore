@@ -63,6 +63,36 @@ struct SpanSplitTests {
         // canonical "tsuchi-yoshi" test.
         expectTuple(splitTrailingASCII("𠮷野yoshi"),       ("𠮷野", "yoshi"),       "split keeps surrogate pair intact")
 
+        // MARK: - splitAcronymHead
+        //
+        // Acronyms/codes embedded as a prefix to romaji (`R&Diraisho`) would
+        // otherwise be fed wholesale to Mozc, which can't romaji-convert
+        // uppercase / symbol / digit chars and returns either garbage or
+        // the input unchanged. Phase 1 heuristic: leading uppercase run with
+        // at least one non-letter signal, followed by a lowercase letter.
+        expectTuple(splitAcronymHead("R&Diraisho"),  ("R&D",  "iraisho"),  "acronym U-S-U head")
+        expectTuple(splitAcronymHead("APIiraisho"),  ("API",  "iraisho"),  "acronym 3xU head")
+        expectTuple(splitAcronymHead("JSONkaitou"),  ("JSON", "kaitou"),   "acronym 4xU head")
+        // Heads with internal lowercase (`IPv6`, `iPhone`) aren't split —
+        // the walker stops at the first lowercase. Acceptable: those don't
+        // fit a clean acronym pattern anyway, and Phase 2's user dict
+        // covers them.
+        expectTuple(splitAcronymHead("IPv6settei"),  ("",     "IPv6settei"), "no split: mixed-case head")
+        expectTuple(splitAcronymHead(".NETkaihatsu"),("",     ".NETkaihatsu"), "no split: must start with uppercase letter")
+        // Single-capital words like names must NOT split — `Karen` is not
+        // an acronym. Two-uppercase heads are also rejected to keep noise
+        // down (`IT`, `JS` could be typos; users can hit hotkey on the
+        // lowercase part only if needed).
+        expectTuple(splitAcronymHead("Karen"),       ("",     "Karen"),    "no split: single uppercase head")
+        expectTuple(splitAcronymHead("ABcde"),       ("",     "ABcde"),    "no split: 2-uppercase head without symbol")
+        expectTuple(splitAcronymHead("iraisho"),     ("",     "iraisho"),  "no split: plain romaji")
+        expectTuple(splitAcronymHead("desu"),        ("",     "desu"),     "no split: plain romaji short")
+        expectTuple(splitAcronymHead("R&D"),         ("",     "R&D"),      "no split: no lowercase tail")
+        expectTuple(splitAcronymHead("C++"),         ("",     "C++"),      "no split: no lowercase tail (symbols)")
+        expectTuple(splitAcronymHead("8byte"),       ("",     "8byte"),    "no split: doesn't start with uppercase")
+        expectTuple(splitAcronymHead(""),            ("",     ""),         "no split: empty")
+        expectTuple(splitAcronymHead("A"),           ("",     "A"),        "no split: single char")
+
         // MARK: - wordBounds (sanity coverage — the script-break stop is the load-bearing part)
 
         expectTuple(wordBounds(Array("hello world".utf16), caret: 3),  (0, 5),  "wordBounds caret in first word")

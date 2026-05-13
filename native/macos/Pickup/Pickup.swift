@@ -197,18 +197,23 @@ func doClipboardPickup(_ request: PickupRequest = .init()) {
         return
     }
 
+    // Carve off any leading acronym/code (`R&D`, `API`, …) so Mozc only
+    // sees the romaji tail.
+    let (acronymHead, mozcInput) = splitAcronymHead(romajiTail)
+    let frozenPrefix = asciiPrefix + acronymHead
+
     // Fetch candidates so the cycle gesture has something to work with in
     // this app too. Esc-undo and cycle on the clipboard path use a
     // backspace + retype strategy (the alternative — re-running the
     // selection + Cmd+C dance — would be much slower per cycle press).
-    guard let result = callBackend(romajiTail, request: request, wantCandidates: true) else {
+    guard let result = callBackend(mozcInput, request: request, wantCandidates: true) else {
         Log.clipboard("backend returned no result")
         if didForceSelect {
             postKey(kVK_RightArrow)
         }
         return
     }
-    let replacement = asciiPrefix + result.replacement
+    let replacement = frozenPrefix + result.replacement
     Log.clipboard("replace -> \(replacement) (alts=\(result.candidates.count))")
 
     // Replace the active selection by injecting the replacement as a Unicode
@@ -226,7 +231,7 @@ func doClipboardPickup(_ request: PickupRequest = .init()) {
     let snapshotCandidates: [String] =
         result.candidates.isEmpty
             ? [replacement]
-            : result.candidates.map { asciiPrefix + $0 }
+            : result.candidates.map { frozenPrefix + $0 }
     let frontmost = FrontmostApp.describe()
     let session = ConversionSession(
         backing: .clipboard(
@@ -302,14 +307,19 @@ func doPickup(_ request: PickupRequest = .init()) {
             return
         }
 
+        // Carve off any leading acronym/code (`R&D`, `API`, `JSON`) so Mozc
+        // only sees the actual romaji. Reattached to the replacement below.
+        let (acronymHead, mozcInput) = splitAcronymHead(romajiTail)
+        let frozenPrefix = asciiPrefix + acronymHead
+
         // AX path requests candidates so the snapshot can power Esc-undo
         // and the cycle gesture. Clipboard fallback below skips this —
         // no stable span to act on.
-        guard let result = callBackend(romajiTail, request: request, wantCandidates: true) else {
+        guard let result = callBackend(mozcInput, request: request, wantCandidates: true) else {
             Log.pickup("backend returned no result")
             return
         }
-        let replacement = asciiPrefix + result.replacement
+        let replacement = frozenPrefix + result.replacement
         Log.pickup("replace -> \(replacement) (alts=\(result.candidates.count))")
 
         if replaceRange(in: field.element, start: start, end: end, replacement: replacement) {
@@ -324,7 +334,7 @@ func doPickup(_ request: PickupRequest = .init()) {
             let snapshotCandidates: [String] =
                 result.candidates.isEmpty
                     ? [replacement]
-                    : result.candidates.map { asciiPrefix + $0 }
+                    : result.candidates.map { frozenPrefix + $0 }
             let session = ConversionSession(
                 backing: .ax(element: field.element, spanStart: start),
                 originalReading: spanText,
