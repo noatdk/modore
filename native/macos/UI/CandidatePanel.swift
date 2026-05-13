@@ -425,15 +425,44 @@ final class CandidatePanel {
             // AppKit: bottom-left origin from primary, y grows up. Flip via
             // primary screen's frame max-y.
             let primaryMaxY = NSScreen.screens.first?.frame.maxY ?? 0
-            let belowX = axRect.minX
-            let belowY = primaryMaxY - axRect.maxY - size.height - 4
-            target = NSPoint(x: belowX, y: belowY)
+            let inputBottomAppKit = primaryMaxY - axRect.maxY
+            let inputTopAppKit = primaryMaxY - axRect.minY
+            let belowY = inputBottomAppKit - size.height - 4
+            let aboveY = inputTopAppKit + 4
+            // Flip above the input when there isn't enough room beneath it
+            // (input near the bottom edge of the screen). Otherwise the
+            // panel would be clamped to the bottom and cover the field.
+            let probe = NSPoint(x: axRect.minX, y: inputBottomAppKit)
+            let visible = screen(containing: probe)?.visibleFrame
+            let y: CGFloat
+            if let f = visible, belowY < f.minY, aboveY + size.height <= f.maxY {
+                y = aboveY
+            } else {
+                y = belowY
+            }
+            target = NSPoint(x: axRect.minX, y: y)
         case .mousePoint(let p):
             // Place just below-and-right of the cursor so it doesn't sit
             // exactly under the pointer (which would feel like a tooltip).
-            target = NSPoint(x: p.x + 12, y: p.y - size.height - 12)
+            // Flip above when the cursor is too close to the bottom edge.
+            let belowY = p.y - size.height - 12
+            let aboveY = p.y + 12
+            let visible = screen(containing: p)?.visibleFrame
+            let y: CGFloat
+            if let f = visible, belowY < f.minY, aboveY + size.height <= f.maxY {
+                y = aboveY
+            } else {
+                y = belowY
+            }
+            target = NSPoint(x: p.x + 12, y: y)
         }
         return clamp(target, size: size)
+    }
+
+    private func screen(containing point: NSPoint) -> NSScreen? {
+        NSScreen.screens.first(where: { $0.frame.contains(point) })
+            ?? NSScreen.main
+            ?? NSScreen.screens.first
     }
 
     /// Keep the whole panel on-screen. If the natural anchor would push the
