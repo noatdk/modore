@@ -10,6 +10,8 @@ MDR_1 {
         mdr_replacement;
         mdr_route;
         mdr_candidates;
+        mdr_acquire;
+        mdr_set_host_ops;
     local:
         *;
 };

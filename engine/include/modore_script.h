@@ -15,10 +15,11 @@
  * call from multiple threads must serialize externally.
  *
  * Per-hook opt-in is a hard invariant. Every hook (`on_pickup`,
- * `on_replacement`, `route_for_app`, `on_candidates`) is independently
- * optional. A script may define one, all, or none. Engine behaviour
- * for "missing hook", "hook returns nil", and "hook errors" is identical:
- * the mdr_* hook returns 0, telling the host to use its built-in default.
+ * `on_replacement`, `route_for_app`, `on_candidates`, `on_acquire`) is
+ * independently optional. A script may define one, all, or none. Engine
+ * behaviour for "missing hook", "hook returns nil", and "hook errors" is
+ * identical: the mdr_* hook returns 0, telling the host to use its
+ * built-in default.
  */
 
 #ifndef MODORE_SCRIPT_H
@@ -164,6 +165,61 @@ MDR_EXPORT int mdr_candidates(
     const char* const* in_cands, size_t n_in,
     int current_idx,
     char* out_buf, size_t out_cap, size_t* out_count);
+
+/* ----- Host primitives ------------------------------------------------- */
+
+/* The on_acquire hook is imperative: scripts compose their own
+ * text-acquisition routine by calling primitives the host registered.
+ * Each primitive may be NULL — Lua-side `modore.host.<name>` returns nil
+ * if the host didn't wire that primitive.
+ *
+ * Threading: every primitive is invoked from the host's pickup thread,
+ * synchronously, while a script hook is on the stack. Hosts must call
+ * any AppKit / Cocoa work via the relevant queue if needed (the macOS
+ * implementation marshals to main thread for AX where required).
+ */
+typedef struct {
+    /* Send a key chord, e.g. "shift+cmd+left", "cmd+c". Syntax is the
+     * host's chord parser (the same one used for hotkey config). */
+    void (*send_chord)(void* host_ud, const char* chord);
+
+    /* Block for `ms` milliseconds. */
+    void (*sleep_ms)(void* host_ud, unsigned ms);
+
+    /* Read current clipboard text. Returns NUL-terminated UTF-8 written
+     * into out_buf; NUL-terminator counted in out_cap. Returns 1 on
+     * success, 0 if clipboard is empty / not text. */
+    int  (*clipboard_read)(void* host_ud, char* out_buf, size_t out_cap, size_t* out_len);
+
+    /* Write text to clipboard. Returns 1 on success. */
+    int  (*clipboard_write)(void* host_ud, const char* text, size_t len);
+} mdr_host_ops_t;
+
+MDR_EXPORT int mdr_set_host_ops(mdr_engine_t*, const mdr_host_ops_t* ops, void* host_userdata);
+
+/* Per-app text-acquisition hook.
+ *
+ * The host calls this at the top of its pickup pipeline. The script's
+ * `on_acquire(ctx)` composes a routine using `modore.host.*` primitives
+ * and returns either:
+ *
+ *   - a string: the picked text. Host treats this as the equivalent of
+ *     what `Cmd+C` would have produced — host strips trailing newlines,
+ *     runs Mozc, and writes the replacement back. The script is expected
+ *     to leave the focused-app selection ACTIVE on the picked text so
+ *     the replacement injection lands on it.
+ *
+ *   - nil: no opinion; host uses its built-in acquisition path
+ *     (AX read first, clipboard fallback).
+ *
+ * Same context shape as on_pickup (full_text + caret + app_id + flags).
+ * On the imperative path the host typically passes app_id only; full_text
+ * may be empty because the host hasn't read anything yet.
+ */
+MDR_EXPORT int mdr_acquire(
+    mdr_engine_t*,
+    const char* app_id,
+    char* out_buf, size_t out_cap, size_t* out_len);
 
 #ifdef __cplusplus
 }

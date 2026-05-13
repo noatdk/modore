@@ -12,6 +12,7 @@
 // UTF-16 code units. Conversions live in this file so call sites stay in
 // UTF-16 land.
 
+import AppKit
 import Foundation
 
 enum ModoreScript {
@@ -31,8 +32,49 @@ enum ModoreScript {
         }
         engine = h
         _ = mdr_set_log_callback(h, logTrampoline, nil)
+        registerHostOps(h)
         _ = mdr_load_dir(h, scriptDir)
         Log.tagged("scripting", "engine ABI v\(mdr_abi_version()) loaded (dir=\(scriptDir))")
+    }
+
+    /// Wire the four imperative primitives Lua scripts can compose inside
+    /// `modore.on_acquire`. Each trampoline is a `@convention(c)` function
+    /// pointer with no Swift captures, so it's emitted as a stable linker-
+    /// level symbol; the stack-local `ops` carries only the four pointer
+    /// values, and `mdr_set_host_ops` copies them into engine storage. The
+    /// `ops` local can safely go out of scope after the call.
+    private static func registerHostOps(_ h: OpaquePointer) {
+        var ops = mdr_host_ops_t(
+            send_chord: { _, chordPtr in
+                guard let p = chordPtr, let chord = String(validatingUTF8: p) else { return }
+                hostSendChord(chord)
+            },
+            sleep_ms: { _, ms in
+                if ms > 0 { Thread.sleep(forTimeInterval: Double(ms) / 1000.0) }
+            },
+            clipboard_read: { _, outBuf, cap, outLen in
+                guard let buf = outBuf, let lenOut = outLen, cap > 0 else { return 0 }
+                guard let s = NSPasteboard.general.string(forType: .string) else { return 0 }
+                let bytes = Array(s.utf8)
+                let n = min(bytes.count, cap - 1)
+                bytes.withUnsafeBytes { src in
+                    guard let base = src.baseAddress else { return }
+                    UnsafeMutableRawPointer(buf).copyMemory(from: base, byteCount: n)
+                }
+                buf[n] = 0
+                lenOut.pointee = n
+                return 1
+            },
+            clipboard_write: { _, textPtr, len in
+                guard let p = textPtr else { return 0 }
+                let data = Data(bytes: p, count: len)
+                guard let s = String(data: data, encoding: .utf8) else { return 0 }
+                let pb = NSPasteboard.general
+                pb.clearContents()
+                return pb.setString(s, forType: .string) ? 1 : 0
+            }
+        )
+        _ = mdr_set_host_ops(h, &ops, nil)
     }
 
     static func shutdown() {
@@ -44,6 +86,27 @@ enum ModoreScript {
     static var isLoaded: Bool { engine != nil }
 
     // MARK: - Hooks
+
+    /// Run the script's `on_acquire` hook for `appId`. The script composes
+    /// its own pickup routine via `modore.host.*` and returns the picked
+    /// text (which should leave the focused-app selection ACTIVE so the
+    /// host can inject the replacement on top of it). Nil = use host
+    /// default acquisition.
+    static func acquire(appId: String?) -> String? {
+        guard let h = engine else { return nil }
+        var outBuf = [CChar](repeating: 0, count: 4096)
+        var outLen: size_t = 0
+        let rc = withOptionalCString(appId) { p in
+            outBuf.withUnsafeMutableBufferPointer { buf in
+                mdr_acquire(h, p, buf.baseAddress, buf.count, &outLen)
+            }
+        }
+        guard rc == 1, outLen > 0 else { return nil }
+        return outBuf.withUnsafeBufferPointer { buf -> String? in
+            guard let base = buf.baseAddress else { return nil }
+            return String(cString: base)
+        }
+    }
 
     /// Ask scripts to choose a delivery route for `appId`. Returns nil if
     /// no script weighed in.
@@ -162,6 +225,19 @@ enum ModoreScript {
             }
         }
     }
+}
+
+// MARK: - Host primitive helpers (Swift-side)
+
+/// Parse a chord string and synthesize it via postKey. Falls back to a
+/// log line when the chord is unparseable so scripts surface their typos
+/// instead of silently no-op'ing.
+fileprivate func hostSendChord(_ chord: String) {
+    guard let hk = ModoreConfig.parseChord(chord) else {
+        Log.tagged("scripting", "send_chord: unparseable '\(chord)'")
+        return
+    }
+    postKey(hk.keyCode, flags: hk.coreFlags)
 }
 
 // MARK: - Log trampoline

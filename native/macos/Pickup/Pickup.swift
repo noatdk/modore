@@ -254,6 +254,70 @@ func doClipboardPickup(_ request: PickupRequest = .init()) {
     }
 }
 
+// MARK: - Imperative acquisition flow
+//
+// Called when a script's `on_acquire` hook supplied the picked text via
+// its own keystroke recipe (e.g. Shift+End → Cmd+C → clipboard read).
+// We trust the script left the focused-app selection ACTIVE on the picked
+// span, so postUnicode below will overwrite it in place. From here the
+// flow mirrors the bottom half of doClipboardPickup.
+func runConversionOnAcquiredText(_ raw: String, request: PickupRequest, appId: String?) {
+    var pickedText = raw
+    if pickedText.hasSuffix("\n") { pickedText.removeLast() }
+    if pickedText.hasSuffix("\r") { pickedText.removeLast() }
+    if pickedText.isEmpty {
+        Log.pickup("scripted acquire: empty text — nothing to convert")
+        return
+    }
+    Log.pickup("scripted acquire pick: \(pickedText)")
+
+    let (asciiPrefix, romajiTail) = splitTrailingASCII(pickedText)
+    guard !romajiTail.isEmpty else {
+        Log.pickup("scripted acquire: no trailing romaji in \(pickedText)")
+        return
+    }
+    let (acronymHead, mozcInput) = splitAcronymHead(romajiTail)
+    let frozenPrefix = asciiPrefix + acronymHead
+
+    guard let result = callBackend(mozcInput, request: request, wantCandidates: true) else {
+        Log.pickup("scripted acquire: backend returned no result")
+        return
+    }
+    let baseReplacement = frozenPrefix + result.replacement
+    let baseCandidates: [String] = result.candidates.isEmpty
+        ? [baseReplacement]
+        : result.candidates.map { frozenPrefix + $0 }
+
+    let scriptSpan = mdr_span_t(span_start_byte: 0, span_end_byte: 0,
+                                romaji: nil, romaji_len: 0)
+    let replacement = ModoreScript.replacement(
+        appId: appId, span: scriptSpan, candidates: baseCandidates) ?? baseReplacement
+    let snapshotCandidates = ModoreScript.candidates(
+        appId: appId, list: baseCandidates, currentIndex: 0) ?? baseCandidates
+
+    Log.pickup("scripted acquire replace → \(replacement) (alts=\(snapshotCandidates.count))")
+    postUnicode(replacement)
+
+    // Frontmost-app captured at doPickup entry (passed in as `appId`) so a
+    // mid-flight app switch can't tag the session against the wrong window.
+    // We still need the pid for the clipboard-session identity check;
+    // fetch once here and accept the small window — pid changes are rarer
+    // than bundle-id changes and the session check tolerates a stale pid
+    // (refuses to act on the wrong app rather than acting incorrectly).
+    let session = ConversionSession(
+        backing: .clipboard(
+            frontmostBundleId: appId,
+            frontmostPid: FrontmostApp.currentPid() ?? 0),
+        originalReading: pickedText,
+        candidates: snapshotCandidates,
+        candidateIndex: 0,
+        timestamp: Date())
+    ConversionSessionStore.set(session)
+    if gCandidatePanelMode == .onConvert {
+        CandidatePanel.shared.show(session: session)
+    }
+}
+
 // MARK: - Pickup pipeline
 
 func doPickup(_ request: PickupRequest = .init()) {
@@ -277,6 +341,16 @@ func doPickup(_ request: PickupRequest = .init()) {
 
     // Frontmost-app capture once, threaded through script hooks below.
     let appId = FrontmostApp.describe()?.bundleID
+
+    // Imperative acquisition hook. Scripts compose their own selection /
+    // copy / read routine using `modore.host.*` and return the picked
+    // text. The script is expected to leave the focused-app selection
+    // ACTIVE so postUnicode below can overwrite it.
+    if let picked = ModoreScript.acquire(appId: appId) {
+        Log.pickup("scripted acquire → \(picked.count) chars\(FrontmostApp.logSuffix())")
+        runConversionOnAcquiredText(picked, request: request, appId: appId)
+        return
+    }
 
     // Per-app routing override. A script returning "clipboard" skips the
     // AX read entirely and goes straight to the Cmd+C fallback path —

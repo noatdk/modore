@@ -13,6 +13,7 @@ static const char* HOOK_FIELD[MS_HOOK_COUNT] = {
     "on_replacement",  /* MS_HOOK_REPLACEMENT */
     "route_for_app",   /* MS_HOOK_ROUTE */
     "on_candidates",   /* MS_HOOK_CANDIDATES */
+    "on_acquire",      /* MS_HOOK_ACQUIRE */
 };
 
 /* Pick the script entry whose app_id matches; fall back to default

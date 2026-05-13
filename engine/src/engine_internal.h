@@ -19,7 +19,8 @@ enum {
     MS_HOOK_REPLACEMENT  = 1,
     MS_HOOK_ROUTE        = 2,
     MS_HOOK_CANDIDATES   = 3,
-    MS_HOOK_COUNT        = 4
+    MS_HOOK_ACQUIRE      = 4,
+    MS_HOOK_COUNT        = 5
 };
 
 typedef struct script_entry {
@@ -42,6 +43,12 @@ struct mdr_engine {
     mdr_default_pickup_fn       def_pickup;
     mdr_default_replacement_fn  def_replacement;
     mdr_default_route_fn        def_route;
+
+    /* Host primitives for the on_acquire imperative path. NULL fn ptrs are
+     * surfaced as nil to the Lua side. host_ops_ud may differ from host_ud
+     * but in practice hosts use the same userdata for both. */
+    mdr_host_ops_t host_ops;
+    void*          host_ops_ud;
 
     script_entry_t* scripts;
     size_t          n_scripts;

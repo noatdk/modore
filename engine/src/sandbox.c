@@ -19,6 +19,7 @@
 /* Registry keys for the shared library tables created once at init. */
 static const char* RK_MODORE_LOG     = "modore.log.shared";
 static const char* RK_MODORE_DEFAULT = "modore.default.shared";
+static const char* RK_MODORE_HOST    = "modore.host.shared";
 
 /* engine* pointer is stashed in registry under this key so C closures
  * can reach the engine without an upvalue per closure (cheaper, simpler). */
@@ -153,6 +154,47 @@ static int default_route(lua_State* L) {
     return 1;
 }
 
+/* ---- modore.host.* imperative primitives ----------------------------- */
+
+static int host_send_chord(lua_State* L) {
+    mdr_engine_t* eng = get_engine(L);
+    if (!eng || !eng->host_ops.send_chord) return 0;
+    const char* chord = luaL_optstring(L, 1, "");
+    eng->host_ops.send_chord(eng->host_ops_ud, chord);
+    return 0;
+}
+
+static int host_sleep_ms(lua_State* L) {
+    mdr_engine_t* eng = get_engine(L);
+    if (!eng || !eng->host_ops.sleep_ms) return 0;
+    lua_Integer ms = luaL_optinteger(L, 1, 0);
+    if (ms < 0) ms = 0;
+    eng->host_ops.sleep_ms(eng->host_ops_ud, (unsigned)ms);
+    return 0;
+}
+
+static int host_clipboard_read(lua_State* L) {
+    mdr_engine_t* eng = get_engine(L);
+    if (!eng || !eng->host_ops.clipboard_read) { lua_pushnil(L); return 1; }
+    char buf[4096];
+    size_t n = 0;
+    int rc = eng->host_ops.clipboard_read(eng->host_ops_ud, buf, sizeof(buf), &n);
+    if (rc != 1) { lua_pushnil(L); return 1; }
+    if (n >= sizeof(buf)) n = sizeof(buf) - 1;
+    lua_pushlstring(L, buf, n);
+    return 1;
+}
+
+static int host_clipboard_write(lua_State* L) {
+    mdr_engine_t* eng = get_engine(L);
+    if (!eng || !eng->host_ops.clipboard_write) { lua_pushboolean(L, 0); return 1; }
+    size_t n = 0;
+    const char* s = luaL_optlstring(L, 1, "", &n);
+    int rc = eng->host_ops.clipboard_write(eng->host_ops_ud, s, n);
+    lua_pushboolean(L, rc == 1);
+    return 1;
+}
+
 /* ---- one-time global registration ------------------------------------ */
 
 void ms_register_modore_globals(mdr_engine_t* eng) {
@@ -175,6 +217,14 @@ void ms_register_modore_globals(mdr_engine_t* eng) {
     lua_pushcfunction(L, default_replacement); lua_setfield(L, -2, "replacement");
     lua_pushcfunction(L, default_route);       lua_setfield(L, -2, "route");
     lua_setfield(L, LUA_REGISTRYINDEX, RK_MODORE_DEFAULT);
+
+    /* Shared `modore.host` table — imperative primitives for on_acquire. */
+    lua_createtable(L, 0, 4);
+    lua_pushcfunction(L, host_send_chord);      lua_setfield(L, -2, "send_chord");
+    lua_pushcfunction(L, host_sleep_ms);        lua_setfield(L, -2, "sleep_ms");
+    lua_pushcfunction(L, host_clipboard_read);  lua_setfield(L, -2, "clipboard_read");
+    lua_pushcfunction(L, host_clipboard_write); lua_setfield(L, -2, "clipboard_write");
+    lua_setfield(L, LUA_REGISTRYINDEX, RK_MODORE_HOST);
 }
 
 /* ---- per-script env --------------------------------------------------- */
@@ -243,12 +293,15 @@ int ms_build_env(mdr_engine_t* eng) {
     lua_setfield(L, -2, "log");
     lua_getfield(L, LUA_REGISTRYINDEX, RK_MODORE_DEFAULT);
     lua_setfield(L, -2, "default");
+    lua_getfield(L, LUA_REGISTRYINDEX, RK_MODORE_HOST);
+    lua_setfield(L, -2, "host");
     /* Pre-set hook slots to nil — explicit nil makes the user-defined
      * absent state clear in diagnostics. Lua treats unset == nil anyway. */
     lua_pushnil(L); lua_setfield(L, -2, "on_pickup");
     lua_pushnil(L); lua_setfield(L, -2, "on_replacement");
     lua_pushnil(L); lua_setfield(L, -2, "route_for_app");
     lua_pushnil(L); lua_setfield(L, -2, "on_candidates");
+    lua_pushnil(L); lua_setfield(L, -2, "on_acquire");
     lua_setfield(L, env, "modore");
 
     /* Park env in the registry; return ref. */

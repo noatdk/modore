@@ -8,3 +8,5 @@ _mdr_pickup
 _mdr_replacement
 _mdr_route
 _mdr_candidates
+_mdr_acquire
+_mdr_set_host_ops

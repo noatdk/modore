@@ -494,7 +494,7 @@ enum ModoreConfig {
         return true
     }
 
-    private static func parseChord(_ s: String) -> ConversionHotkey? {
+    static func parseChord(_ s: String) -> ConversionHotkey? {
         let segments = s.split(separator: "+").map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
         guard segments.count >= 2 else { return nil }

@@ -77,6 +77,14 @@ int mdr_set_defaults(mdr_engine_t* eng,
     return 0;
 }
 
+int mdr_set_host_ops(mdr_engine_t* eng, const mdr_host_ops_t* ops, void* host_ud) {
+    if (!eng) return -1;
+    if (ops) eng->host_ops = *ops;
+    else     memset(&eng->host_ops, 0, sizeof(eng->host_ops));
+    eng->host_ops_ud = host_ud;
+    return 0;
+}
+
 /* ----- script dir loading --------------------------------------------- */
 
 static int has_suffix(const char* s, const char* sfx) {
@@ -263,5 +271,38 @@ int mdr_candidates(mdr_engine_t* eng,
         return 0;
     }
     *out_count = cnt;
+    return 1;
+}
+
+int mdr_acquire(mdr_engine_t* eng,
+                const char* app_id,
+                char* out_buf, size_t out_cap, size_t* out_len) {
+    if (!eng || !out_buf || !out_len || out_cap == 0) return -1;
+    script_entry_t* s = NULL;
+    if (!push_hook(eng, app_id, MS_HOOK_ACQUIRE, &s)) return 0;
+
+    /* Build context: same shape as pickup ctx, but with empty full_text
+     * because the host hasn't read anything yet on the imperative path. */
+    mdr_pickup_ctx_t ctx;
+    ctx.full_text     = "";
+    ctx.full_text_len = 0;
+    ctx.caret_byte    = 0;
+    ctx.app_id        = app_id;
+    ctx.flags         = 0;
+    ms_push_pickup_ctx(eng->L, &ctx);
+    if (!pcall_one(eng, 1)) return 0;
+
+    if (lua_type(eng->L, -1) != LUA_TSTRING) {
+        ms_log(eng, MDR_LOG_WARN, MS_TAG_LUA, "on_acquire returned non-string");
+        lua_pop(eng->L, 1);
+        return 0;
+    }
+    size_t len = 0;
+    const char* str = lua_tolstring(eng->L, -1, &len);
+    if (len >= out_cap) len = out_cap - 1;  /* clamp; reserve NUL */
+    memcpy(out_buf, str, len);
+    out_buf[len] = '\0';
+    *out_len = len;
+    lua_pop(eng->L, 1);
     return 1;
 }
