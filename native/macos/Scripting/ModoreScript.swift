@@ -83,6 +83,16 @@ enum ModoreScript {
         engine = nil
     }
 
+    /// Re-scan the scripts directory. Called by the host's filesystem
+    /// watcher when files are added or removed; per-script content edits
+    /// are picked up automatically by the engine's per-file mtime poll
+    /// on every hook entry, so this is only for the add/remove case.
+    static func reloadScripts(dir: String) {
+        guard let h = engine else { return }
+        _ = mdr_load_dir(h, dir)
+        Log.tagged("scripting", "scripts dir reloaded (dir=\(dir))")
+    }
+
     static var isLoaded: Bool { engine != nil }
 
     // MARK: - Hooks

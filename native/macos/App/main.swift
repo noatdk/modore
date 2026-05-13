@@ -229,6 +229,12 @@ let gConfigWatcher = ConfigWatcher(path: ModoreConfig.configFileURL().path) {
 }
 gConfigWatcher.start()
 
+// Mirror watcher for the scripts directory. Per-script content edits
+// reload via the engine's mtime poll, but added/removed script files
+// only show up if the engine re-scans the directory — that's this
+// watcher's job. Assigned after the scripts dir is resolved below.
+var gScriptsWatcher: ConfigWatcher? = nil
+
 do {
     try MozcBridge.initialize(userProfileDir: MOZC_PROFILE_DIR)
     Log.mozc("bridge initialized (profile=\(MOZC_PROFILE_DIR))")
@@ -248,6 +254,15 @@ let scriptsDir: String = {
     return "\(FileManager.default.homeDirectoryForCurrentUser.path)/.config/modore/scripts"
 }()
 ModoreScript.boot(scriptDir: scriptsDir)
+
+// Watch the scripts dir for adds/removes. Content edits to existing
+// scripts are picked up by the engine's per-file mtime poll on every
+// hook entry — this watcher only fixes the "drop a new file in mid-
+// session" gap. Held for process lifetime.
+gScriptsWatcher = ConfigWatcher(path: scriptsDir) {
+    ModoreScript.reloadScripts(dir: scriptsDir)
+}
+gScriptsWatcher?.start()
 
 Log.boot("ready: conversion hotkey installed (see ~/.config/modore/modore.conf)")
 app.run()

@@ -1,8 +1,14 @@
-// Watches modore.conf for edits and fires `onChange` on the main queue
-// after a short quiet window. Designed for the editors users actually
-// reach for: in-place writes (echo > file, nano), and atomic-rename
-// writes (vim, VSCode, JetBrains, BBEdit) that swap the inode out from
-// under us.
+// Watches a path (file or directory) for changes and fires `onChange` on
+// the main queue after a short quiet window. Despite the name, the
+// implementation is path-agnostic — modore.conf was the first caller,
+// hence the original name, but anything that wants debounced fs-change
+// notifications can reuse it (e.g. the Lua scripts dir).
+//
+// Designed for the editors users actually reach for: in-place writes
+// (echo > file, nano), and atomic-rename writes (vim, VSCode, JetBrains,
+// BBEdit) that swap the inode out from under us. For directories, .write
+// fires on add/remove/rename so the same watcher catches scripts-dir
+// changes too.
 //
 // Strategy:
 //   • open(path, O_EVTONLY) + DispatchSourceFileSystemObject
