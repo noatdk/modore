@@ -102,3 +102,44 @@ func postUnicode(_ s: String) {
         i = end
     }
 }
+
+/// Replace a known span by synthesized keystrokes, no AX writes involved.
+/// Sibling to `replaceRange` in `AccessibilityIO.swift`: same operation
+/// (`field[start..<end] = replacement`) against the synthetic-keystroke
+/// I/O surface instead of the AX one. Used as a fallback when AX value
+/// writes are silently rejected (Discord, Obsidian CodeMirror, Cursor
+/// Monaco) — see the call site in `Pickup.swift` for the diagnostic
+/// chain that justifies this surface.
+///
+/// The caret may be anywhere within the span when this is called
+/// (`replaceRange`'s rollback restores the AX selection to whatever
+/// it was, which is `caret` here). Move it to `spanEnd` first, then
+/// `Backspace × spanLen` to delete the span, then `postUnicode` the
+/// replacement. The caret/selection is given as (start, end) in
+/// UTF-16 code units, matching the AX domain used by the pickup
+/// pipeline.
+///
+/// Caveat: relies on the caller-supplied caret being accurate. Apps
+/// that report wrong AX selection state (Monaco reports `[N,N]` even
+/// when text is visibly selected) defeat the BS-storm — the first BS
+/// consumes the hidden selection and the rest delete surrounding
+/// text. The pickup call site documents this as a known limitation.
+func keystrokeReplaceSpan(
+    caret: (start: Int, end: Int),
+    spanEnd: Int,
+    spanLen: Int,
+    replacement: String
+) {
+    if caret.start != caret.end {
+        postKey(kVK_RightArrow)
+    }
+    let caretAfterCollapse = (caret.start != caret.end) ? caret.end : caret.start
+    let toMove = spanEnd - caretAfterCollapse
+    if toMove > 0 {
+        for _ in 0..<toMove { postKey(kVK_RightArrow) }
+    } else if toMove < 0 {
+        for _ in 0..<(-toMove) { postKey(kVK_LeftArrow) }
+    }
+    for _ in 0..<spanLen { postKey(kVK_Backspace) }
+    postUnicode(replacement)
+}

@@ -347,7 +347,55 @@ func doPickup(_ request: PickupRequest = .init()) {
             }
             return
         }
-        Log.pickup("AX replace failed; falling back to clipboard mode\(FrontmostApp.logSuffix())")
+
+        // AX read worked but the value write was silently rejected
+        // (Discord, Obsidian CodeMirror, Cursor/VSCode Monaco). These
+        // apps lie about AX success codes — value writes, range
+        // writes, and Shift+Left selection extension all return
+        // .success while doing nothing visible. The clipboard
+        // fallback is wrong here too: its Shift+Opt+Left force-select
+        // treats `&` / `-` / `.` as word boundaries, so `R&Diraisho`
+        // arrives at the bridge as `Diraisho` — losing the acronym
+        // head Phase 1 is supposed to freeze. Re-run the same span
+        // edit through synthesized keystrokes via the sibling helper
+        // in `SyntheticEvents.swift`.
+        //
+        // KNOWN LIMITATION: when the user has a *hidden* visual
+        // selection that AX doesn't report (Cursor/Monaco reports
+        // `[N,N]` even when text is visibly selected), the first
+        // Backspace consumes the hidden selection and the rest
+        // delete surrounding text. Discord/Obsidian don't hit this
+        // because their AX selection reports are accurate. Tracked
+        // as a follow-up — needs a per-app strategy table or a
+        // selection probe that isn't ambiguous with Cmd+C line-copy.
+        Log.pickup("AX write rejected; using backspace-retype for [\(start)..\(end)] \(spanText)\(FrontmostApp.logSuffix())")
+        keystrokeReplaceSpan(
+            caret: (start: field.selStart, end: field.selEnd),
+            spanEnd: end,
+            spanLen: end - start,
+            replacement: replacement)
+        Log.pickup("keystroke replace -> \(replacement) (alts=\(result.candidates.count))")
+
+        // Cycle/Undo via the clipboard-backed session: those use
+        // backspace+retype, which works even when AX writes don't.
+        let snapshotCandidates: [String] =
+            result.candidates.isEmpty
+                ? [replacement]
+                : result.candidates.map { frozenPrefix + $0 }
+        let frontmost = FrontmostApp.describe()
+        let session = ConversionSession(
+            backing: .clipboard(
+                frontmostBundleId: frontmost?.bundleID,
+                frontmostPid: frontmost?.pid ?? 0),
+            originalReading: spanText,
+            candidates: snapshotCandidates,
+            candidateIndex: 0,
+            timestamp: Date())
+        ConversionSessionStore.set(session)
+        if gCandidatePanelMode == .onConvert {
+            CandidatePanel.shared.show(session: session)
+        }
+        return
     }
 
     Log.pickup("using clipboard fallback (app does not expose AX text)\(FrontmostApp.logSuffix())")
