@@ -226,6 +226,7 @@ gSecureInputMonitor?.start()
 // Held for the lifetime of the process; tears down its DispatchSource on deinit.
 let gConfigWatcher = ConfigWatcher(path: ModoreConfig.configFileURL().path) {
     applyConfigReload()
+    gStatusItem?.flashReload(kind: "config")
 }
 gConfigWatcher.start()
 
@@ -255,14 +256,46 @@ let scriptsDir: String = {
 }()
 ModoreScript.boot(scriptDir: scriptsDir)
 
-// Watch the scripts dir for adds/removes. Content edits to existing
-// scripts are picked up by the engine's per-file mtime poll on every
-// hook entry — this watcher only fixes the "drop a new file in mid-
-// session" gap. Held for process lifetime.
+// Watch the scripts dir for adds/removes AND every *.lua file inside it
+// for content edits. DispatchSourceFileSystemObject on a directory only
+// fires on dir-metadata changes (add/remove/rename), not on edits to
+// files inside it — so without per-file watchers the user would save a
+// script and see no menu-bar feedback until the next hotkey press
+// (engine's mtime poll). One ConfigWatcher per file; the dir-level
+// watcher rebuilds the set when files are added/removed.
+//
+// All watchers held for process lifetime via the `gPerScriptWatchers`
+// dict in HotkeyState. Tear-down happens via the dict's deinit.
+func rescanPerScriptWatchers() {
+    let fm = FileManager.default
+    let entries = (try? fm.contentsOfDirectory(atPath: scriptsDir)) ?? []
+    let luaFiles = Set(entries.filter { $0.hasSuffix(".lua") }
+        .map { "\(scriptsDir)/\($0)" })
+
+    // Stop watchers for files that vanished.
+    for (path, _) in gPerScriptWatchers where !luaFiles.contains(path) {
+        gPerScriptWatchers.removeValue(forKey: path)
+    }
+    // Start watchers for files we don't already track.
+    for path in luaFiles where gPerScriptWatchers[path] == nil {
+        let w = ConfigWatcher(path: path) {
+            ModoreScript.reloadScripts(dir: scriptsDir)
+            gStatusItem?.refreshScriptAssociationForFrontmost()
+            gStatusItem?.flashReload(kind: "scripts")
+        }
+        w.start()
+        gPerScriptWatchers[path] = w
+    }
+}
+
 gScriptsWatcher = ConfigWatcher(path: scriptsDir) {
     ModoreScript.reloadScripts(dir: scriptsDir)
+    gStatusItem?.refreshScriptAssociationForFrontmost()
+    rescanPerScriptWatchers()
+    gStatusItem?.flashReload(kind: "scripts")
 }
 gScriptsWatcher?.start()
+rescanPerScriptWatchers()
 
 Log.boot("ready: conversion hotkey installed (see ~/.config/modore/modore.conf)")
 app.run()

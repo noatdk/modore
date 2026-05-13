@@ -257,10 +257,22 @@ func doClipboardPickup(_ request: PickupRequest = .init()) {
 // MARK: - Imperative acquisition flow
 //
 // Called when a script's `on_acquire` hook supplied the picked text via
-// its own keystroke recipe (e.g. Shift+End → Cmd+C → clipboard read).
-// We trust the script left the focused-app selection ACTIVE on the picked
-// span, so postUnicode below will overwrite it in place. From here the
-// flow mirrors the bottom half of doClipboardPickup.
+// its own keystroke recipe (e.g. Cmd+Left → Cmd+Shift+Right → Cmd+C).
+// We trust the script left the focused-app selection ACTIVE on the
+// picked span, so postUnicode below overwrites it in place. From here
+// the flow mirrors the bottom half of doClipboardPickup.
+//
+// Known caveat: in CodeMirror-based editors (Obsidian), the editor's
+// internal selection range can extend one position past the visible
+// content (typically the trailing newline) even though Cmd+C strips
+// that from the *clipboard string*. postUnicode's first chunk replaces
+// the full range and so eats the newline, shifting the line up a row.
+// Tried Right + Backspace × N as a workaround but the synthetic events
+// race: the first Backspace fires before Right collapses, deleting the
+// active selection in one shot, and the remaining N-1 Backspaces walk
+// backward through preceding blank lines. Reverted. Scripts that need
+// pixel-perfect line replacement in CodeMirror should fall back to a
+// clipboard-paste recipe driven from on_acquire itself.
 func runConversionOnAcquiredText(_ raw: String, request: PickupRequest, appId: String?) {
     var pickedText = raw
     if pickedText.hasSuffix("\n") { pickedText.removeLast() }

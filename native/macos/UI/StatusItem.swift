@@ -39,11 +39,30 @@ final class ModoreStatusItem: NSObject {
     /// the hotkey is silently failing in password fields / sudo prompts.
     /// See SecureInputMonitor.swift for the detection path.
     private let secureInputMenuItem: NSMenuItem
+    /// "Last reload: <kind> at HH:MM:SS" — populated only after the first
+    /// fs-watcher fires. Hidden at boot so the user doesn't see a stale
+    /// "never" line in the menu.
+    private let reloadMenuItem: NSMenuItem
+
+    /// Pending revert timer for the title flash. Held so a second reload
+    /// firing during the flash window cancels the first revert instead of
+    /// stomping the new flash state.
+    private var reloadFlashTimer: DispatchSourceTimer?
 
     /// Latest hotkey description, kept here so the tooltip can be rebuilt
     /// after toggling between blocked / clear without losing the hotkey
     /// label.
     private var currentHotkeyLabel: String = "—"
+
+    /// Last-known frontmost app id and whether a script matched. We keep
+    /// the bool so SecureInput state changes can rebuild the title without
+    /// re-querying the script engine on the main thread.
+    private var currentAppHasScript: Bool = false
+
+    /// Latest SecureInput holder name (nil = clear). Owned here rather than
+    /// computed from the menu-item visibility so `applyTitleStyling` has a
+    /// single source of truth across SecureInput / script-association.
+    private var secureInputBlocker: String? = nil
 
     override init() {
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -52,6 +71,7 @@ final class ModoreStatusItem: NSObject {
         cycleMenuItem       = NSMenuItem(title: "",            action: nil, keyEquivalent: "")
         deliveryMenuItem    = NSMenuItem(title: "Delivery: —", action: nil, keyEquivalent: "")
         secureInputMenuItem = NSMenuItem(title: "",            action: nil, keyEquivalent: "")
+        reloadMenuItem      = NSMenuItem(title: "",            action: nil, keyEquivalent: "")
         super.init()
 
         item.button?.title = "ﾓﾄﾞﾚ"
@@ -66,11 +86,14 @@ final class ModoreStatusItem: NSObject {
         deliveryMenuItem.isEnabled = false
         secureInputMenuItem.isEnabled = false
         secureInputMenuItem.isHidden = true
+        reloadMenuItem.isEnabled = false
+        reloadMenuItem.isHidden = true
         menu.addItem(hotkeyMenuItem)
         menu.addItem(katakanaMenuItem)
         menu.addItem(cycleMenuItem)
         menu.addItem(deliveryMenuItem)
         menu.addItem(secureInputMenuItem)
+        menu.addItem(reloadMenuItem)
         menu.addItem(NSMenuItem.separator())
 
         // ⌘, is the macOS-standard "open this app's preferences" shortcut;
@@ -93,6 +116,13 @@ final class ModoreStatusItem: NSObject {
         // disk (see docs/PARITY.md). Export pulls the last 24h via
         // `log show --process modore-host` so bug reports have something to
         // attach.
+        let openLogItem = NSMenuItem(
+            title: "Open log in editor",
+            action: #selector(handleOpenLog),
+            keyEquivalent: "")
+        openLogItem.target = self
+        menu.addItem(openLogItem)
+
         let exportLogItem = NSMenuItem(
             title: "Export log…",
             action: #selector(handleExportLog),
@@ -109,6 +139,66 @@ final class ModoreStatusItem: NSObject {
         menu.addItem(quitItem)
 
         item.menu = menu
+
+        // Frontmost-app tracking: tint the title blue while a per-app
+        // script is associated with whatever the user is currently in.
+        let nc = NSWorkspace.shared.notificationCenter
+        nc.addObserver(
+            self,
+            selector: #selector(handleFrontmostAppChanged(_:)),
+            name: NSWorkspace.didActivateApplicationNotification,
+            object: nil)
+        // Seed with the current frontmost so the title is correct before
+        // the user switches apps for the first time.
+        refreshScriptAssociation(
+            appId: NSWorkspace.shared.frontmostApplication?.bundleIdentifier)
+    }
+
+    @objc private func handleFrontmostAppChanged(_ note: Notification) {
+        let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+        refreshScriptAssociation(appId: app?.bundleIdentifier)
+    }
+
+    /// Re-query the script engine for the current frontmost app. Called
+    /// when scripts are added/removed mid-session so the title indicator
+    /// updates without waiting for the next app switch.
+    func refreshScriptAssociationForFrontmost() {
+        refreshScriptAssociation(
+            appId: NSWorkspace.shared.frontmostApplication?.bundleIdentifier)
+    }
+
+    private func refreshScriptAssociation(appId: String?) {
+        let has = (appId.map { ModoreScript.hasScript(forAppId: $0) }) ?? false
+        currentAppHasScript = has
+        applyTitleStyling()
+    }
+
+    /// Resolve the menu-bar title style from the host's current state.
+    /// Priority: SecureInput red > scripted-app blue > plain. Centralised
+    /// so both the SecureInput watcher and the frontmost-app observer can
+    /// trigger it without duplicating the precedence logic.
+    private func applyTitleStyling() {
+        guard let button = item.button else { return }
+        let base = "ﾓﾄﾞﾚ"
+        if let name = secureInputBlocker {
+            button.attributedTitle = NSAttributedString(
+                string: base,
+                attributes: [.foregroundColor: NSColor.systemRed])
+            button.toolTip = "modore — blocked by \(name) (secure keyboard entry)"
+        } else if currentAppHasScript {
+            button.attributedTitle = NSAttributedString(
+                string: base,
+                attributes: [.foregroundColor: NSColor.systemBlue])
+            button.toolTip = "modore — \(currentHotkeyLabel) (script active)"
+        } else {
+            // Setting `attributedTitle` to an empty string and re-setting
+            // `title` is the documented way to clear the styled override —
+            // assigning `title` alone leaves the previous attributed run
+            // in place on some macOS versions.
+            button.attributedTitle = NSAttributedString(string: "")
+            button.title = base
+            button.toolTip = "modore — \(currentHotkeyLabel) (running)"
+        }
     }
 
     /// Update the live menu after a chord change or Carbon-registration flip.
@@ -139,12 +229,47 @@ final class ModoreStatusItem: NSObject {
         deliveryMenuItem.title = "Delivery: " + (usingCarbonHotkey
             ? "Carbon (system grab)"
             : "CGEventTap (fallback)")
-        // Only rewrite the tooltip if SecureInput isn't currently blocking;
-        // the blocked tooltip is more important to keep visible.
-        if secureInputMenuItem.isHidden {
-            item.button?.toolTip = "modore — \(hotkey.displayName) (running)"
-        }
+        applyTitleStyling()
     }
+
+    /// Surface a filesystem-watcher reload (config or scripts) in the menu
+    /// bar so the user gets confirmation that their edit landed. Two
+    /// signals: a transient green-tinted "ﾓﾄﾞﾚ ↻" title flash that auto-
+    /// reverts after 1.2 s, and a persistent "Last reload: <kind> at HH:MM"
+    /// menu line. Main-thread only — fired from the ConfigWatcher's
+    /// debounced callback, which already runs on the main queue.
+    func flashReload(kind: String) {
+        let stamp = Self.reloadTimeFormatter.string(from: Date())
+        reloadMenuItem.title = "Last reload: \(kind) at \(stamp)"
+        reloadMenuItem.isHidden = false
+
+        // Skip the title flash while SecureInput red is showing — that
+        // signal is more important and shouldn't be visually overridden.
+        // The menu-item line still updates so the reload isn't lost.
+        guard secureInputBlocker == nil, let button = item.button else { return }
+        let title = "ﾓﾄﾞﾚ ↻"
+        button.attributedTitle = NSAttributedString(
+            string: title,
+            attributes: [.foregroundColor: NSColor.systemGreen])
+        button.toolTip = "modore — reloaded \(kind) at \(stamp)"
+
+        reloadFlashTimer?.cancel()
+        let t = DispatchSource.makeTimerSource(queue: .main)
+        t.schedule(deadline: .now() + .milliseconds(1200))
+        t.setEventHandler { [weak self] in
+            self?.reloadFlashTimer = nil
+            self?.applyTitleStyling()
+        }
+        reloadFlashTimer = t
+        t.resume()
+    }
+
+    private static let reloadTimeFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm:ss"
+        f.locale = Locale(identifier: "en_US_POSIX")
+        return f
+    }()
 
     /// Reflect the SecureInput watcher's state in the menu bar:
     ///
@@ -157,26 +282,15 @@ final class ModoreStatusItem: NSObject {
     ///
     /// Called from SecureInputMonitor on the main queue. Main-thread only.
     func setSecureInputBlocked(by appName: String?) {
-        guard let button = item.button else { return }
+        secureInputBlocker = appName
         if let name = appName {
-            let attrs: [NSAttributedString.Key: Any] = [
-                .foregroundColor: NSColor.systemRed,
-            ]
-            button.attributedTitle = NSAttributedString(string: "ﾓﾄﾞﾚ", attributes: attrs)
-            button.toolTip = "modore — blocked by \(name) (secure keyboard entry)"
             secureInputMenuItem.title = "⚠ Blocked by \(name) (secure keyboard entry)"
             secureInputMenuItem.isHidden = false
         } else {
-            // Setting `attributedTitle` to an empty string and re-setting
-            // `title` is the documented way to clear the styled override —
-            // assigning `title` alone leaves the previous attributed run
-            // in place on some macOS versions.
-            button.attributedTitle = NSAttributedString(string: "")
-            button.title = "ﾓﾄﾞﾚ"
-            button.toolTip = "modore — \(currentHotkeyLabel) (running)"
             secureInputMenuItem.title = ""
             secureInputMenuItem.isHidden = true
         }
+        applyTitleStyling()
     }
 
     // MARK: - Menu actions
@@ -225,10 +339,32 @@ final class ModoreStatusItem: NSObject {
         guard panel.runModal() == .OK, let dest = panel.url else { return }
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let ok = Self.runLogShow(to: dest)
+            let ok = Self.runLogShow(to: dest, last: "24h")
             DispatchQueue.main.async {
                 if ok {
                     NSWorkspace.shared.activateFileViewerSelecting([dest])
+                } else {
+                    self?.presentExportFailureAlert(at: dest)
+                }
+            }
+        }
+    }
+
+    /// Dump the last hour of logs to a temp file and hand it to the user's
+    /// default text editor via `NSWorkspace.open`. Cheaper than Export when
+    /// the user just wants to skim — no save panel, no Finder round-trip.
+    /// 1h instead of 24h because `log show` over 24h scans the whole unified
+    /// log store; for the "what just happened?" use case 1h is plenty and
+    /// the dump returns in well under a second.
+    @objc private func handleOpenLog() {
+        let stamp = Self.exportTimestampFormatter.string(from: Date())
+        let dest = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("modore-host-\(stamp).log")
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let ok = Self.runLogShow(to: dest, last: "1h")
+            DispatchQueue.main.async {
+                if ok {
+                    NSWorkspace.shared.open(dest)
                 } else {
                     self?.presentExportFailureAlert(at: dest)
                 }
@@ -243,12 +379,18 @@ final class ModoreStatusItem: NSObject {
         return f
     }()
 
-    /// Runs `log show --process modore-host --info --debug --last 24h`,
-    /// streaming stdout directly to `dest`. Returns true on a clean exit.
-    /// `--info --debug` so we capture the Df-level lines (clipboard/pickup/
-    /// ax/cycle traces) — without those flags `log show` defaults to
-    /// default-level only, which strips out almost everything modore writes.
-    private static func runLogShow(to dest: URL) -> Bool {
+    /// Runs `log show` filtered to modore's own subsystem, streaming stdout
+    /// directly to `dest`. Returns true on a clean exit.
+    ///
+    /// The `subsystem == "com.modore.host"` predicate is what makes this
+    /// fast: without it `--info --debug` would pull every AppKit / XPC /
+    /// CoreAnalytics line the process touched (≈25k lines for a single day,
+    /// mostly noise) and `log show` takes tens of seconds. Filtering to our
+    /// subsystem drops that to a few hundred relevant lines and seconds of
+    /// wall-clock. `--info --debug` is kept so future lower-level traces
+    /// still surface — Log.swift currently emits at default level, but the
+    /// flags cost nothing once the predicate is in place.
+    private static func runLogShow(to dest: URL, last: String) -> Bool {
         FileManager.default.createFile(atPath: dest.path, contents: nil)
         guard let handle = try? FileHandle(forWritingTo: dest) else {
             return false
@@ -259,9 +401,9 @@ final class ModoreStatusItem: NSObject {
         task.executableURL = URL(fileURLWithPath: "/usr/bin/log")
         task.arguments = [
             "show",
-            "--process", "modore-host",
+            "--predicate", "subsystem == \"\(Log.subsystem)\"",
             "--info", "--debug",
-            "--last", "24h",
+            "--last", last,
             "--style", "compact",
         ]
         task.standardOutput = handle
@@ -281,7 +423,7 @@ final class ModoreStatusItem: NSObject {
         alert.informativeText =
             "`log show` failed. The output (if any) is at:\n\(dest.path)\n\n" +
             "You can also run this in Terminal:\n" +
-            "log show --process modore-host --info --debug --last 24h"
+            "log show --predicate 'subsystem == \"\(Log.subsystem)\"' --info --debug --last 24h"
         alert.alertStyle = .warning
         alert.addButton(withTitle: "OK")
         alert.runModal()

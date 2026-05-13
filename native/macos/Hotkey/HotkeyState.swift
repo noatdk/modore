@@ -47,6 +47,12 @@ var gUsingCarbonHotkey: Bool = false
 /// main.swift, mutated only here.
 var gCarbonHotkey: CarbonHotkey?
 
+/// One ConfigWatcher per *.lua script file. Rebuilt by main.swift on every
+/// dir-watcher fire so newly-added files start being watched live. Keyed by
+/// absolute path. Held for process lifetime; tearing down a watcher cancels
+/// its DispatchSource via ConfigWatcher.deinit.
+var gPerScriptWatchers: [String: ConfigWatcher] = [:]
+
 /// Live clipboard-fallback timings. Written on the main thread (startup and
 /// watcher-driven reloads); read by `doClipboardPickup` on a background queue
 /// via a snapshot copy at function entry, so a plain swap is race-free.
