@@ -112,6 +112,34 @@ func readFocusedField() -> FocusedField? {
 }
 
 func replaceRange(in element: AXUIElement, start: Int, end: Int, replacement: String) -> Bool {
+    // Snapshot value AND selection range before the write so we can
+    // verify afterwards and, on failure, roll the selection back.
+    // Chromium textareas under --force-renderer-accessibility honor the
+    // selection-range set but silently drop the subsequent
+    // kAXSelectedText set; both AX calls still report .success, so the
+    // only way to detect this is to compare the resulting string. If we
+    // don't roll back the selection, the clipboard-fallback path below
+    // starts from a contaminated [start..end] selection that its
+    // Shift+Opt+Left logic doesn't know how to handle, and ends up
+    // pasting at the caret without replacing the original span.
+    var beforeRef: CFTypeRef?
+    let rb = AXUIElementCopyAttributeValue(
+        element,
+        kAXValueAttribute as CFString,
+        &beforeRef
+    )
+    guard rb == .success, let before = beforeRef as? String else { return false }
+    let beforeU16 = Array(before.utf16)
+    guard start >= 0, end <= beforeU16.count, start <= end else { return false }
+
+    var origRangeRef: CFTypeRef?
+    let rrc = AXUIElementCopyAttributeValue(
+        element,
+        kAXSelectedTextRangeAttribute as CFString,
+        &origRangeRef
+    )
+    let origRangeValue: AXValue? = (rrc == .success) ? (origRangeRef as! AXValue?) : nil
+
     var range = CFRange(location: start, length: end - start)
     guard let rangeValue = AXValueCreate(.cfRange, &range) else { return false }
     let r1 = AXUIElementSetAttributeValue(
@@ -125,7 +153,40 @@ func replaceRange(in element: AXUIElement, start: Int, end: Int, replacement: St
         kAXSelectedTextAttribute as CFString,
         replacement as CFString
     )
-    return r2 == .success
+    guard r2 == .success else {
+        if let orv = origRangeValue {
+            _ = AXUIElementSetAttributeValue(
+                element, kAXSelectedTextRangeAttribute as CFString, orv)
+        }
+        return false
+    }
+
+    var afterRef: CFTypeRef?
+    let ra = AXUIElementCopyAttributeValue(
+        element,
+        kAXValueAttribute as CFString,
+        &afterRef
+    )
+    guard ra == .success, let after = afterRef as? String else {
+        if let orv = origRangeValue {
+            _ = AXUIElementSetAttributeValue(
+                element, kAXSelectedTextRangeAttribute as CFString, orv)
+        }
+        return false
+    }
+    let expected = String(utf16CodeUnits: beforeU16, count: start)
+        + replacement
+        + String(utf16CodeUnits: Array(beforeU16[end..<beforeU16.count]),
+                 count: beforeU16.count - end)
+    guard after == expected else {
+        Log.ax("replace verify failed: AX write returned success but value did not match expected (got len=\(after.utf16.count), want len=\(expected.utf16.count))\(FrontmostApp.logSuffix())")
+        if let orv = origRangeValue {
+            _ = AXUIElementSetAttributeValue(
+                element, kAXSelectedTextRangeAttribute as CFString, orv)
+        }
+        return false
+    }
+    return true
 }
 
 /// Ask the OS whether this process is allowed to use Accessibility APIs.
