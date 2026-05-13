@@ -39,8 +39,8 @@ modifier).
 `F1`–`F12`, `Space`, arrows, `Return`, `Tab`, etc. On Linux any name
 understood by `XStringToKeysym(3)` also works.
 
-**Default**: `Ctrl+Slash`. Applied when the file is missing or the
-`hotkey` key is absent.
+**Default**: `Cmd+Semicolon` on macOS, `Super+Semicolon` on Linux. Applied
+when the file is missing or the `hotkey` key is absent.
 
 **Validation**: a malformed `hotkey` value logs a warning and falls back
 to the default rather than refusing to start. On Linux the resolved
@@ -56,13 +56,13 @@ katakana** commit instead of Mozc's top kanji candidate. Useful for
 loanwords Mozc keeps writing as kanji (e.g. "シドッチ" coming out as
 "史奉行").
 
-The modifier is layered on top of `hotkey`. With the default
-`hotkey = Ctrl+Slash` and `katakana_modifier = shift`, modore binds:
+The modifier is layered on top of `hotkey`. With `katakana_modifier = shift`,
+modore binds:
 
-| Chord              | Behavior                                  |
-| ------------------ | ----------------------------------------- |
-| `Ctrl+Slash`       | Convert to top kanji candidate (default). |
-| `Shift+Ctrl+Slash` | Convert to full-width katakana.           |
+| Chord                       | Behavior                                  |
+| --------------------------- | ----------------------------------------- |
+| the conversion hotkey       | Convert to top kanji candidate (default). |
+| Shift + the conversion hotkey | Convert to full-width katakana.         |
 
 | Value   | Effect                                                            |
 | ------- | ----------------------------------------------------------------- |
@@ -301,7 +301,7 @@ are independent and only the changed one logs.
 | Hotkey changed to a valid value         | Swap immediately. Logs `config reloaded: …`.                              |
 | Hotkey re-written to the same value     | No-op. Nothing logged.                                                    |
 | Hotkey changed to a malformed value     | Keep the previous chord. Logs `config reload rejected: …`.                |
-| `[conversion] hotkey` line removed      | Revert to the default (`Ctrl+Slash`).                                     |
+| `[conversion] hotkey` line removed      | Revert to the platform default.                                           |
 | File deleted                            | Keep the previous chord; resume watching for the file to reappear.        |
 | File re-created with a new chord        | Swap to the new chord. Same path as the "edit" case.                      |
 | `[clipboard]` value changed             | Apply on next pickup. Logs `clipboard timings: …`.                        |

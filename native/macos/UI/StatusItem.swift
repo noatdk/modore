@@ -191,7 +191,7 @@ final class ModoreStatusItem: NSObject {
                 at: dir, withIntermediateDirectories: true)
             let seed = """
                 [conversion]
-                hotkey = Ctrl+Slash
+                hotkey = Cmd+Semicolon
 
                 # macOS only — clipboard fallback timings (defaults shown).
                 # See docs/configuration.md → [clipboard].

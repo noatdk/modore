@@ -1,7 +1,7 @@
 // modore — macOS native host.
 //
 // Runs as a menu-bar/accessory app, registers a global conversion hotkey
-// (default Ctrl+/; configurable in ~/.config/modore/modore.conf), reads
+// (configurable in ~/.config/modore/modore.conf), reads
 // the focused text field (any app) via Accessibility, hands the picked span
 // to the in-process Mozc engine, and writes the result back.
 //

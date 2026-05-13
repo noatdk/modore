@@ -5,8 +5,8 @@
 日本語版は [README.md](README.md)。
 
 Modeless Japanese IME pickup. Type romaji into any app, hit the conversion
-hotkey (default `Ctrl+/`), and the word at the caret is replaced with its Mozc
-top-candidate conversion.
+hotkey, and the word at the caret is replaced with its Mozc top-candidate
+conversion.
 
 ## Status
 
@@ -57,8 +57,9 @@ INI-style, only `[conversion]` is defined today:
 hotkey = Ctrl+Shift+grave
 ```
 
-Default is `Ctrl+Slash`. Full hotkey grammar, modifier aliases, and key names
-in [docs/configuration.md](docs/configuration.md).
+Default is `Cmd+Semicolon` on macOS and `Super+Semicolon` on Linux. Full
+hotkey grammar, modifier aliases, and key names in
+[docs/configuration.md](docs/configuration.md).
 
 ## Layout
 

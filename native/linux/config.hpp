@@ -4,7 +4,7 @@
 //
 //   # comment
 //   [conversion]
-//   hotkey = Ctrl+Slash
+//   hotkey = Super+Semicolon
 //
 // Modifiers (combine with +): Ctrl, Shift, Alt, Super.
 // Key names: Slash, Period, Comma, a–z, 0–9, Space, Return, Tab, Escape,
@@ -20,14 +20,14 @@
 
 struct X11HotkeySpec {
   // Bitmask of ShiftMask | ControlMask | Mod1Mask | Mod4Mask | Mod5Mask.
-  unsigned int modifier_mask{ControlMask};
-  // Logical keysym (e.g. XK_slash); keycodes are resolved per Display.
-  std::uint64_t keysym{0x002f};  // XK_slash
+  unsigned int modifier_mask{Mod4Mask};
+  // Logical keysym (e.g. XK_semicolon); keycodes are resolved per Display.
+  std::uint64_t keysym{0x003b};  // XK_semicolon
 };
 
 struct ModoreConfig {
   X11HotkeySpec conversion_hotkey{};
-  // Human-readable chord for logs (defaults to "Ctrl+Slash (default)").
+  // Human-readable chord for logs (defaults to "Super+Semicolon (default)").
   std::string conversion_hotkey_description;
 };
 

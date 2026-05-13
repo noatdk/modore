@@ -14,7 +14,7 @@ import Foundation
 /// Walk outward from `caret` over `utf16` to find the run of "word" code
 /// units that contains it. Breaks at whitespace (space, tab, CR, LF) and at
 /// ASCII ↔ non-ASCII script transitions. The script-break stop is what
-/// keeps `kaitou`→Ctrl+/→`hentai` from grabbing `回答hentai` as one word —
+/// keeps `kaitou`→hotkey→`hentai` from grabbing `回答hentai` as one word —
 /// only the trailing `hentai` becomes the span.
 ///
 /// TODO: this is a coarse split — every BMP code point ≥ 0x80 reads as

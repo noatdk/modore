@@ -23,8 +23,8 @@ import Cocoa
 /// Resolved primary chord. Read by the tap callback on its own thread;
 /// written by the main thread on startup and on watcher-driven reloads, so a
 /// plain swap is race-free.
-var gConversionKeyCode: CGKeyCode = CGKeyCode(kVK_ANSI_Slash)
-var gConversionCoreFlags: CGEventFlags = .maskControl
+var gConversionKeyCode: CGKeyCode = CGKeyCode(kVK_ANSI_Semicolon)
+var gConversionCoreFlags: CGEventFlags = .maskCommand
 
 /// Secondary-chord flags (primary + the configured katakana modifier).
 /// `nil` means no secondary chord is bound — same state as the pre-feature

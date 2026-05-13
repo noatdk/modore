@@ -1,6 +1,6 @@
 // modore — Linux native host (X11 + AT-SPI2 + Mozc bridge).
 //
-// Configurable global hotkey (default Ctrl+/; see ~/.config/modore/modore.conf).
+// Configurable global hotkey — see ~/.config/modore/modore.conf.
 
 #include <X11/Xlib.h>
 #include <X11/extensions/XTest.h>

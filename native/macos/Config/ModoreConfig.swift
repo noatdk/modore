@@ -185,15 +185,15 @@ enum ModoreConfig {
         var restoreClipboardDelayMs: Int = 50
     }
 
-    private static let defaultChord = "Ctrl+Slash"
+    private static let defaultChord = "Cmd+Semicolon"
 
     static func defaultConversionHotkey() -> ConversionHotkey {
         if let h = parseChord(defaultChord) {
             return h
         }
         return ConversionHotkey(
-            keyCode: CGKeyCode(kVK_ANSI_Slash),
-            coreFlags: .maskControl,
+            keyCode: CGKeyCode(kVK_ANSI_Semicolon),
+            coreFlags: .maskCommand,
             displayName: defaultChord)
     }
 

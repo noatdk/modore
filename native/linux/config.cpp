@@ -140,7 +140,7 @@ bool parse_hotkey_chord(const std::string& chord, X11HotkeySpec* out, std::strin
     }
   }
   if (parts.size() < 2) {
-    *err = "hotkey must include at least one modifier and a key (e.g. Ctrl+Slash)";
+    *err = "hotkey must include at least one modifier and a key (e.g. Super+Semicolon)";
     return false;
   }
 
@@ -173,13 +173,13 @@ bool parse_hotkey_chord(const std::string& chord, X11HotkeySpec* out, std::strin
 }
 
 void apply_default_hotkey(X11HotkeySpec* h) {
-  h->modifier_mask = ControlMask;
-  h->keysym = static_cast<std::uint64_t>(XK_slash);
+  h->modifier_mask = Mod4Mask;
+  h->keysym = static_cast<std::uint64_t>(XK_semicolon);
 }
 
 void apply_conversion_defaults(ModoreConfig* out) {
   apply_default_hotkey(&out->conversion_hotkey);
-  out->conversion_hotkey_description = "Ctrl+Slash (default)";
+  out->conversion_hotkey_description = "Super+Semicolon (default)";
 }
 
 }  // namespace

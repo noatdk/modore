@@ -17,9 +17,9 @@ import ApplicationServices
 import Cocoa
 
 /// Worker-queue entry point for the dedicated cycle chord (e.g. when
-/// `[conversion] cycle_modifier` binds `Alt+Ctrl+/`). Always logs a
-/// reason on no-op so a triage thread can tell why a press didn't
-/// cycle.
+/// `[conversion] cycle_modifier` binds Alt on top of the conversion
+/// hotkey). Always logs a reason on no-op so a triage thread can tell
+/// why a press didn't cycle.
 func performCycleNext() {
     if !cycleNext(verbose: true) {
         // No-op was already explained in the helper's log lines.

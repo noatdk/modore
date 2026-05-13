@@ -11,7 +11,7 @@
 //   -> output.result().value()
 //
 // The base loop always commits the top candidate. Frontends that want
-// candidate cycling (Ctrl+/ pressed repeatedly within a window) call
+// candidate cycling (the conversion hotkey pressed repeatedly within a window) call
 // the `_with_candidates_ex` variant, which captures the top-N candidate
 // list from the post-SPACE response before the ENTER call overwrites the
 // output. The list is returned alongside the committed string so the
@@ -134,8 +134,8 @@ extern "C" int mozc_bridge_init(const char *user_profile_dir) {
     // every successful convert lands a synthetic ENTER, which Mozc otherwise
     // treats as "user picked this candidate" and reinforces in
     // segment_history (segment.db / boundary.db). The katakana flow makes
-    // this catastrophic: a single Shift+Ctrl+/ commits ニホンゴ, and from
-    // then on plain Ctrl+/ on `nihongo` ranks ニホンゴ first — and each
+    // this catastrophic: a single katakana-chord press commits ニホンゴ, and
+    // from then on a plain hotkey press on `nihongo` ranks ニホンゴ first — and each
     // subsequent commit reinforces it further. With NO_HISTORY, neither
     // user_history_predictor nor user_segment_history_rewriter writes,
     // and ranking stays consistent across sessions.
