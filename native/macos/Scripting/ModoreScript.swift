@@ -1,0 +1,248 @@
+// Swift façade for the Lua scripting engine (libmodore_script.dylib).
+//
+// One engine instance is created at boot via `ModoreScript.boot(scriptDir:)`
+// and lives for the process lifetime. Hosts call the typed wrappers
+// (`routeFor`, `pickup`, `replacement`, `candidates`) which translate Swift
+// values to/from the C ABI and return `nil` whenever a script wants the
+// host to use its own default — undefined hook, nil return, or thrown error
+// inside Lua are all surfaced as nil here. The caller never has to know
+// which case fired.
+//
+// String marshaling: the engine ABI speaks UTF-8 byte offsets. AX speaks
+// UTF-16 code units. Conversions live in this file so call sites stay in
+// UTF-16 land.
+
+import Foundation
+
+enum ModoreScript {
+
+    // Process-wide handle. Written once on the main thread during boot,
+    // before `NSApplication.run()` returns control to any hotkey delivery
+    // path. Subsequent reads happen on the pickup dispatch queue; the
+    // dispatch_async hop inserted by Carbon hotkey delivery provides the
+    // acquire/release pairing that makes the boot-time write visible.
+    // If a second writer is ever introduced, this needs a lock.
+    private static var engine: OpaquePointer? = nil
+
+    static func boot(scriptDir: String) {
+        guard let h = mdr_init() else {
+            Log.tagged("scripting", "engine init failed")
+            return
+        }
+        engine = h
+        _ = mdr_set_log_callback(h, logTrampoline, nil)
+        _ = mdr_load_dir(h, scriptDir)
+        Log.tagged("scripting", "engine ABI v\(mdr_abi_version()) loaded (dir=\(scriptDir))")
+    }
+
+    static func shutdown() {
+        guard let h = engine else { return }
+        mdr_shutdown(h)
+        engine = nil
+    }
+
+    static var isLoaded: Bool { engine != nil }
+
+    // MARK: - Hooks
+
+    /// Ask scripts to choose a delivery route for `appId`. Returns nil if
+    /// no script weighed in.
+    static func routeFor(appId: String?) -> Route? {
+        guard let h = engine else { return nil }
+        var out: mdr_route_t = MDR_ROUTE_DEFAULT
+        let rc = withOptionalCString(appId) { p in
+            mdr_route(h, p, &out)
+        }
+        guard rc == 1 else { return nil }
+        return Route(out)
+    }
+
+    /// Override the pickup span. `caret` is a UTF-16 offset into `fullText`;
+    /// returns UTF-16 (start, end). Returns nil if no script weighed in or
+    /// the script-returned span couldn't be mapped back to UTF-16.
+    static func pickup(fullText: String, caretUTF16: Int, appId: String?, katakana: Bool) -> (start: Int, end: Int)? {
+        guard let h = engine else { return nil }
+        let utf8 = Array(fullText.utf8)
+        let caretByte = fullText.utf8ByteOffset(forUTF16Offset: caretUTF16)
+        var span = mdr_span_t(span_start_byte: 0, span_end_byte: 0, romaji: nil, romaji_len: 0)
+        let rc: Int32 = utf8.withUnsafeBufferPointer { buf in
+            // Rebind the UInt8 buffer to CChar for the C call. The two share
+            // layout; the bind is a typing concession, not a copy.
+            buf.baseAddress?.withMemoryRebound(to: CChar.self, capacity: buf.count) { cptr in
+                withOptionalCString(appId) { appPtr in
+                    var ctx = mdr_pickup_ctx_t(
+                        full_text: cptr,
+                        full_text_len: buf.count,
+                        caret_byte: caretByte,
+                        app_id: appPtr,
+                        flags: katakana ? 1 : 0)
+                    return mdr_pickup(h, &ctx, &span)
+                }
+            } ?? -1
+        }
+        guard rc == 1 else { return nil }
+        let s = fullText.utf16Offset(forUTF8Byte: Int(span.span_start_byte))
+        let e = fullText.utf16Offset(forUTF8Byte: Int(span.span_end_byte))
+        guard s >= 0, e >= s else { return nil }
+        return (s, e)
+    }
+
+    /// Override the replacement text. Returns nil if no script weighed in.
+    /// `cap` is the upper bound on the returned string; oversized returns
+    /// are silently truncated by the engine (logged).
+    static func replacement(appId: String?, span: mdr_span_t, candidates: [String], cap: Int = 4096) -> String? {
+        guard let h = engine else { return nil }
+        var span = span
+        var outBuf = [CChar](repeating: 0, count: cap)
+        var outLen: size_t = 0
+        let rc = withOptionalCString(appId) { appPtr in
+            candidates.withCStringArray { cands, n in
+                outBuf.withUnsafeMutableBufferPointer { buf in
+                    mdr_replacement(h, appPtr, &span,
+                                    cands, n,
+                                    buf.baseAddress, cap, &outLen)
+                }
+            }
+        }
+        guard rc == 1, outLen > 0 else { return nil }
+        return outBuf.withUnsafeBufferPointer { buf -> String? in
+            guard let base = buf.baseAddress else { return nil }
+            return String(cString: base)
+        }
+    }
+
+    /// Override the candidate list. Returns nil if no script weighed in.
+    static func candidates(appId: String?, list: [String], currentIndex: Int, cap: Int = 16384) -> [String]? {
+        guard let h = engine else { return nil }
+        var outBuf = [CChar](repeating: 0, count: cap)
+        var outCount: size_t = 0
+        let rc = withOptionalCString(appId) { appPtr in
+            list.withCStringArray { cands, n in
+                outBuf.withUnsafeMutableBufferPointer { buf in
+                    mdr_candidates(h, appPtr, cands, n,
+                                   Int32(currentIndex),
+                                   buf.baseAddress, cap, &outCount)
+                }
+            }
+        }
+        guard rc == 1, outCount > 0 else { return nil }
+        var result: [String] = []
+        result.reserveCapacity(Int(outCount))
+        outBuf.withUnsafeBufferPointer { buf in
+            guard let base = buf.baseAddress else { return }
+            var p = base
+            let end = base.advanced(by: cap)
+            for _ in 0..<Int(outCount) {
+                // Defensive: must find a NUL terminator before the buffer
+                // ends, else engine wrote a malformed count. Bail early.
+                var probe = p
+                while probe < end && probe.pointee != 0 { probe = probe.advanced(by: 1) }
+                if probe >= end { break }
+                let s = String(cString: p)
+                result.append(s)
+                p = probe.advanced(by: 1)
+            }
+        }
+        return result.isEmpty ? nil : result
+    }
+
+    // MARK: - Route mapping
+
+    enum Route {
+        case ax
+        case keystroke
+        case clipboard
+
+        init?(_ r: mdr_route_t) {
+            switch r {
+            case MDR_ROUTE_AX:        self = .ax
+            case MDR_ROUTE_KEYSTROKE: self = .keystroke
+            case MDR_ROUTE_CLIPBOARD: self = .clipboard
+            default:                  return nil
+            }
+        }
+    }
+}
+
+// MARK: - Log trampoline
+
+/// Fires from C → routes into Log.write via a tag-dispatch. Bind as
+/// `@convention(c)` so it's a plain function pointer with no Swift
+/// closure context.
+private let logTrampoline: mdr_log_cb = { _, level, tag, msg in
+    let tagStr = tag.flatMap { String(validatingUTF8: $0) } ?? "lua"
+    let msgStr = msg.flatMap { String(validatingUTF8: $0) } ?? ""
+    let prefix: String
+    switch level {
+    case 1: prefix = "WARN "
+    case 2: prefix = "ERROR "
+    default: prefix = ""
+    }
+    Log.tagged("scripting:" + tagStr, prefix + msgStr)
+    return 0
+}
+
+// MARK: - C-string helpers
+
+private func withOptionalCString<R>(_ s: String?, _ body: (UnsafePointer<CChar>?) -> R) -> R {
+    if let s = s { return s.withCString(body) }
+    return body(nil)
+}
+
+private extension Array where Element == String {
+    /// Run `body` with a contiguous `const char* const*` array of the
+    /// strings, plus their count. Strings are held alive for the call.
+    func withCStringArray<R>(_ body: (UnsafePointer<UnsafePointer<CChar>?>?, size_t) -> R) -> R {
+        if isEmpty {
+            return body(nil, 0)
+        }
+        var ptrs: [UnsafePointer<CChar>?] = Array<UnsafePointer<CChar>?>(repeating: nil, count: count)
+        return withCStringArrayHelper(self[...], ptrs: &ptrs, body: body)
+    }
+}
+
+private func withCStringArrayHelper<R>(
+    _ remaining: ArraySlice<String>,
+    ptrs: inout [UnsafePointer<CChar>?],
+    body: (UnsafePointer<UnsafePointer<CChar>?>?, size_t) -> R
+) -> R {
+    let idx = ptrs.count - remaining.count
+    if remaining.isEmpty {
+        return ptrs.withUnsafeBufferPointer { buf in
+            body(buf.baseAddress, buf.count)
+        }
+    }
+    let s = remaining.first!
+    return s.withCString { cstr in
+        ptrs[idx] = cstr
+        return withCStringArrayHelper(remaining.dropFirst(), ptrs: &ptrs, body: body)
+    }
+}
+
+// MARK: - UTF-8 ↔ UTF-16 mapping
+
+extension String {
+    /// UTF-8 byte offset corresponding to a UTF-16 code-unit offset.
+    /// Out-of-range inputs clamp to bounds. O(n) — the only callers run
+    /// on the pickup pipeline, not per keystroke.
+    func utf8ByteOffset(forUTF16Offset u: Int) -> Int {
+        if u <= 0 { return 0 }
+        let limit = utf16.count
+        let safe = min(u, limit)
+        let idx = String.Index(utf16Offset: safe, in: self)
+        let utf8Anchor = idx.samePosition(in: utf8) ?? utf8.endIndex
+        return utf8.distance(from: utf8.startIndex, to: utf8Anchor)
+    }
+
+    /// UTF-16 code-unit offset corresponding to a UTF-8 byte offset.
+    /// Returns -1 if the byte offset lands in the middle of a multi-byte
+    /// sequence (no valid UTF-16 anchor). Caller treats -1 as "ignore".
+    func utf16Offset(forUTF8Byte b: Int) -> Int {
+        if b <= 0 { return 0 }
+        let limit = utf8.count
+        let safe = min(b, limit)
+        let utf8Idx = utf8.index(utf8.startIndex, offsetBy: safe)
+        guard let mapped = utf8Idx.samePosition(in: utf16) else { return -1 }
+        return utf16.distance(from: utf16.startIndex, to: mapped)
+    }
+}

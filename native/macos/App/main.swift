@@ -237,5 +237,17 @@ do {
     exit(1)
 }
 
+// Lua scripting engine. Loaded after Mozc so any startup log lines from
+// scripts (`modore.log.*` at top level) interleave below the rest of the
+// boot sequence. Engine is opt-in via the presence of files in the dir;
+// an empty/missing dir is a no-op and the host runs in pass-through.
+let scriptsDir: String = {
+    if let xdg = ProcessInfo.processInfo.environment["XDG_CONFIG_HOME"], !xdg.isEmpty {
+        return "\(xdg)/modore/scripts"
+    }
+    return "\(FileManager.default.homeDirectoryForCurrentUser.path)/.config/modore/scripts"
+}()
+ModoreScript.boot(scriptDir: scriptsDir)
+
 Log.boot("ready: conversion hotkey installed (see ~/.config/modore/modore.conf)")
 app.run()

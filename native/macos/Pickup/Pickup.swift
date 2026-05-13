@@ -213,8 +213,23 @@ func doClipboardPickup(_ request: PickupRequest = .init()) {
         }
         return
     }
-    let replacement = frozenPrefix + result.replacement
-    Log.clipboard("replace -> \(replacement) (alts=\(result.candidates.count))")
+    let baseReplacement = frozenPrefix + result.replacement
+    // Candidates get the prefix glued on too — cycle replaces the whole
+    // typed run (prefix + tail) on each press, so each candidate must
+    // already include the prefix for backspace-count math to line up.
+    let baseCandidates: [String] = result.candidates.isEmpty
+        ? [baseReplacement]
+        : result.candidates.map { frozenPrefix + $0 }
+    // Script overrides — no AX span on the clipboard path, so span byte
+    // offsets are zeroed. Scripts that care about position should branch
+    // on app_id instead.
+    let scriptSpan = mdr_span_t(span_start_byte: 0, span_end_byte: 0,
+                                romaji: nil, romaji_len: 0)
+    let replacement = ModoreScript.replacement(
+        appId: frontmostBundleID, span: scriptSpan, candidates: baseCandidates) ?? baseReplacement
+    let snapshotCandidates = ModoreScript.candidates(
+        appId: frontmostBundleID, list: baseCandidates, currentIndex: 0) ?? baseCandidates
+    Log.clipboard("replace -> \(replacement) (alts=\(snapshotCandidates.count))")
 
     // Replace the active selection by injecting the replacement as a Unicode
     // keystroke into the session event tap. No clipboard touch on the replace
@@ -223,15 +238,7 @@ func doClipboardPickup(_ request: PickupRequest = .init()) {
 
     // Open a clipboard-backed session for follow-up gestures. The frontmost
     // app's pid + bundle ID are the identity check Esc-undo / cycle use to
-    // refuse to act on the wrong window. Same single-element-list fallback
-    // as the AX path for inputs Mozc didn't offer alternatives on.
-    // Candidates get the prefix glued on too — cycle replaces the whole
-    // typed run (prefix + tail) on each press, so each candidate must
-    // already include the prefix for backspace-count math to line up.
-    let snapshotCandidates: [String] =
-        result.candidates.isEmpty
-            ? [replacement]
-            : result.candidates.map { frozenPrefix + $0 }
+    // refuse to act on the wrong window.
     let frontmost = FrontmostApp.describe()
     let session = ConversionSession(
         backing: .clipboard(
@@ -267,6 +274,22 @@ func doPickup(_ request: PickupRequest = .init()) {
     if request.target == .katakana {
         Log.pickup("katakana modifier engaged")
     }
+
+    // Frontmost-app capture once, threaded through script hooks below.
+    let appId = FrontmostApp.describe()?.bundleID
+
+    // Per-app routing override. A script returning "clipboard" skips the
+    // AX read entirely and goes straight to the Cmd+C fallback path —
+    // useful for apps (Obsidian, Discord, …) where AX writes are unreliable
+    // but the user wants the same hotkey to Just Work. "ax" and "keystroke"
+    // are no-ops here today: the existing flow already tries AX first and
+    // falls back to keystroke-replace on rejection.
+    if let route = ModoreScript.routeFor(appId: appId), route == .clipboard {
+        Log.pickup("scripted route → clipboard\(FrontmostApp.logSuffix())")
+        doClipboardPickup(request)
+        return
+    }
+
     // First AX attempt. If it fails — typically because the frontmost app
     // is Electron and hasn't been opted into accessibility — flip the
     // documented `AXManualAccessibility` switch on that app's pid and try
@@ -281,6 +304,13 @@ func doPickup(_ request: PickupRequest = .init()) {
         let (start, end): (Int, Int)
         if field.selStart != field.selEnd {
             (start, end) = (field.selStart, field.selEnd)
+        } else if let scripted = ModoreScript.pickup(
+            fullText: field.value,
+            caretUTF16: field.selStart,
+            appId: appId,
+            katakana: request.target == .katakana) {
+            (start, end) = scripted
+            Log.pickup("scripted pickup span [\(start)..\(end)]")
         } else {
             (start, end) = wordBounds(utf16, caret: field.selStart)
         }
@@ -319,22 +349,31 @@ func doPickup(_ request: PickupRequest = .init()) {
             Log.pickup("backend returned no result")
             return
         }
-        let replacement = frozenPrefix + result.replacement
-        Log.pickup("replace -> \(replacement) (alts=\(result.candidates.count))")
+        let baseReplacement = frozenPrefix + result.replacement
+        let baseCandidates: [String] = result.candidates.isEmpty
+            ? [baseReplacement]
+            : result.candidates.map { frozenPrefix + $0 }
+
+        // Script overrides for replacement text and candidate list. Both
+        // are independently optional. `replacement` is what gets written
+        // immediately; `snapshotCandidates` is what cycle steps through.
+        let scriptSpanStart = field.value.utf8ByteOffset(forUTF16Offset: start)
+        let scriptSpanEnd   = field.value.utf8ByteOffset(forUTF16Offset: end)
+        let scriptSpan = mdr_span_t(
+            span_start_byte: size_t(scriptSpanStart),
+            span_end_byte: size_t(scriptSpanEnd),
+            romaji: nil, romaji_len: 0)
+        let replacement = ModoreScript.replacement(
+            appId: appId, span: scriptSpan, candidates: baseCandidates) ?? baseReplacement
+        let snapshotCandidates = ModoreScript.candidates(
+            appId: appId, list: baseCandidates, currentIndex: 0) ?? baseCandidates
+        Log.pickup("replace -> \(replacement) (alts=\(snapshotCandidates.count))")
 
         if replaceRange(in: field.element, start: start, end: end, replacement: replacement) {
             // Open a session so Esc-undo and the cycle gesture have
-            // something to act on. `candidates` is the full list captured
-            // from Mozc; if Mozc returned nothing (rare — only trivial
-            // single-kana inputs), we still snapshot the committed string
-            // as a single-element list so the index/identity math stays
-            // simple. `candidateIndex = 0` means "candidates[0] is what
-            // got written to the span." Each candidate carries the
-            // non-ASCII prefix so cycling lines up byte-for-byte.
-            let snapshotCandidates: [String] =
-                result.candidates.isEmpty
-                    ? [replacement]
-                    : result.candidates.map { frozenPrefix + $0 }
+            // something to act on. Candidates already include the
+            // frozenPrefix from the base computation above, so cycling
+            // lines up byte-for-byte.
             let session = ConversionSession(
                 backing: .ax(element: field.element, spanStart: start),
                 originalReading: spanText,
@@ -378,10 +417,8 @@ func doPickup(_ request: PickupRequest = .init()) {
 
         // Cycle/Undo via the clipboard-backed session: those use
         // backspace+retype, which works even when AX writes don't.
-        let snapshotCandidates: [String] =
-            result.candidates.isEmpty
-                ? [replacement]
-                : result.candidates.map { frozenPrefix + $0 }
+        // snapshotCandidates was already computed above with any script
+        // overrides applied; reuse here for consistency.
         let frontmost = FrontmostApp.describe()
         let session = ConversionSession(
             backing: .clipboard(

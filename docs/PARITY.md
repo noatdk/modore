@@ -44,7 +44,7 @@ The Linux columns are the same binary on different display servers;
 
 | Feature                                       | macOS | Linux (X11) | Linux (Wayland) | Windows |
 | --------------------------------------------- | :---: | :---------: | :-------------: | :-----: |
-| Lua scripting engine (ABI + sandbox + reload) |   ◐   |     ◐       |       ◐         |    ◐    |
+| Lua scripting engine (ABI + sandbox + reload) |   ✓   |     ◐       |       ◐         |    ◐    |
 
 ## Config & lifecycle
 
