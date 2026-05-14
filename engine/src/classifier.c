@@ -476,6 +476,18 @@ static void smooth_labels(uint8_t* labels, size_t len, size_t min_len) {
     }
 }
 
+static int starts_with_particle(const char* s, size_t len) {
+    static const char* particles[] = {
+        "de", "ni", "no", "wo", "ha", "ga", "to", "mo", "he", "ya",
+        "kara", "made", "yori", NULL
+    };
+    for (const char** p = particles; *p; p++) {
+        size_t plen = strlen(*p);
+        if (len >= plen && strncmp(s, *p, plen) == 0) return 1;
+    }
+    return 0;
+}
+
 /* ----- Boundary refinement --------------------------------------------- */
 
 /* At each ASCII→romaji boundary, check if the ASCII segment's text is
@@ -508,15 +520,22 @@ static void refine_boundaries(const mdr_cls_t* cls,
 
                 /* Already a dictionary word? Keep as-is. */
                 if (!dict_contains(cls, lower, seg_len)) {
+                    size_t best_cand_len = 0;
                     /* Try trimming 1-6 chars from the end */
                     for (size_t trim = 1; trim <= 6 && trim < seg_len - 2; trim++) {
                         size_t cand_len = seg_len - trim;
                         if (dict_contains(cls, lower, cand_len)) {
-                            /* Shift: flip the trimmed chars to romaji */
-                            for (size_t j = seg_start + cand_len; j < i; j++)
-                                labels[j] = 1;
-                            break;
+                            if (best_cand_len == 0) best_cand_len = cand_len;
+                            if (starts_with_particle(lower + cand_len, trim)) {
+                                best_cand_len = cand_len;
+                                break;
+                            }
                         }
+                    }
+                    if (best_cand_len > 0) {
+                        /* Shift: flip the trimmed chars to romaji */
+                        for (size_t j = seg_start + best_cand_len; j < i; j++)
+                            labels[j] = 1;
                     }
                 }
             }
@@ -554,7 +573,7 @@ static void refine_boundaries(const mdr_cls_t* cls,
                     char c = text[i + ext - 1];
                     lower[seg_len + ext - 1] = (c >= 'A' && c <= 'Z')
                                                 ? (char)(c + 32) : c;
-                    if (dict_contains(cls, lower, seg_len + ext))
+                    if (ext >= 2 && dict_contains(cls, lower, seg_len + ext))
                         best_ext = ext;
                 }
                 if (best_ext > 0) {

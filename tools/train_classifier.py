@@ -1163,6 +1163,8 @@ def _refine_boundaries(text: str, labels: list[int]) -> None:
     """Dictionary-guided boundary refinement (mirrors C refine_boundaries)."""
     if not _DICT_WORDS:
         return
+    particles = ("de", "ni", "no", "wo", "ha", "ga", "to", "mo", "he", "ya",
+                 "kara", "made", "yori")
     i = 0
     while i < len(labels):
         j = i
@@ -1172,12 +1174,18 @@ def _refine_boundaries(text: str, labels: list[int]) -> None:
         if labels[i] == 0 and seg_len >= 4 and (j == len(labels) or labels[j] == 1):
             seg_text = text[i:j].lower()
             if seg_text not in _DICT_WORDS:
+                best_cand = None
                 for trim in range(1, min(7, seg_len - 2)):
                     cand = seg_text[:seg_len - trim]
                     if cand in _DICT_WORDS:
-                        for k in range(i + len(cand), j):
-                            labels[k] = 1
-                        break
+                        if best_cand is None:
+                            best_cand = cand
+                        if seg_text[len(cand):].startswith(particles):
+                            best_cand = cand
+                            break
+                if best_cand is not None:
+                    for k in range(i + len(best_cand), j):
+                        labels[k] = 1
         i = j
 
     # Pass 2: extend short ASCII segments forward into following romaji
@@ -1196,7 +1204,7 @@ def _refine_boundaries(text: str, labels: list[int]) -> None:
             best_ext = 0
             for ext in range(1, max_ext + 1):
                 cand = text[i : j + ext].lower()
-                if cand in _DICT_WORDS:
+                if ext >= 2 and cand in _DICT_WORDS:
                     best_ext = ext
             if best_ext > 0:
                 for k in range(j, j + best_ext):

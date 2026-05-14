@@ -127,6 +127,61 @@ static void test_segment_mixed(void) {
     mdr_cls_free(cls);
 }
 
+static void test_dictionary_boundary_refinement(void) {
+    const char* model_path = find_model();
+    if (!model_path) { fprintf(stderr, "  SKIP: model file not found\n"); return; }
+    mdr_cls_t* cls = mdr_cls_load(model_path);
+    if (!cls) return;
+
+    const char* dict_candidates[] = {
+        "../../engine/models/english_dict.txt",
+        "../engine/models/english_dict.txt",
+        "engine/models/english_dict.txt",
+        "models/english_dict.txt",
+        NULL
+    };
+    const char* dict_path = NULL;
+    for (const char** p = dict_candidates; *p; p++) {
+        FILE* f = fopen(*p, "r");
+        if (f) { fclose(f); dict_path = *p; break; }
+    }
+    if (!dict_path || mdr_cls_load_dict(cls, dict_path) != 0) {
+        fprintf(stderr, "  SKIP: dictionary file not found\n");
+        mdr_cls_free(cls);
+        return;
+    }
+
+    mdr_segment_t segs[8];
+    int n = mdr_cls_segment(cls, "dockerdetukuru", 14, segs, 8);
+    CHECK(n == 2, "dockerdetukuru: 2 segments");
+    if (n == 2) {
+        CHECK(segs[0].is_romaji == 0 && segs[0].start == 0 && segs[0].end == 6,
+              "dockerdetukuru: docker stays ASCII");
+        CHECK(segs[1].is_romaji == 1 && segs[1].start == 6 && segs[1].end == 14,
+              "dockerdetukuru: detukuru stays romaji");
+    }
+
+    n = mdr_cls_segment(cls, "dockerdetsukuru", 15, segs, 8);
+    CHECK(n == 2, "dockerdetsukuru: 2 segments");
+    if (n == 2) {
+        CHECK(segs[0].is_romaji == 0 && segs[0].end == 6,
+              "dockerdetsukuru: trims ASCII to docker");
+        CHECK(segs[1].is_romaji == 1 && segs[1].start == 6 && segs[1].end == 15,
+              "dockerdetsukuru: keeps detsukuru romaji");
+    }
+
+    n = mdr_cls_segment(cls, "configwoijitte", 14, segs, 8);
+    CHECK(n == 2, "configwoijitte: 2 segments");
+    if (n == 2) {
+        CHECK(segs[0].is_romaji == 0 && segs[0].end == 6,
+              "configwoijitte: still extends con to config");
+        CHECK(segs[1].is_romaji == 1 && segs[1].start == 6,
+              "configwoijitte: leaves woijitte romaji");
+    }
+
+    mdr_cls_free(cls);
+}
+
 static void test_segment_pure_romaji(void) {
     const char* model_path = find_model();
     if (!model_path) { fprintf(stderr, "  SKIP: model file not found\n"); return; }
@@ -151,6 +206,7 @@ int main(void) {
     test_empty_input();
     test_uppercase_forced_ascii();
     test_segment_mixed();
+    test_dictionary_boundary_refinement();
     test_segment_pure_romaji();
 
     fprintf(stderr, "test_classifier: %d pass, %d fail\n", g_pass, g_fail);

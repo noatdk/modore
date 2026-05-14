@@ -35,6 +35,11 @@ ENGINE_HEADER   := $(ENGINE_SRC_DIR)/include/modore_script.h
 ENGINE_SOURCES  := $(wildcard $(ENGINE_SRC_DIR)/src/*.c) \
                    $(wildcard $(ENGINE_SRC_DIR)/src/*.h) \
                    $(wildcard $(ENGINE_SRC_DIR)/include/*.h)
+CLASSIFIER_MODEL := $(ENGINE_SRC_DIR)/models/classifier.mdl
+CLASSIFIER_DICT  := $(ENGINE_SRC_DIR)/models/english_dict.txt
+BUNDLE_RESOURCES := $(APP)/Contents/Resources
+BUNDLE_MODEL     := $(BUNDLE_RESOURCES)/classifier.mdl
+BUNDLE_DICT      := $(BUNDLE_RESOURCES)/english_dict.txt
 
 BRIDGING_HEADER := $(BUILD)/bridging-header.h
 
@@ -66,7 +71,7 @@ all: $(APP)
 signing:
 	@bash scripts/setup-signing.sh
 
-$(APP): $(BIN) $(PLIST) $(BUNDLE_DYLIB) $(BUNDLE_ENGINE) | signing
+$(APP): $(BIN) $(PLIST) $(BUNDLE_DYLIB) $(BUNDLE_ENGINE) $(BUNDLE_MODEL) $(BUNDLE_DICT) | signing
 	# Re-sign the whole bundle. The dylib must be signed before the executable
 	# (codesign verifies inner content), but copying it in via $(BUNDLE_DYLIB)
 	# above is a clean-target dep, so by here it's already in place.
@@ -142,6 +147,14 @@ $(BUNDLE_ENGINE): $(ENGINE_LIB)
 $(PLIST): Info.plist
 	mkdir -p "$(APP)/Contents"
 	cp Info.plist "$@"
+
+$(BUNDLE_MODEL): $(CLASSIFIER_MODEL)
+	mkdir -p "$(BUNDLE_RESOURCES)"
+	cp "$(CLASSIFIER_MODEL)" "$@"
+
+$(BUNDLE_DICT): $(CLASSIFIER_DICT)
+	mkdir -p "$(BUNDLE_RESOURCES)"
+	cp "$(CLASSIFIER_DICT)" "$@"
 
 # --- helpers ---------------------------------------------------------------
 run: $(APP)
