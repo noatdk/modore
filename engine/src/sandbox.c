@@ -20,6 +20,7 @@
 static const char* RK_MODORE_LOG     = "modore.log.shared";
 static const char* RK_MODORE_DEFAULT = "modore.default.shared";
 static const char* RK_MODORE_HOST    = "modore.host.shared";
+static const char* RK_MODORE_TEXT    = "modore.text.shared";
 
 /* engine* pointer is stashed in registry under this key so C closures
  * can reach the engine without an upvalue per closure (cheaper, simpler). */
@@ -207,6 +208,143 @@ static int host_read_selection(lua_State* L) {
     return 1;
 }
 
+/* ---- modore.text.* pure baseline helpers ------------------------------ */
+
+static size_t clamp_to_utf8_boundary(const char* s, size_t len, size_t pos) {
+    if (pos > len) pos = len;
+    while (pos > 0 && (((unsigned char)s[pos]) & 0xC0) == 0x80) --pos;
+    return pos;
+}
+
+static size_t utf8_next(const char* s, size_t len, size_t pos) {
+    if (pos >= len) return len;
+    ++pos;
+    while (pos < len && (((unsigned char)s[pos]) & 0xC0) == 0x80) ++pos;
+    return pos;
+}
+
+static size_t utf8_prev(const char* s, size_t pos) {
+    if (pos == 0) return 0;
+    --pos;
+    while (pos > 0 && (((unsigned char)s[pos]) & 0xC0) == 0x80) --pos;
+    return pos;
+}
+
+static int is_ascii_ws_at(const char* s, size_t pos) {
+    unsigned char c = (unsigned char)s[pos];
+    return c == ' ' || c == '\t' || c == '\n' || c == '\r';
+}
+
+static int is_ascii_char_at(const char* s, size_t pos) {
+    return ((unsigned char)s[pos]) < 0x80;
+}
+
+static int text_word_bounds(lua_State* L) {
+    size_t len = 0;
+    const char* s = luaL_checklstring(L, 1, &len);
+    lua_Integer raw_caret = luaL_optinteger(L, 2, (lua_Integer)len);
+    size_t caret = raw_caret < 0 ? 0 : (size_t)raw_caret;
+    caret = clamp_to_utf8_boundary(s, len, caret);
+
+    size_t start = caret;
+    while (start > 0) {
+        size_t prev = utf8_prev(s, start);
+        if (is_ascii_ws_at(s, prev)) break;
+        if (start < len && is_ascii_char_at(s, prev) != is_ascii_char_at(s, start)) break;
+        start = prev;
+    }
+
+    size_t end = caret;
+    while (end < len) {
+        if (is_ascii_ws_at(s, end)) break;
+        if (end > 0) {
+            size_t prev = utf8_prev(s, end);
+            if (is_ascii_char_at(s, prev) != is_ascii_char_at(s, end)) break;
+        }
+        end = utf8_next(s, len, end);
+    }
+
+    if (start == end) {
+        if (caret < len) {
+            start = caret;
+            end = utf8_next(s, len, caret);
+        } else if (caret > 0) {
+            start = utf8_prev(s, caret);
+            end = caret;
+        }
+    }
+
+    lua_createtable(L, 0, 2);
+    lua_pushinteger(L, (lua_Integer)start);
+    lua_setfield(L, -2, "start_byte");
+    lua_pushinteger(L, (lua_Integer)end);
+    lua_setfield(L, -2, "end_byte");
+    return 1;
+}
+
+static int text_split_trailing_ascii(lua_State* L) {
+    size_t len = 0;
+    const char* s = luaL_checklstring(L, 1, &len);
+    size_t split = len;
+    while (split > 0) {
+        size_t prev = utf8_prev(s, split);
+        if (!is_ascii_char_at(s, prev)) break;
+        split = prev;
+    }
+    lua_pushlstring(L, s, split);
+    lua_pushlstring(L, s + split, len - split);
+    return 2;
+}
+
+static int is_upper_ascii(unsigned char c) { return c >= 'A' && c <= 'Z'; }
+static int is_lower_ascii(unsigned char c) { return c >= 'a' && c <= 'z'; }
+static int is_digit_ascii(unsigned char c) { return c >= '0' && c <= '9'; }
+
+static int is_acronym_symbol(unsigned char c) {
+    switch (c) {
+        case '&': case '-': case '.': case '_': case '+':
+        case '/': case ':': case '@': case '#':
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+static int text_split_acronym_head(lua_State* L) {
+    size_t len = 0;
+    const char* s = luaL_checklstring(L, 1, &len);
+    if (len < 2 || !is_upper_ascii((unsigned char)s[0])) {
+        lua_pushliteral(L, "");
+        lua_pushlstring(L, s, len);
+        return 2;
+    }
+
+    size_t i = 1;
+    int saw_non_letter = 0;
+    while (i < len) {
+        unsigned char c = (unsigned char)s[i];
+        if (is_upper_ascii(c)) {
+            ++i;
+        } else if (is_digit_ascii(c) || is_acronym_symbol(c)) {
+            saw_non_letter = 1;
+            ++i;
+        } else {
+            break;
+        }
+    }
+
+    if (i >= 2 && i < len && is_lower_ascii((unsigned char)s[i]) &&
+        (i >= 3 || saw_non_letter)) {
+        lua_pushlstring(L, s, i);
+        lua_pushlstring(L, s + i, len - i);
+        return 2;
+    }
+
+    lua_pushliteral(L, "");
+    lua_pushlstring(L, s, len);
+    return 2;
+}
+
 /* ---- one-time global registration ------------------------------------ */
 
 void ms_register_modore_globals(mdr_engine_t* eng) {
@@ -238,6 +376,14 @@ void ms_register_modore_globals(mdr_engine_t* eng) {
     lua_pushcfunction(L, host_clipboard_write); lua_setfield(L, -2, "clipboard_write");
     lua_pushcfunction(L, host_read_selection);  lua_setfield(L, -2, "read_selection");
     lua_setfield(L, LUA_REGISTRYINDEX, RK_MODORE_HOST);
+
+    /* Shared `modore.text` table — pure helpers that mirror host baseline
+     * span/pre-processing logic in the engine's UTF-8 byte domain. */
+    lua_createtable(L, 0, 3);
+    lua_pushcfunction(L, text_word_bounds);          lua_setfield(L, -2, "word_bounds");
+    lua_pushcfunction(L, text_split_trailing_ascii); lua_setfield(L, -2, "split_trailing_ascii");
+    lua_pushcfunction(L, text_split_acronym_head);   lua_setfield(L, -2, "split_acronym_head");
+    lua_setfield(L, LUA_REGISTRYINDEX, RK_MODORE_TEXT);
 }
 
 /* ---- per-script env --------------------------------------------------- */
@@ -308,6 +454,8 @@ int ms_build_env(mdr_engine_t* eng) {
     lua_setfield(L, -2, "default");
     lua_getfield(L, LUA_REGISTRYINDEX, RK_MODORE_HOST);
     lua_setfield(L, -2, "host");
+    lua_getfield(L, LUA_REGISTRYINDEX, RK_MODORE_TEXT);
+    lua_setfield(L, -2, "text");
     /* Pre-set hook slots to nil — explicit nil makes the user-defined
      * absent state clear in diagnostics. Lua treats unset == nil anyway. */
     lua_pushnil(L); lua_setfield(L, -2, "on_pickup");

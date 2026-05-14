@@ -40,6 +40,17 @@ Available inside `on_acquire` (and any hook, technically):
 - `modore.host.sleep_ms(ms)` — pause
 - `modore.host.clipboard_read()` — current clipboard text or `nil`
 - `modore.host.clipboard_write(s)` — set clipboard, returns boolean
+- `modore.host.read_selection()` — focused accessibility selection or `nil`
+
+Pure text helpers mirror the host baseline in UTF-8 byte offsets:
+
+- `modore.text.word_bounds(text, caret_byte)` — `{ start_byte, end_byte }`
+- `modore.text.split_trailing_ascii(s)` — `prefix, tail`
+- `modore.text.split_acronym_head(s)` — `head, tail`
+
+`modore.default.{pickup,replacement,route}` calls the host baseline when
+the host has registered it. This is the preferred way to wrap default
+behaviour in app-specific scripts instead of copying it.
 
 `modore.log.{info,warn,error}(msg)` interleaves with the host log.
 

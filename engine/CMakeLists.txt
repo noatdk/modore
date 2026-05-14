@@ -125,7 +125,7 @@ endif()
 
 if(MODORE_SCRIPT_BUILD_TESTS)
     enable_testing()
-    foreach(t smoke test_pickup test_replacement test_route test_candidates test_acquire test_sandbox test_engine)
+    foreach(t smoke test_pickup test_replacement test_route test_candidates test_acquire test_sandbox test_engine test_text)
         add_executable(${t} tests/${t}.c)
         target_link_libraries(${t} PRIVATE modore_script)
         target_include_directories(${t} PRIVATE

@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <cstring>
 #include <mutex>
+#include <algorithm>
 
 extern "C" {
 #include "modore_script.h"
@@ -34,6 +35,94 @@ int log_trampoline(void* /*userdata*/, int level, const char* tag, const char* m
   return 0;
 }
 
+std::size_t clamp_to_boundary(const char* s, std::size_t len, std::size_t pos) {
+  pos = std::min(pos, len);
+  while (pos > 0 && (static_cast<unsigned char>(s[pos]) & 0xC0u) == 0x80u) --pos;
+  return pos;
+}
+
+std::size_t next_char(const char* s, std::size_t len, std::size_t pos) {
+  if (pos >= len) return len;
+  ++pos;
+  while (pos < len && (static_cast<unsigned char>(s[pos]) & 0xC0u) == 0x80u) ++pos;
+  return pos;
+}
+
+std::size_t prev_char(const char* s, std::size_t pos) {
+  if (pos == 0) return 0;
+  --pos;
+  while (pos > 0 && (static_cast<unsigned char>(s[pos]) & 0xC0u) == 0x80u) --pos;
+  return pos;
+}
+
+bool is_ws(const char* s, std::size_t pos) {
+  const unsigned char c = static_cast<unsigned char>(s[pos]);
+  return c == ' ' || c == '\t' || c == '\n' || c == '\r';
+}
+
+bool is_ascii(const char* s, std::size_t pos) {
+  return static_cast<unsigned char>(s[pos]) < 0x80u;
+}
+
+int default_pickup(void* /*userdata*/, const mdr_pickup_ctx_t* ctx, mdr_span_t* out) {
+  if (!ctx || !out || !ctx->full_text) return 0;
+  const char* s = ctx->full_text;
+  const std::size_t len = ctx->full_text_len;
+  const std::size_t caret = clamp_to_boundary(s, len, ctx->caret_byte);
+
+  std::size_t start = caret;
+  while (start > 0) {
+    const std::size_t prev = prev_char(s, start);
+    if (is_ws(s, prev)) break;
+    start = prev;
+  }
+
+  std::size_t end = caret;
+  while (end < len) {
+    if (is_ws(s, end)) break;
+    end = next_char(s, len, end);
+  }
+
+  if (start == end) {
+    if (caret < len) {
+      start = caret;
+      end = next_char(s, len, caret);
+    } else if (caret > 0) {
+      start = prev_char(s, caret);
+      end = caret;
+    }
+  }
+
+  out->span_start_byte = start;
+  out->span_end_byte = end;
+  out->romaji = nullptr;
+  out->romaji_len = 0;
+  return start < end ? 1 : 0;
+}
+
+int default_replacement(void* /*userdata*/,
+                        const char* /*app_id*/,
+                        const mdr_span_t* /*span*/,
+                        const char* const* cands,
+                        std::size_t n_cands,
+                        char* out_buf,
+                        std::size_t out_cap,
+                        std::size_t* out_len) {
+  if (!cands || n_cands == 0 || !cands[0] || !out_buf || !out_len || out_cap == 0) return 0;
+  std::size_t n = std::strlen(cands[0]);
+  if (n >= out_cap) n = out_cap - 1;
+  std::memcpy(out_buf, cands[0], n);
+  out_buf[n] = '\0';
+  *out_len = n;
+  return 1;
+}
+
+int default_route(void* /*userdata*/, const char* /*app_id*/, mdr_route_t* out_route) {
+  if (!out_route) return 0;
+  *out_route = MDR_ROUTE_AX;
+  return 1;
+}
+
 }  // namespace
 
 void boot(const std::string& script_dir) {
@@ -44,6 +133,7 @@ void boot(const std::string& script_dir) {
     return;
   }
   mdr_set_log_callback(g_engine, log_trampoline, nullptr);
+  mdr_set_defaults(g_engine, nullptr, default_pickup, default_replacement, default_route);
   mdr_load_dir(g_engine, script_dir.c_str());
   modore_log("scripting", "engine ABI v%d loaded (dir=%s)",
              mdr_abi_version(), script_dir.c_str());

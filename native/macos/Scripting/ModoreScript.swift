@@ -34,6 +34,7 @@ enum ModoreScript {
         engine = h
         scriptsDir = scriptDir
         _ = mdr_set_log_callback(h, logTrampoline, nil)
+        registerDefaultCallbacks(h)
         registerHostOps(h)
         _ = mdr_load_dir(h, scriptDir)
         Log.tagged("scripting", "engine ABI v\(mdr_abi_version()) loaded (dir=\(scriptDir))")
@@ -103,6 +104,43 @@ enum ModoreScript {
             }
         )
         _ = mdr_set_host_ops(h, &ops, nil)
+    }
+
+    /// Expose the host baseline as `modore.default.*` so scripts can wrap
+    /// rather than fork it. These callbacks intentionally mirror the same
+    /// helpers used by the Swift pickup pipeline.
+    private static func registerDefaultCallbacks(_ h: OpaquePointer) {
+        _ = mdr_set_defaults(
+            h,
+            nil,
+            { _, ctxPtr, outPtr in
+                guard let ctx = ctxPtr, let out = outPtr,
+                      let textPtr = ctx.pointee.full_text else { return 0 }
+                let data = Data(bytes: textPtr, count: ctx.pointee.full_text_len)
+                guard let text = String(data: data, encoding: .utf8) else { return 0 }
+                let caretUTF16 = text.utf16Offset(forUTF8Byte: Int(ctx.pointee.caret_byte))
+                guard caretUTF16 >= 0 else { return 0 }
+                let bounds = wordBounds(Array(text.utf16), caret: caretUTF16)
+                out.pointee.span_start_byte = size_t(text.utf8ByteOffset(forUTF16Offset: bounds.0))
+                out.pointee.span_end_byte = size_t(text.utf8ByteOffset(forUTF16Offset: bounds.1))
+                out.pointee.romaji = nil
+                out.pointee.romaji_len = 0
+                return 1
+            },
+            { _, _, _, cands, nCands, outBuf, outCap, outLen in
+                guard let cands, nCands > 0, let first = cands[0],
+                      let buf = outBuf, let lenOut = outLen, outCap > 0 else { return 0 }
+                let n = min(strlen(first), outCap - 1)
+                UnsafeMutableRawPointer(buf).copyMemory(from: first, byteCount: n)
+                buf[n] = 0
+                lenOut.pointee = n
+                return 1
+            },
+            { _, _, outRoute in
+                guard let out = outRoute else { return 0 }
+                out.pointee = MDR_ROUTE_AX
+                return 1
+            })
     }
 
     static func shutdown() {
