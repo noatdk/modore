@@ -187,9 +187,6 @@ func doClipboardPickup(_ request: PickupRequest = .init()) {
     // only the trailing romaji to the bridge, then re-attach the prefix.
     let (asciiPrefix, romajiTail) = splitTrailingASCII(pickedText)
     guard !romajiTail.isEmpty else {
-        // No trailing romaji to convert — bridge would error or echo input.
-        // Drop the forced selection (if any) so we don't leave the user
-        // with a stuck highlight.
         Log.clipboard("nothing to convert (no trailing romaji in \(pickedText))")
         if didForceSelect {
             postKey(kVK_RightArrow)
@@ -197,29 +194,28 @@ func doClipboardPickup(_ request: PickupRequest = .init()) {
         return
     }
 
-    // Carve off any leading acronym/code (`R&D`, `API`, …) so Mozc only
-    // sees the romaji tail.
-    let (acronymHead, mozcInput) = splitAcronymHead(romajiTail)
-    let frozenPrefix = asciiPrefix + acronymHead
-
-    // Fetch candidates so the cycle gesture has something to work with in
-    // this app too. Esc-undo and cycle on the clipboard path use a
-    // backspace + retype strategy (the alternative — re-running the
-    // selection + Cmd+C dance — would be much slower per cycle press).
-    guard let result = callBackend(mozcInput, request: request, wantCandidates: true) else {
-        Log.clipboard("backend returned no result")
-        if didForceSelect {
-            postKey(kVK_RightArrow)
+    let baseReplacement: String
+    let baseCandidates: [String]
+    if gClassifierEnabled,
+       let segResult = classifierSegmentedConvert(romajiTail, request: request) {
+        baseReplacement = asciiPrefix + segResult.replacement
+        baseCandidates = segResult.candidates.map { asciiPrefix + $0 }
+    } else {
+        // Fallback: heuristic acronym split.
+        let (acronymHead, mozcInput) = splitAcronymHead(romajiTail)
+        let frozenPrefix = asciiPrefix + acronymHead
+        guard let result = callBackend(mozcInput, request: request, wantCandidates: true) else {
+            Log.clipboard("backend returned no result")
+            if didForceSelect {
+                postKey(kVK_RightArrow)
+            }
+            return
         }
-        return
+        baseReplacement = frozenPrefix + result.replacement
+        baseCandidates = result.candidates.isEmpty
+            ? [frozenPrefix + result.replacement]
+            : result.candidates.map { frozenPrefix + $0 }
     }
-    let baseReplacement = frozenPrefix + result.replacement
-    // Candidates get the prefix glued on too — cycle replaces the whole
-    // typed run (prefix + tail) on each press, so each candidate must
-    // already include the prefix for backspace-count math to line up.
-    let baseCandidates: [String] = result.candidates.isEmpty
-        ? [baseReplacement]
-        : result.candidates.map { frozenPrefix + $0 }
     // Script overrides — no AX span on the clipboard path, so span byte
     // offsets are zeroed. Scripts that care about position should branch
     // on app_id instead.
@@ -441,10 +437,74 @@ func doPickup(_ request: PickupRequest = .init()) {
             return
         }
 
-        // Carve off any leading acronym/code (`R&D`, `API`, `JSON`) so Mozc
-        // only sees the actual romaji. Reattached to the replacement below.
+        if gClassifierEnabled,
+           let segResult = classifierSegmentedConvert(romajiTail, request: request) {
+            let baseReplacement = asciiPrefix + segResult.replacement
+            let baseCandidates: [String] = segResult.candidates.map { asciiPrefix + $0 }
+
+            let scriptSpanStart = field.value.utf8ByteOffset(forUTF16Offset: start)
+            let scriptSpanEnd   = field.value.utf8ByteOffset(forUTF16Offset: end)
+            let scriptSpan = mdr_span_t(
+                span_start_byte: size_t(scriptSpanStart),
+                span_end_byte: size_t(scriptSpanEnd),
+                romaji: nil, romaji_len: 0)
+            let replacement = ModoreScript.replacement(
+                appId: appId, span: scriptSpan, candidates: baseCandidates) ?? baseReplacement
+            let snapshotCandidates = ModoreScript.candidates(
+                appId: appId, list: baseCandidates, currentIndex: 0) ?? baseCandidates
+            Log.pickup("classifier replace -> \(replacement) (alts=\(snapshotCandidates.count))")
+
+            if replaceRange(in: field.element, start: start, end: end, replacement: replacement) {
+                let session = ConversionSession(
+                    backing: .ax(element: field.element, spanStart: start),
+                    originalReading: spanText,
+                    candidates: snapshotCandidates,
+                    candidateIndex: 0,
+                    timestamp: Date())
+                ConversionSessionStore.set(session)
+                if gCandidatePanelMode == .onConvert {
+                    CandidatePanel.shared.show(session: session)
+                }
+                return
+            }
+            // AX write rejected — fall through to keystroke path below.
+            // replaceValue set selection to [start, end] which may persist
+            // even though the text write failed; pass that range so the
+            // keystroke path collapses it before backspacing.
+            Log.pickup("AX write rejected after classifier; using backspace-retype")
+            keystrokeReplaceSpan(
+                caret: (start: start, end: end),
+                spanEnd: end,
+                spanLen: end - start,
+                replacement: replacement)
+            let frontmost = FrontmostApp.describe()
+            let session = ConversionSession(
+                backing: .clipboard(
+                    frontmostBundleId: frontmost?.bundleID,
+                    frontmostPid: frontmost?.pid ?? 0),
+                originalReading: spanText,
+                candidates: snapshotCandidates,
+                candidateIndex: 0,
+                timestamp: Date())
+            ConversionSessionStore.set(session)
+            if gCandidatePanelMode == .onConvert {
+                CandidatePanel.shared.show(session: session)
+            }
+            return
+        }
+
+        // Fallback: heuristic split. Carve off any leading acronym/code
+        // (`R&D`, `API`, `JSON`) so Mozc only sees actual romaji.
         let (acronymHead, mozcInput) = splitAcronymHead(romajiTail)
         let frozenPrefix = asciiPrefix + acronymHead
+
+        // If mozcInput still starts with uppercase, the acronym split
+        // didn't find a romaji tail — the text is English (e.g. "Wi-fi",
+        // "Hello"). Skip conversion to avoid mozc garbling it.
+        guard mozcInput.first?.isLowercase == true else {
+            Log.pickup("skipping: no romaji tail after acronym split (\(mozcInput))")
+            return
+        }
 
         // AX path requests candidates so the snapshot can power Esc-undo
         // and the cycle gesture. Clipboard fallback below skips this —
@@ -511,9 +571,12 @@ func doPickup(_ request: PickupRequest = .init()) {
         // because their AX selection reports are accurate. Tracked
         // as a follow-up — needs a per-app strategy table or a
         // selection probe that isn't ambiguous with Cmd+C line-copy.
+        // replaceValue set selection to [start, end] which may persist
+        // even though the text write failed; pass that range so the
+        // keystroke path collapses it before backspacing.
         Log.pickup("AX write rejected; using backspace-retype for [\(start)..\(end)] \(spanText)\(FrontmostApp.logSuffix())")
         keystrokeReplaceSpan(
-            caret: (start: field.selStart, end: field.selEnd),
+            caret: (start: start, end: end),
             spanEnd: end,
             spanLen: end - start,
             replacement: replacement)

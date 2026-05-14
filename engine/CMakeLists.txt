@@ -81,6 +81,7 @@ add_library(modore_script SHARED
     src/sandbox.c
     src/marshal.c
     src/reload.c
+    src/classifier.c
 )
 target_include_directories(modore_script
     PUBLIC  ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -93,8 +94,10 @@ set_target_properties(modore_script PROPERTIES
 )
 target_compile_definitions(modore_script PRIVATE MDR_BUILDING)
 
-# macOS: link Cocoa? not needed — pure C. LuaJIT needs libm/dl on Linux.
-if(UNIX AND NOT APPLE)
+# macOS: needs libm for exp() in classifier.c. LuaJIT needs libm/dl on Linux.
+if(APPLE)
+    target_link_libraries(modore_script PRIVATE m)
+elseif(UNIX)
     target_link_libraries(modore_script PRIVATE m dl)
 endif()
 
@@ -130,4 +133,10 @@ if(MODORE_SCRIPT_BUILD_TESTS)
             ${CMAKE_CURRENT_SOURCE_DIR}/tests)
         add_test(NAME ${t} COMMAND ${t})
     endforeach()
+    # Classifier test links directly against the shared lib (includes classifier.c)
+    add_executable(test_classifier tests/test_classifier.c)
+    target_link_libraries(test_classifier PRIVATE modore_script)
+    target_include_directories(test_classifier PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    add_test(NAME test_classifier COMMAND test_classifier)
 endif()

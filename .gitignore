@@ -22,3 +22,14 @@ compile_commands.json
 
 # Node (Puppeteer pipeline test)
 test/puppeteer/node_modules/
+
+# ML classifier — training data, cached arrays, trained models
+tools/data/
+engine/models/*.mdl
+engine/models/english_dict.txt
+
+# UT dictionaries (large, fetched separately)
+third_party/merge-ut-dictionaries/
+
+# Python
+__pycache__/

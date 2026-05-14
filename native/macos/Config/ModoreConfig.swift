@@ -185,6 +185,33 @@ enum ModoreConfig {
         var restoreClipboardDelayMs: Int = 50
     }
 
+    /// Parse `[conversion] classifier`. Wrapper that logs issues.
+    /// Default `false` — the ML classifier is opt-in; omitting the key
+    /// keeps the existing heuristic pipeline (splitAcronymHead).
+    static func loadClassifierEnabled() -> Bool {
+        let (v, issues) = parseClassifierEnabled()
+        for issue in issues { Log.config(issue) }
+        return v
+    }
+
+    static func parseClassifierEnabled() -> (Bool, [String]) {
+        var enabled = false
+        var issues: [String] = []
+        let url = configFileURL()
+        _ = forEachKeyValue(url) { section, key, value in
+            guard section == "conversion" && key == "classifier" else { return }
+            switch value.lowercased() {
+            case "on", "true", "1", "yes":
+                enabled = true
+            case "off", "false", "0", "no", "":
+                enabled = false
+            default:
+                issues.append("ignoring [conversion] classifier=\(value) (expected on|off)")
+            }
+        }
+        return (enabled, issues)
+    }
+
     private static let defaultChord = "Cmd+Semicolon"
 
     static func defaultConversionHotkey() -> ConversionHotkey {

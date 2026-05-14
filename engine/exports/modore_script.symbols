@@ -10,3 +10,8 @@ _mdr_route
 _mdr_candidates
 _mdr_acquire
 _mdr_set_host_ops
+_mdr_cls_load
+_mdr_cls_load_dict
+_mdr_cls_free
+_mdr_cls_segment
+_mdr_cls_classify

@@ -65,9 +65,10 @@ hotkey = Ctrl+Shift+grave
 
 ```
 bridge/             Mozc用のC ABIラッパー。クロスプラットフォーム、CMakeビルド。
-engine/             Lua スクリプティング。ABI v1 完成。macOS統合済み、Linux はコード統合済み（要動作検証）、Windows は保留中。
+engine/             Lua スクリプティング + ML分類器（ローマ字/ASCII判定）。
 native/macos/       Swiftホスト：イベントタップ + アクセシビリティ + クリップボードフォールバック。
 native/linux/       C++ホスト：X11 grab + Unixソケット IPC + AT-SPI2 + クリップボードフォールバック。
+tools/              学習スクリプト（train_classifier.py）と学習データ。
 third_party/        fcitx5-mozcサブモジュール（Mozcエンジンのビルドを提供）。
 ```
 
@@ -78,8 +79,6 @@ bridgeは共有ライブラリ（macOSは `libmozc_bridge.dylib`、Linuxは
 
 ## 参考
 
-実装で参考にしたもの：
-
 - [espanso](https://github.com/espanso/espanso) — Carbonホットキーの配送、
 合成イベントのマーカー、修飾キーの解放待ち、Unicode注入のチャンキング、
 SecureInputウォッチャー。
@@ -87,6 +86,13 @@ SecureInputウォッチャー。
 セッションタップに投げる位置（Chromium / Electronまで届く経路）。
 - [ibus-hiragana](https://github.com/esrille/ibus-hiragana) — 変換時の
 UX周り（候補サイクル、MRU履歴、送り仮名の扱い、変換ごとのカタカナ修飾）。
+- [Yukino Ikegami](https://github.com/ikegami-yukino),
+  [Setsuo Tsuruta](https://nrid.nii.ac.jp/nrid/1000000366395/),
+  [*Hybrid method for modeless Japanese input using N-gram based binary
+  classification and dictionary*](https://doi.org/10.1007/s11042-013-1805-1),
+  Multimedia Tools and Applications, 2015 —
+  ローマ字/ASCII自動判定のMLモデル（SVM + n-gram特徴量 + 非日本語辞書）は
+  この論文をベースに実装。
 
 ## 必要なもの
 

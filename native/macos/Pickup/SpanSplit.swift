@@ -126,3 +126,88 @@ func sliceUTF16(_ text: String, start: Int, end: Int) -> String? {
     guard start >= 0, end <= utf16.count, start < end else { return nil }
     return String(utf16CodeUnits: Array(utf16[start..<end]), count: end - start)
 }
+
+/// Use the ML classifier to split an ASCII string into romaji and ASCII
+/// segments, convert each romaji segment through Mozc independently, and
+/// reassemble. Falls back to nil when the classifier is not loaded or the
+/// string is not mixed (single-type → let the caller use the normal path).
+///
+/// When mixed, returns `(replacement, candidates)` where candidates are
+/// generated for the primary (longest) romaji segment with other segments
+/// frozen.
+func classifierSegmentedConvert(
+    _ ascii: String,
+    request: PickupRequest
+) -> (replacement: String, candidates: [String])? {
+    guard let segments = Classifier.segment(ascii),
+          Classifier.isMixed(segments) else { return nil }
+
+    let utf8 = Array(ascii.utf8)
+
+    // Find the primary romaji segment (longest) for candidate generation
+    var primaryIdx = -1
+    var primaryLen = 0
+    for (i, seg) in segments.enumerated() where seg.isRomaji {
+        let len = seg.end - seg.start
+        if len > primaryLen {
+            primaryLen = len
+            primaryIdx = i
+        }
+    }
+
+    // Convert each segment
+    var parts: [String] = []
+    var primaryResult: ConvertResult? = nil
+
+    for (i, seg) in segments.enumerated() {
+        let startIdx = ascii.utf8.index(ascii.utf8.startIndex, offsetBy: seg.start)
+        let endIdx = ascii.utf8.index(ascii.utf8.startIndex, offsetBy: seg.end)
+        let chunk = String(ascii.utf8[startIdx..<endIdx])!
+
+        if seg.isRomaji {
+            let wantCands = (i == primaryIdx)
+            if let result = callBackend(chunk, request: request,
+                                        wantCandidates: wantCands) {
+                parts.append(result.replacement)
+                if wantCands { primaryResult = result }
+            } else {
+                parts.append(chunk)
+            }
+        } else {
+            parts.append(chunk)
+        }
+    }
+
+    let replacement = parts.joined()
+
+    // Build candidate list: for each candidate of the primary segment,
+    // splice it back with the other (fixed) parts.
+    var candidates: [String] = [replacement]
+    if let pr = primaryResult, !pr.candidates.isEmpty {
+        candidates = pr.candidates.map { cand in
+            var rebuilt: [String] = []
+            for (i, seg) in segments.enumerated() {
+                if i == primaryIdx {
+                    rebuilt.append(cand)
+                } else {
+                    let startIdx = ascii.utf8.index(ascii.utf8.startIndex, offsetBy: seg.start)
+                    let endIdx = ascii.utf8.index(ascii.utf8.startIndex, offsetBy: seg.end)
+                    let chunk = String(ascii.utf8[startIdx..<endIdx])!
+                    if seg.isRomaji {
+                        if let r = callBackend(chunk, request: request) {
+                            rebuilt.append(r.replacement)
+                        } else {
+                            rebuilt.append(chunk)
+                        }
+                    } else {
+                        rebuilt.append(chunk)
+                    }
+                }
+            }
+            return rebuilt.joined()
+        }
+    }
+
+    Log.pickup("classifier segmented: \(segments.count) segments → \(replacement)")
+    return (replacement, candidates)
+}

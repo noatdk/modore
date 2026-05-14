@@ -244,6 +244,39 @@ do {
     exit(1)
 }
 
+// ML classifier for romaji/ASCII segmentation. Opt-in via
+// `[conversion] classifier = on` in modore.conf.
+gClassifierEnabled = ModoreConfig.loadClassifierEnabled()
+if gClassifierEnabled {
+    let configDir: String = {
+        if let xdg = ProcessInfo.processInfo.environment["XDG_CONFIG_HOME"], !xdg.isEmpty {
+            return "\(xdg)/modore"
+        }
+        return "\(FileManager.default.homeDirectoryForCurrentUser.path)/.config/modore"
+    }()
+    let modelPath = "\(configDir)/classifier.mdl"
+    if FileManager.default.fileExists(atPath: modelPath) {
+        if Classifier.load(modelPath: modelPath) {
+            Log.boot("ML classifier loaded from \(modelPath)")
+        } else {
+            Log.boot("ML classifier: failed to load \(modelPath) — heuristic fallback")
+            gClassifierEnabled = false
+        }
+    } else if let bundled = Bundle.main.path(forResource: "classifier", ofType: "mdl") {
+        if Classifier.load(modelPath: bundled) {
+            Log.boot("ML classifier loaded from bundle")
+        } else {
+            Log.boot("ML classifier: failed to load bundle model — heuristic fallback")
+            gClassifierEnabled = false
+        }
+    } else {
+        Log.boot("ML classifier: model not found — heuristic fallback")
+        gClassifierEnabled = false
+    }
+} else {
+    Log.boot("ML classifier: disabled (set [conversion] classifier = on to enable)")
+}
+
 // Lua scripting engine. Loaded after Mozc so any startup log lines from
 // scripts (`modore.log.*` at top level) interleave below the rest of the
 // boot sequence. Engine is opt-in via the presence of files in the dir;

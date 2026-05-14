@@ -12,6 +12,11 @@ MDR_1 {
         mdr_candidates;
         mdr_acquire;
         mdr_set_host_ops;
+        mdr_cls_load;
+        mdr_cls_load_dict;
+        mdr_cls_free;
+        mdr_cls_segment;
+        mdr_cls_classify;
     local:
         *;
 };

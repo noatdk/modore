@@ -95,6 +95,11 @@ var gCandidatePanelMode: ModoreConfig.CandidatePanelMode = .none
 /// race-free.
 var gCandidatePanelDurationMs: Int = ModoreConfig.defaultCandidatePanelDurationMs
 
+/// When true, the ML n-gram classifier is used for romaji/ASCII segmentation
+/// instead of the heuristic `splitAcronymHead`. Opt-in via
+/// `[conversion] classifier = on` in the config file.
+var gClassifierEnabled: Bool = false
+
 // MARK: - Secondary chord (katakana modifier)
 
 /// Build the katakana-variant chord by layering the configured modifier on top
@@ -389,4 +394,42 @@ func applyConfigReload() {
     applyClipboardTimingsReload()
     applyCandidatePanelReload()
     applyCandidatePanelDurationReload()
+    applyClassifierReload()
+}
+
+private func applyClassifierReload() {
+    let new = ModoreConfig.loadClassifierEnabled()
+    if new == gClassifierEnabled { return }
+    gClassifierEnabled = new
+    if new {
+        if !Classifier.isLoaded {
+            let configDir: String = {
+                if let xdg = ProcessInfo.processInfo.environment["XDG_CONFIG_HOME"], !xdg.isEmpty {
+                    return "\(xdg)/modore"
+                }
+                return "\(FileManager.default.homeDirectoryForCurrentUser.path)/.config/modore"
+            }()
+            let modelPath = "\(configDir)/classifier.mdl"
+            if FileManager.default.fileExists(atPath: modelPath) {
+                if !Classifier.load(modelPath: modelPath) {
+                    Log.config("[conversion] classifier = on but model failed to load — staying off")
+                    gClassifierEnabled = false
+                    return
+                }
+            } else if let bundled = Bundle.main.path(forResource: "classifier", ofType: "mdl") {
+                if !Classifier.load(modelPath: bundled) {
+                    Log.config("[conversion] classifier = on but bundle model failed to load — staying off")
+                    gClassifierEnabled = false
+                    return
+                }
+            } else {
+                Log.config("[conversion] classifier = on but no model found — staying off")
+                gClassifierEnabled = false
+                return
+            }
+        }
+        Log.config("[conversion] classifier = on")
+    } else {
+        Log.config("[conversion] classifier = off")
+    }
 }

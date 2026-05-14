@@ -124,6 +124,15 @@ func runConfigCheck() -> Never {
         exit_code = 2
     }
 
+    let (classifierOn, classifierIssues) = ModoreConfig.parseClassifierEnabled()
+    print("  [conversion]  classifier=\(classifierOn ? "on" : "off")")
+    for issue in classifierIssues {
+        print("                \(issue)")
+    }
+    if !classifierIssues.isEmpty && exit_code == 0 {
+        exit_code = 2
+    }
+
     let (timings, issues) = ModoreConfig.parseClipboardTimings()
     print("  [clipboard]   pre_copy=\(timings.preCopyDelayMs)ms"
         + " read_timeout=\(timings.readTimeoutMs)ms"

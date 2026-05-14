@@ -65,9 +65,10 @@ hotkey grammar, modifier aliases, and key names in
 
 ```
 bridge/             Cross-platform C ABI around Mozc. CMake build.
-engine/             Lua scripting engine. ABI v1 complete; macOS integrated, Linux integrated (build verification pending), Windows pending.
+engine/             Lua scripting engine + ML classifier (romaji/ASCII segmentation).
 native/macos/       Swift host: event tap + Accessibility + clipboard fallback.
 native/linux/       C++ host: X11 grab + Unix socket IPC + AT-SPI2 + clipboard fallback.
+tools/              Training script (train_classifier.py) and training data.
 third_party/        fcitx5-mozc submodule (provides CMake build of Mozc engine).
 ```
 
@@ -89,6 +90,13 @@ Electron).
 - [ibus-hiragana](https://github.com/esrille/ibus-hiragana) — conversion-time
 UX ideas (candidate cycling, MRU history, okurigana handling, per-conversion
 katakana modifier).
+- [Yukino Ikegami](https://github.com/ikegami-yukino),
+  [Setsuo Tsuruta](https://nrid.nii.ac.jp/nrid/1000000366395/),
+  [*Hybrid method for modeless Japanese input using N-gram based binary
+  classification and dictionary*](https://doi.org/10.1007/s11042-013-1805-1),
+  Multimedia Tools and Applications, 2015 —
+  ML classifier (SVM + n-gram features + non-Japanese dictionary) for
+  romaji/ASCII segmentation is based on this paper.
 
 ## Requirements
 
