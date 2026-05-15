@@ -25,6 +25,9 @@ test/puppeteer/node_modules/
 
 # ML classifier — training data, cached arrays, trained models
 tools/data/
+!tools/data/
+tools/data/*
+!tools/data/classifier-eval.tsv
 engine/models/*.mdl
 engine/models/english_dict.txt
 

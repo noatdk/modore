@@ -488,6 +488,56 @@ static int starts_with_particle(const char* s, size_t len) {
     return 0;
 }
 
+static size_t particle_prefix_len(const char* s, size_t len) {
+    static const char* particles[] = {
+        "kara", "made", "yori", "de", "ni", "no", "wo", "ha", "ga",
+        "to", "mo", "he", "ya", NULL
+    };
+    for (const char** p = particles; *p; p++) {
+        size_t plen = strlen(*p);
+        if (len >= plen && strncmp(s, *p, plen) == 0) return plen;
+    }
+    return 0;
+}
+
+static void split_particle_ascii_tails(const mdr_cls_t* cls,
+                                       const char* text, size_t len,
+                                       uint8_t* labels) {
+    size_t seg_start = 0;
+    for (size_t i = 1; i <= len; i++) {
+        if (i < len && labels[i] == labels[seg_start]) continue;
+        if (labels[seg_start] == 1) {
+            size_t rom_end = i;
+            size_t ascii_end = i;
+            if (ascii_end < len && labels[ascii_end] == 0) {
+                while (ascii_end < len && labels[ascii_end] == 0) ascii_end++;
+            }
+            size_t combined_len = ascii_end - seg_start;
+            char lower[96];
+            if (combined_len < sizeof(lower)) {
+                for (size_t k = 0; k < combined_len; k++) {
+                    char c = text[seg_start + k];
+                    lower[k] = (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c;
+                }
+                size_t plen = particle_prefix_len(lower, combined_len);
+                if (plen > 0) {
+                    for (size_t cand_len = combined_len - plen; cand_len >= 5; cand_len--) {
+                        if (dict_contains(cls, lower + plen, cand_len)) {
+                            for (size_t j = seg_start + plen; j < seg_start + plen + cand_len; j++)
+                                labels[j] = 0;
+                            for (size_t j = seg_start + plen + cand_len; j < ascii_end; j++)
+                                labels[j] = 1;
+                            break;
+                        }
+                    }
+                }
+            }
+            i = rom_end;
+        }
+        seg_start = i;
+    }
+}
+
 /* ----- Boundary refinement --------------------------------------------- */
 
 /* At each ASCII→romaji boundary, check if the ASCII segment's text is
@@ -500,7 +550,43 @@ static void refine_boundaries(const mdr_cls_t* cls,
                               uint8_t* labels) {
     if (!cls->dict_words || cls->dict_count == 0) return;
 
+    /* Pass 0: repair a short romaji prefix that actually belongs to the
+     * following ASCII word. Fixes [R:do][A:ckerde][R:tukuru] -> docker/de. */
     size_t seg_start = 0;
+    for (size_t i = 1; i <= len; i++) {
+        if (i < len && labels[i] == labels[seg_start]) continue;
+        size_t seg_len = i - seg_start;
+        if (labels[seg_start] == 1 && seg_len <= 3 && i < len && labels[i] == 0) {
+            size_t ascii_end = i;
+            while (ascii_end < len && labels[ascii_end] == 0) ascii_end++;
+            size_t combined_len = ascii_end - seg_start;
+            char lower[96];
+            if (combined_len < sizeof(lower)) {
+                for (size_t k = 0; k < combined_len; k++) {
+                    char c = text[seg_start + k];
+                    lower[k] = (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c;
+                }
+                for (size_t cand_len = combined_len; cand_len >= 2; cand_len--) {
+                    size_t rest_len = combined_len - cand_len;
+                    if (dict_contains(cls, lower, cand_len) &&
+                        (rest_len == 0 || starts_with_particle(lower + cand_len, rest_len))) {
+                        for (size_t j = seg_start; j < seg_start + cand_len; j++)
+                            labels[j] = 0;
+                        for (size_t j = seg_start + cand_len; j < ascii_end; j++)
+                            labels[j] = 1;
+                        break;
+                    }
+                }
+            }
+        }
+        seg_start = i;
+    }
+
+    /* Pass 0b: split particle+ASCII tails, including cases where the model
+     * emitted the whole tail as romaji: [R:woinstall] -> [R:wo][A:install]. */
+    split_particle_ascii_tails(cls, text, len, labels);
+
+    seg_start = 0;
     for (size_t i = 1; i <= len; i++) {
         if (i < len && labels[i] == labels[seg_start]) continue;
         size_t seg_len = i - seg_start;
@@ -521,8 +607,9 @@ static void refine_boundaries(const mdr_cls_t* cls,
                 /* Already a dictionary word? Keep as-is. */
                 if (!dict_contains(cls, lower, seg_len)) {
                     size_t best_cand_len = 0;
-                    /* Try trimming 1-6 chars from the end */
-                    for (size_t trim = 1; trim <= 6 && trim < seg_len - 2; trim++) {
+                    /* Try trimming from the end. Long suffixes such as
+                     * "woparseshite" still need to expose "JSON". */
+                    for (size_t trim = 1; trim < seg_len - 2; trim++) {
                         size_t cand_len = seg_len - trim;
                         if (dict_contains(cls, lower, cand_len)) {
                             if (best_cand_len == 0) best_cand_len = cand_len;
@@ -542,6 +629,10 @@ static void refine_boundaries(const mdr_cls_t* cls,
         }
         seg_start = i;
     }
+
+    /* Trimming an ASCII run can expose a new romaji tail such as
+     * [A:JSONwoparseshite] -> [A:JSON][R:woparseshite]. Split that too. */
+    split_particle_ascii_tails(cls, text, len, labels);
 
     /* Pass 2: extend short ASCII segments forward into following romaji
      * when the combined text matches a dictionary word.

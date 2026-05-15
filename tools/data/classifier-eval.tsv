@@ -1,0 +1,51 @@
+# tier	text	expected	note
+# expected format: A:literal|R:literal, where A = keep ASCII and R = convert romaji.
+must	dockerdetukuru	A:docker|R:detukuru	docker + 出てくる
+must	dockerdetukutte	A:docker|R:detukutte	docker + 出てくって
+must	dockerdetsukuru	A:docker|R:detsukuru	docker + でする
+must	configwoijitte	A:config|R:woijitte	config + をいじって
+must	korehapythondesu	R:koreha|A:python|R:desu	これは python です
+must	pythondesagyousuru	A:python|R:desagyousuru	python で作業する
+must	APIwotukutte	A:API|R:wotukutte	API を作って
+must	TypeScriptdekaihatsu	A:TypeScript|R:dekaihatsu	TypeScript で開発
+must	CSSdezureteiru	A:CSS|R:dezureteiru	CSS でずれている
+must	servernitsunagaranai	A:server|R:nitsunagaranai	server につながらない
+must	konofilehairanaito	R:kono|A:file|R:hairanaito	この file 入らない
+must	areha8Bytedesu	R:areha|A:8Byte|R:desu	あれは 8Byte です
+must	VSCodewotukau	A:VSCode|R:wotukau	VSCode を使う
+must	READMEwokakikaeru	A:README|R:wokakikaeru	README を書き換える
+must	branchwokiru	A:branch|R:wokiru	branch を切る
+must	cachewokesu	A:cache|R:wokesu	cache を消す
+must	filegakienai	A:file|R:gakienai	file が消えない
+must	APIwoyobu	A:API|R:woyobu	API を呼ぶ
+must	GitHubnitsuitehanasu	A:GitHub|R:nitsuitehanasu	GitHub について話す
+must	CIgatooranai	A:CI|R:gatooranai	CI が通らない
+must	DBnitsunagaranai	A:DB|R:nitsunagaranai	DB につながらない
+must	S3niuploadshita	A:S3|R:ni|A:upload|R:shita	S3 に upload した
+must	frontendwoshuusei	A:frontend|R:woshuusei	frontend を修正
+must	backendgakowareta	A:backend|R:gakowareta	backend が壊れた
+must	Chromeugokanai	A:Chrome|R:ugokanai	Chrome 動かない
+must	Cursordehenshuu	A:Cursor|R:dehenshuu	Cursor で編集
+must	Obsidianwotukau	A:Obsidian|R:wotukau	Obsidian を使う
+must	Slackniokuru	A:Slack|R:niokuru	Slack に送る
+must	Notionnimemo	A:Notion|R:nimemo	Notion にメモ
+must	npmwoinstall	A:npm|R:wo|A:install	npm を install
+must	JSONwoparseshite	A:JSON|R:wo|A:parse|R:shite	JSON を parse して
+must	Slackdekaiginorenraku	A:Slack|R:dekaiginorenraku	Slack で会議の連絡
+target	gitdecommitshitaato	A:git|R:de|A:commit|R:shitaato	git で commit したあと
+target	GitHubdenitsuite	A:GitHub|R:denitsuite	GitHub でについて
+target	Dockerdenaoshita	A:Docker|R:denaoshita	Docker で直した
+target	PostgreSQLnitsunagu	A:PostgreSQL|R:nitsunagu	PostgreSQL につなぐ
+target	servergaugokanai	A:server|R:gaugokanai	server が動かない
+target	bugwonaoshita	A:bug|R:wonaoshita	bug を直した
+target	HTTP2senkou	A:HTTP2|R:senkou	HTTP2 先行
+target	R&Diraisho	A:R&D|R:iraisho	R&D 依頼書
+target	gitdecommitshita	A:git|R:de|A:commit|R:shita	git で commit した
+target	nodejsdeugokanai	A:nodejs|R:deugokanai	nodejs で動かない
+target	awsnoEC2dedeployshita	A:aws|R:no|A:EC2|R:de|A:deploy|R:shita	aws の EC2 で deploy した
+target	macOSnoupdategaatta	A:macOS|R:no|A:update|R:gaatta	macOS の update があった
+target	PRwomergeshita	A:PR|R:womerge|R:shita	PR を merge した
+target	EC2dedeploysuru	A:EC2|R:de|A:deploy|R:suru	EC2 で deploy する
+target	OAuthdeninshousuru	A:OAuth|R:deninshousuru	OAuth で認証する
+target	Xcodebuildtoosu	A:Xcode|R:buildtoosu	Xcode build 通す
+target	pipdeinstallshita	A:pip|R:de|A:install|R:shita	pip で install した

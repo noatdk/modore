@@ -44,10 +44,12 @@ JAWIKI_TITLES = DATA_DIR / "jawiki-titles"
 COCA_FREQ = DATA_DIR / "coca-frequency.txt"
 UD_GSD_DIR = DATA_DIR  # contains ja_gsd-ud-{train,dev,test}.conllu
 TATOEBA_FILE = DATA_DIR / "tatoeba-jpn.tsv"
+CLASSIFIER_EVAL = DATA_DIR / "classifier-eval.tsv"
 MIXED_TEXT_DIRS: list[Path] = [
     Path("/tmp/js-primer/source"),
     Path("/tmp/progit/ja"),
     Path("/tmp/Hatena-Textbook"),
+    Path("/tmp/mdn-translated-content/files/ja"),
 ]
 SYSTEM_DICT = Path("/usr/share/dict/words")
 TECH_DICT_FILES: list[Path] = [
@@ -58,6 +60,7 @@ TECH_DICT_FILES: list[Path] = [
 DEFAULT_OUTPUT = REPO_ROOT / "engine/models/classifier.mdl"
 DICT_OUTPUT = REPO_ROOT / "engine/models/english_dict.txt"
 CACHE_DIR = DATA_DIR / "cache"
+TRAINING_DATA_VERSION = 7
 
 # ---------------------------------------------------------------------------
 # Model hyper-parameters (must match mdr_classifier.h / classifier.c)
@@ -484,6 +487,17 @@ def load_tatoeba_sentences(
 # Mixed-language text extraction (programming docs, tech books)
 # ---------------------------------------------------------------------------
 
+_ASCII_TOKEN_CHARS = set("._+-/#&@")
+_TEXT_EXTENSIONS = {".md", ".markdown", ".mdx", ".txt", ".rst", ".html"}
+
+
+def _is_ascii_token_char(ch: str) -> bool:
+    return ch.isascii() and (ch.isalnum() or ch in _ASCII_TOKEN_CHARS)
+
+
+def _trim_ascii_token(token: str) -> str:
+    return token.strip("._+-/#&@")
+
 
 def _extract_mixed_sequences(
     text: str,
@@ -494,7 +508,7 @@ def _extract_mixed_sequences(
     Japanese. Returns list of (romaji_text, char_labels) pairs.
 
     Japanese characters → romaji via fugashi readings (label=1).
-    ASCII alphanum runs → kept as-is (label=0).
+    ASCII technical-token runs → kept as-is (label=0).
     Lines with no mixing or too short are skipped.
     """
     results: list[tuple[str, list[int]]] = []
@@ -507,18 +521,20 @@ def _extract_mixed_sequences(
         if line.startswith("#") or line.startswith("```") or line.startswith("http"):
             continue
 
-        # Split into runs of ASCII-alphanum vs Japanese (U+3000+)
+        # Split into runs of ASCII technical tokens vs Japanese (U+3000+).
+        # Dots/slashes/pluses stay inside tokens so real docs produce
+        # labels like `Node.js`, `C++`, `S3`, `R&D`, and `HTTP/2`.
         runs: list[tuple[str, str]] = []
         i = 0
         while i < len(line):
             ch = line[i]
-            if ch.isascii() and (ch.isalpha() or ch.isdigit()):
+            if _is_ascii_token_char(ch):
                 j = i
-                while j < len(line) and line[j].isascii() and (
-                    line[j].isalpha() or line[j].isdigit()
-                ):
+                while j < len(line) and _is_ascii_token_char(line[j]):
                     j += 1
-                runs.append(("ascii", line[i:j]))
+                token = _trim_ascii_token(line[i:j])
+                if token and any(c.isalnum() for c in token):
+                    runs.append(("ascii", token))
                 i = j
             elif ord(ch) >= 0x3000:
                 j = i
@@ -533,6 +549,10 @@ def _extract_mixed_sequences(
         has_ascii = any(t == "ascii" for t, _ in runs)
         has_ja = any(t == "ja" for t, _ in runs)
         if not has_ascii or not has_ja:
+            continue
+        ja_chars = sum(len(txt) for typ, txt in runs if typ == "ja")
+        ascii_chars = sum(len(txt) for typ, txt in runs if typ == "ascii")
+        if ja_chars < ascii_chars:
             continue
 
         seq_text = ""
@@ -587,7 +607,8 @@ def load_mixed_text_sequences(
         if not d.exists():
             continue
         n_before = len(all_seqs)
-        for md_file in sorted(d.rglob("*.md")) + sorted(d.rglob("*.markdown")):
+        files = [p for p in d.rglob("*") if p.is_file() and p.suffix.lower() in _TEXT_EXTENSIONS]
+        for md_file in sorted(files):
             try:
                 text = md_file.read_text(encoding="utf-8", errors="ignore")
             except Exception:
@@ -755,6 +776,51 @@ def _fallback_english() -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# Curated classifier evaluation / hard cases
+# ---------------------------------------------------------------------------
+
+
+def _labels_from_expected(text: str, expected: str) -> list[int]:
+    labels: list[int] = []
+    rebuilt = ""
+    for raw_part in expected.split("|"):
+        kind, sep, value = raw_part.partition(":")
+        if sep != ":" or kind not in {"A", "R"} or not value:
+            raise ValueError(f"bad classifier-eval expected segment: {raw_part!r}")
+        rebuilt += value
+        labels.extend([1 if kind == "R" else 0] * len(value))
+    if rebuilt != text:
+        raise ValueError(f"classifier-eval text mismatch: {text!r} vs {rebuilt!r}")
+    return labels
+
+
+HardCase = tuple[str, str, list[int]]
+
+
+def load_classifier_eval_cases(path: Path) -> list[HardCase]:
+    if not path.exists():
+        print(f"    {path} not found — no curated hard cases")
+        return []
+    cases: list[HardCase] = []
+    with open(path, encoding="utf-8") as f:
+        for lineno, line in enumerate(f, 1):
+            line = line.rstrip("\n")
+            if not line or line.startswith("#"):
+                continue
+            fields = line.split("\t")
+            if len(fields) < 3:
+                raise ValueError(f"{path}:{lineno}: expected tier, text, expected")
+            tier, text, expected = fields[:3]
+            if tier not in {"must", "target"}:
+                raise ValueError(f"{path}:{lineno}: tier must be must or target")
+            if not text.isascii():
+                raise ValueError(f"{path}:{lineno}: text must be ASCII")
+            cases.append((tier, text, _labels_from_expected(text, expected)))
+    print(f"    Curated classifier cases: {len(cases):,}")
+    return cases
+
+
+# ---------------------------------------------------------------------------
 # Training data generation
 # ---------------------------------------------------------------------------
 
@@ -777,6 +843,19 @@ _PARTICLES = [
     "he", "wa", "ka", "ya", "yo", "ne", "na",
 ]
 
+_PARTICLE_PHRASES = [
+    "de", "ni", "wo", "ha", "ga", "mo", "no", "to", "he",
+    "nitsuite", "nitaisite", "nikanshite", "nimukete", "nituite",
+    "deha", "demo", "dake", "kara", "made", "toshite",
+]
+
+_COMMON_ROMAJI_TAILS = [
+    "suru", "shita", "shite", "dekiru", "dekinai", "ugokanai",
+    "naosu", "naoshita", "tukau", "tukutta", "yobu", "okuru",
+    "kaku", "kaita", "kesu", "kieru", "kowareta", "toosu",
+    "hanasu", "miru", "mirenai", "hairanai", "tsunagu", "tsunagaranai",
+]
+
 # Weighted patterns: romaji-heavy since that's modore's primary use case
 _PATTERNS = [
     ("romaji", 3),
@@ -787,7 +866,13 @@ _PATTERNS = [
     ("ascii+romaji+ascii", 2),
     ("romaji+romaji", 1),
     ("ascii+particle+romaji", 5),
+    ("ascii+particle+ascii", 4),
+    ("ascii+particle+ascii+romaji", 5),
+    ("ascii+particle+ascii+romaji_tail", 6),
+    ("romaji+ascii+particle+ascii", 3),
     ("romaji+ascii+particle+romaji", 4),
+    ("romaji+ascii+particle+ascii+romaji", 4),
+    ("romaji+ascii+particle+ascii+romaji_tail", 5),
 ]
 
 # Sentence patterns: how to use real sentence data
@@ -813,11 +898,11 @@ def _build_sentence_sequence(
     if pattern == "sentence+inject":
         text = ""
         labels: list[int] = []
-        n_inject = random.randint(1, min(2, sum(1 for _, c in sentence if c)))
         content_indices = [i for i, (_, c) in enumerate(sentence) if c]
         if not content_indices:
             text = "".join(w for w, _ in sentence)
             return text, [1] * len(text)
+        n_inject = random.randint(1, min(2, len(content_indices)))
         inject_at = set(random.sample(
             content_indices, min(n_inject, len(content_indices))))
         for i, (w, is_content) in enumerate(sentence):
@@ -854,6 +939,7 @@ def build_training_arrays(
     n_sequences: int = 100000,
     sentence_data: list[list[tuple[str, bool]]] | None = None,
     mixed_text_data: list[tuple[str, list[int]]] | None = None,
+    hard_cases: list[HardCase] | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     ascii_tokens = list(english_words)
     ascii_tokens.extend(_ABBREVS)
@@ -897,9 +983,13 @@ def build_training_arrays(
                     text += w
                     char_labels.extend([1] * len(w))
                 elif part == "particle":
-                    p = random.choice(_PARTICLES)
+                    p = random.choice(_PARTICLE_PHRASES)
                     text += p
                     char_labels.extend([1] * len(p))
+                elif part == "romaji_tail":
+                    w = random.choice(_COMMON_ROMAJI_TAILS)
+                    text += w
+                    char_labels.extend([1] * len(w))
                 else:
                     w = random.choice(ascii_tokens)
                     text += w
@@ -924,18 +1014,57 @@ def build_training_arrays(
             print(f"    {seq_i + 1}/{n_sequences} sequences, "
                   f"{len(all_labels):,} examples")
 
+    if hard_cases:
+        must_cases = [(text, labels) for tier, text, labels in hard_cases
+                      if tier == "must"]
+        target_cases = [(text, labels) for tier, text, labels in hard_cases
+                        if tier == "target"]
+        repeat_plan = [
+            ("must", must_cases, max(250, n_sequences // 625)),
+            ("target", target_cases, max(50, n_sequences // 5000)),
+        ]
+        for tier, cases, repeats in repeat_plan:
+            if not cases:
+                continue
+            for text, char_labels in cases:
+                validity = romaji_coverage(text)
+                for _ in range(repeats):
+                    for pos in range(len(text)):
+                        history = char_labels[:pos]
+                        idxs = extract_feature_indices(text, pos, validity, history)
+                        all_indices.append(idxs)
+                        all_labels.append(char_labels[pos])
+            print(f"    Added {len(cases):,} curated {tier} cases x{repeats}")
+
+        # Add boundary-focused variants without perfect history so the
+        # autoregressive inference path sees the same cases after mistakes.
+        for tier, cases, repeats in repeat_plan:
+            if tier != "must" or not cases:
+                continue
+            noisy_repeats = max(25, repeats // 8)
+            for text, char_labels in cases:
+                validity = romaji_coverage(text)
+                for _ in range(noisy_repeats):
+                    for pos in range(len(text)):
+                        history = None if random.random() < 0.6 else char_labels[:pos]
+                        idxs = extract_feature_indices(text, pos, validity, history)
+                        all_indices.append(idxs)
+                        all_labels.append(char_labels[pos])
+            print(f"    Added {len(cases):,} curated must no-history cases x{noisy_repeats}")
+
     features = np.array(all_indices, dtype=np.int32)
     labels = np.array(all_labels, dtype=np.int8)
     return features, labels
 
 
 def _cache_key(n_sequences: int, seed: int, n_romaji: int, n_english: int,
-               n_sentences: int = 0) -> str:
+               n_sentences: int = 0, n_hard_cases: int = 0) -> str:
     """Deterministic cache filename from parameters that affect the arrays."""
     import hashlib
     h = hashlib.sha1(
-        f"v6:seq={n_sequences}:seed={seed}:rom={n_romaji}:eng={n_english}"
-        f":snt={n_sentences}:nb={N_BUCKETS}:ng={NGRAM_MAX}:w={WINDOW}".encode()
+        f"v{TRAINING_DATA_VERSION}:seq={n_sequences}:seed={seed}:rom={n_romaji}:eng={n_english}"
+        f":snt={n_sentences}:hard={n_hard_cases}"
+        f":nb={N_BUCKETS}:ng={NGRAM_MAX}:w={WINDOW}".encode()
     ).hexdigest()[:12]
     return f"train_{h}.npz"
 
@@ -971,14 +1100,13 @@ def _train_logistic(
     """One epoch of logistic regression (log loss) SGD."""
     n_train = train_feats.shape[0]
     shuffle = np.random.permutation(n_train)
-    train_feats_s = train_feats[shuffle]
-    train_labels_s = train_labels[shuffle]
     epoch_loss = 0.0
 
     for start in range(0, n_train, batch_size):
         end = min(start + batch_size, n_train)
-        bf = train_feats_s[start:end]
-        bl = train_labels_s[start:end]
+        batch_idx = shuffle[start:end]
+        bf = train_feats[batch_idx]
+        bl = train_labels[batch_idx]
         B = bf.shape[0]
 
         scores = bias + weights[bf].sum(axis=1)
@@ -1011,14 +1139,13 @@ def _train_svm(
     """One epoch of linear SVM (hinge loss) SGD."""
     n_train = train_feats.shape[0]
     shuffle = np.random.permutation(n_train)
-    train_feats_s = train_feats[shuffle]
-    train_labels_s = train_labels[shuffle]
     epoch_loss = 0.0
 
     for start in range(0, n_train, batch_size):
         end = min(start + batch_size, n_train)
-        bf = train_feats_s[start:end]
-        bl = train_labels_s[start:end]
+        batch_idx = shuffle[start:end]
+        bf = train_feats[batch_idx]
+        bl = train_labels[batch_idx]
         B = bf.shape[0]
 
         scores = bias + weights[bf].sum(axis=1)
@@ -1055,9 +1182,12 @@ def train(
     split = int(n_examples * 0.9)
     train_idx, val_idx = perm[:split], perm[split:]
 
-    train_feats = np.where(features[train_idx] == -1, N_BUCKETS, features[train_idx])
+    features = features.copy()
+    features[features == -1] = N_BUCKETS
+
+    train_feats = features[train_idx]
     train_labels = labels[train_idx].astype(np.float64)
-    val_feats = np.where(features[val_idx] == -1, N_BUCKETS, features[val_idx])
+    val_feats = features[val_idx]
     val_labels = labels[val_idx].astype(np.float64)
 
     bias = 0.0
@@ -1316,6 +1446,8 @@ def main():
                         help="Skip Tatoeba sentence data")
     parser.add_argument("--no-mixed", action="store_true",
                         help="Skip mixed-language tech text data")
+    parser.add_argument("--mixed-dir", action="append", type=Path, default=[],
+                        help="Additional Japanese-primary mixed text corpus directory")
     parser.add_argument("--svm", action="store_true",
                         help="Use SVM (hinge loss) instead of logistic regression")
     args = parser.parse_args()
@@ -1372,17 +1504,23 @@ def main():
     mixed_text_data: list[tuple[str, list[int]]] = []
     if not args.no_mixed:
         print("Loading mixed-language tech text...")
-        mixed_text_data = load_mixed_text_sequences(MIXED_TEXT_DIRS, kana2rom)
+        mixed_dirs = MIXED_TEXT_DIRS + args.mixed_dir
+        mixed_text_data = load_mixed_text_sequences(mixed_dirs, kana2rom)
     else:
         print("  Mixed text: skipped (--no-mixed)")
+
+    # Curated hard cases double as evaluation fixtures and training anchors.
+    print("Loading curated classifier hard cases...")
+    hard_cases = load_classifier_eval_cases(CLASSIFIER_EVAL)
 
     # 6) Build or load cached arrays
     n_rom = len(romaji_words)
     n_asc = len(english_words)
     n_snt = len(sentence_data)
     n_mix = len(mixed_text_data)
+    n_hard = len(hard_cases)
     cache_name = _cache_key(args.sequences, args.seed, n_rom, n_asc,
-                            n_snt + n_mix)
+                            n_snt + n_mix, n_hard)
     cache_path = CACHE_DIR / cache_name
 
     features: np.ndarray
@@ -1394,7 +1532,8 @@ def main():
             romaji_words, english_words,
             n_sequences=args.sequences,
             sentence_data=sentence_data if sentence_data else None,
-            mixed_text_data=mixed_text_data if mixed_text_data else None)
+            mixed_text_data=mixed_text_data if mixed_text_data else None,
+            hard_cases=hard_cases if hard_cases else None)
 
     if not args.no_cache:
         cached = load_cache(cache_path)
