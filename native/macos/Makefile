@@ -2,6 +2,7 @@ APP_NAME ?= modore
 BUNDLE_ID ?= local.modore.host
 SIGN_ID   ?= modore Dev
 BUILD     ?= build
+MODORE_ENABLE_SCRIPTING ?= 0
 APP       := $(BUILD)/$(APP_NAME).app
 BIN       := $(APP)/Contents/MacOS/modore-host
 PLIST     := $(APP)/Contents/Info.plist
@@ -40,6 +41,7 @@ CLASSIFIER_DICT  := $(ENGINE_SRC_DIR)/models/english_dict.txt
 BUNDLE_RESOURCES := $(APP)/Contents/Resources
 BUNDLE_MODEL     := $(BUNDLE_RESOURCES)/classifier.mdl
 BUNDLE_DICT      := $(BUNDLE_RESOURCES)/english_dict.txt
+SCRIPTING_CMAKE_FLAG := -DMODORE_SCRIPT_ENABLE_LUA=$(if $(filter 1,$(MODORE_ENABLE_SCRIPTING)),ON,OFF)
 
 BRIDGING_HEADER      := $(BUILD)/bridging-header.h
 TEST_BRIDGING_HEADER := $(BUILD)/test-bridging-header.h
@@ -97,15 +99,14 @@ $(BRIDGE_LIB): $(BRIDGE_SOURCES) $(BRIDGE_HEADERS) $(BRIDGE_SRC_DIR)/CMakeLists.
 	PATH="$(BRIDGE_PATH)" cmake --build "$(BRIDGE_BUILD)" -j
 
 # --- scripting engine (cmake) ----------------------------------------------
-# LuaJIT must be fetched first: `make fetch-luajit` at repo root. We fail
-# loudly with the actionable command rather than auto-clone, so users
-# without scripting needs don't pay the clone cost on an unrelated build.
+# Default host builds keep classifier/text helpers and omit LuaJIT-backed
+# scripting hooks. Set MODORE_ENABLE_SCRIPTING=1 to opt back in.
 $(ENGINE_LIB): $(ENGINE_SOURCES) $(ENGINE_SRC_DIR)/CMakeLists.txt
-	@if [ ! -d "$(REPO_ROOT)/third_party/luajit/.git" ]; then \
+	@if [ "$(MODORE_ENABLE_SCRIPTING)" = "1" ] && [ ! -d "$(REPO_ROOT)/third_party/luajit/.git" ]; then \
 	    echo "scripting engine needs LuaJIT — run 'make fetch-luajit' at repo root"; exit 1; \
 	fi
 	cmake -S "$(ENGINE_SRC_DIR)" -B "$(ENGINE_BUILD)" -G "Unix Makefiles" \
-		-DCMAKE_BUILD_TYPE=Release -DMODORE_SCRIPT_JIT=OFF
+		-DCMAKE_BUILD_TYPE=Release -DMODORE_SCRIPT_JIT=OFF $(SCRIPTING_CMAKE_FLAG)
 	cmake --build "$(ENGINE_BUILD)" -j --target modore_script
 
 # --- Swift host -------------------------------------------------------------

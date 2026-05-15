@@ -25,7 +25,7 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import puppeteer from 'puppeteer';
+import puppeteer from 'puppeteer-core';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(__dirname, '..', '..');
@@ -81,6 +81,33 @@ function resolveModoreHost() {
   const localBin = join(process.env.HOME || '', '.local', 'bin', 'modore-host');
   if (existsSync(localBin)) {
     return localBin;
+  }
+  return null;
+}
+
+function resolveBrowserExecutable() {
+  const envPath = process.env.PUPPETEER_EXECUTABLE_PATH;
+  if (envPath && existsSync(envPath)) {
+    return envPath;
+  }
+
+  const pathCandidates = [
+    '/usr/bin/chromium',
+    '/usr/bin/chromium-browser',
+    '/usr/bin/google-chrome',
+    '/opt/google/chrome/chrome',
+    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+  ];
+  for (const candidate of pathCandidates) {
+    if (existsSync(candidate)) return candidate;
+  }
+
+  for (const cmd of ['chromium', 'chromium-browser', 'google-chrome', 'chrome']) {
+    const which = spawnSync('which', [cmd], { encoding: 'utf8' });
+    if (which.status === 0) {
+      const p = which.stdout.trim().split('\n')[0];
+      if (p && existsSync(p)) return p;
+    }
   }
   return null;
 }
@@ -217,6 +244,14 @@ if (spawnHost) {
 const romanji = process.env.MODORE_ROMANJI || 'nihongo';
 const headless = process.env.MODORE_PUPPETEER_HEADLESS === '1' ? 'shell' : false;
 const titleToken = `modore-e2e-${process.pid}`;
+const browserExecutable = resolveBrowserExecutable();
+
+if (!browserExecutable) {
+  console.error(
+    'modore-pipeline: could not find a Chromium/Chrome executable; set PUPPETEER_EXECUTABLE_PATH',
+  );
+  process.exit(1);
+}
 
 const browserEnv = { ...mergedEnv };
 const launchArgs = ['--no-sandbox', '--disable-setuid-sandbox', '--window-size=720,480'];
@@ -237,12 +272,12 @@ e2eStep(
     : 'Ozone Wayland (MODORE_PUPPETEER_SESSION=1) — do_pickup(nullptr) like typical Chromium tab',
 );
 e2eStep('browser env', `OZONE_PLATFORM=${browserEnv.OZONE_PLATFORM ?? '(unset)'} WAYLAND_DISPLAY=${browserEnv.WAYLAND_DISPLAY ?? '(unset)'}`);
-e2eStep('puppeteer.launch', `headless=${String(headless)} args=${launchArgs.join(' ')}`);
+e2eStep('puppeteer.launch', `headless=${String(headless)} exe=${browserExecutable} args=${launchArgs.join(' ')}`);
 
 const browser = await puppeteer.launch({
   headless,
   args: launchArgs,
-  executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
+  executablePath: browserExecutable,
   env: browserEnv,
 });
 

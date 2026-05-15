@@ -1,6 +1,7 @@
 # modore — Linux host (X11 + AT-SPI2 + in-process Mozc bridge).
 
 REPO_ROOT := $(abspath ../..)
+MODORE_ENABLE_SCRIPTING ?= 0
 BRIDGE_SRC := $(REPO_ROOT)/bridge
 BRIDGE_BUILD := $(BRIDGE_SRC)/build
 BRIDGE_LIB := $(BRIDGE_BUILD)/libmozc_bridge.so
@@ -9,6 +10,7 @@ BRIDGE_LIB := $(BRIDGE_BUILD)/libmozc_bridge.so
 ENGINE_SRC := $(REPO_ROOT)/engine
 ENGINE_BUILD := $(REPO_ROOT)/build/engine
 ENGINE_LIB := $(ENGINE_BUILD)/libmodore_script.so
+SCRIPTING_CMAKE_FLAG := -DMODORE_SCRIPT_ENABLE_LUA=$(if $(filter 1,$(MODORE_ENABLE_SCRIPTING)),ON,OFF)
 
 BUILD := build
 OUT := $(BUILD)/modore-host
@@ -43,14 +45,15 @@ all: $(OUT)
 $(BRIDGE_LIB):
 	@$(MAKE) -C "$(REPO_ROOT)" bridge
 
-# Scripting engine. LuaJIT must be fetched first (`make fetch-luajit` at
-# repo root) — error message is actionable if the user hasn't.
+# Shared helpers library. Default host builds keep classifier/text helpers
+# and omit LuaJIT-backed scripting hooks. Set MODORE_ENABLE_SCRIPTING=1 to
+# opt back in.
 $(ENGINE_LIB):
-	@if [ ! -d "$(REPO_ROOT)/third_party/luajit/.git" ]; then \
+	@if [ "$(MODORE_ENABLE_SCRIPTING)" = "1" ] && [ ! -d "$(REPO_ROOT)/third_party/luajit/.git" ]; then \
 	    echo "scripting engine needs LuaJIT — run 'make fetch-luajit' at repo root"; exit 1; \
 	fi
 	cmake -S "$(ENGINE_SRC)" -B "$(ENGINE_BUILD)" -G "Unix Makefiles" \
-		-DCMAKE_BUILD_TYPE=Release
+		-DCMAKE_BUILD_TYPE=Release $(SCRIPTING_CMAKE_FLAG)
 	cmake --build "$(ENGINE_BUILD)" -j --target modore_script
 
 $(OUT): $(SRC) $(BRIDGE_LIB) $(ENGINE_LIB) Makefile

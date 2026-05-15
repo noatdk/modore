@@ -16,6 +16,7 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
+option(MODORE_SCRIPT_ENABLE_LUA "Build Lua-backed scripting hooks" ON)
 option(MODORE_SCRIPT_JIT "Enable LuaJIT JIT compiler (off = interpreter only)" ON)
 option(MODORE_SCRIPT_BUILD_TESTS "Build smoke / unit tests" ON)
 
@@ -23,72 +24,83 @@ option(MODORE_SCRIPT_BUILD_TESTS "Build smoke / unit tests" ON)
 set(CMAKE_C_VISIBILITY_PRESET hidden)
 set(CMAKE_VISIBILITY_INLINES_HIDDEN ON)
 
-# ---- LuaJIT (vendored under third_party/luajit, fetched by make target) ----
+if(MODORE_SCRIPT_ENABLE_LUA)
+    # ---- LuaJIT (vendored under third_party/luajit, fetched by make target) ----
 
-set(LUAJIT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/luajit")
-if(NOT EXISTS "${LUAJIT_DIR}/Makefile")
-    message(FATAL_ERROR
-        "third_party/luajit/ is missing.\n"
-        "Run from repo root:\n"
-        "  make fetch-luajit")
-endif()
-
-# LuaJIT ships a plain Makefile; ExternalProject wraps it.
-include(ExternalProject)
-
-# Apple Silicon: pin deployment target so LuaJIT picks the right SDK.
-if(APPLE)
-    if(NOT CMAKE_OSX_DEPLOYMENT_TARGET)
-        set(CMAKE_OSX_DEPLOYMENT_TARGET "12.0" CACHE STRING "" FORCE)
+    set(LUAJIT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/luajit")
+    if(NOT EXISTS "${LUAJIT_DIR}/Makefile")
+        message(FATAL_ERROR
+            "third_party/luajit/ is missing.\n"
+            "Run from repo root:\n"
+            "  make fetch-luajit")
     endif()
-    set(_LUAJIT_MACOSX_DEPLOYMENT_TARGET "MACOSX_DEPLOYMENT_TARGET=${CMAKE_OSX_DEPLOYMENT_TARGET}")
-else()
-    set(_LUAJIT_MACOSX_DEPLOYMENT_TARGET "")
+
+    # LuaJIT ships a plain Makefile; ExternalProject wraps it.
+    include(ExternalProject)
+
+    # Apple Silicon: pin deployment target so LuaJIT picks the right SDK.
+    if(APPLE)
+        if(NOT CMAKE_OSX_DEPLOYMENT_TARGET)
+            set(CMAKE_OSX_DEPLOYMENT_TARGET "12.0" CACHE STRING "" FORCE)
+        endif()
+        set(_LUAJIT_MACOSX_DEPLOYMENT_TARGET "MACOSX_DEPLOYMENT_TARGET=${CMAKE_OSX_DEPLOYMENT_TARGET}")
+    else()
+        set(_LUAJIT_MACOSX_DEPLOYMENT_TARGET "")
+    endif()
+
+    # JIT toggle propagates as XCFLAGS.
+    if(MODORE_SCRIPT_JIT)
+        set(_LUAJIT_XCFLAGS "")
+    else()
+        set(_LUAJIT_XCFLAGS "XCFLAGS=-DLUAJIT_DISABLE_JIT")
+    endif()
+
+    set(LUAJIT_STATIC_LIB "${LUAJIT_DIR}/src/libluajit.a")
+
+    ExternalProject_Add(luajit_build
+        SOURCE_DIR        "${LUAJIT_DIR}"
+        CONFIGURE_COMMAND ""
+        BUILD_IN_SOURCE   1
+        BUILD_COMMAND     make -C <SOURCE_DIR> amalg
+                              BUILDMODE=static
+                              ${_LUAJIT_MACOSX_DEPLOYMENT_TARGET}
+                              ${_LUAJIT_XCFLAGS}
+        INSTALL_COMMAND   ""
+        BUILD_BYPRODUCTS  "${LUAJIT_STATIC_LIB}"
+    )
+
+    add_library(luajit STATIC IMPORTED GLOBAL)
+    set_target_properties(luajit PROPERTIES
+        IMPORTED_LOCATION             "${LUAJIT_STATIC_LIB}"
+        INTERFACE_INCLUDE_DIRECTORIES "${LUAJIT_DIR}/src"
+    )
+    add_dependencies(luajit luajit_build)
 endif()
-
-# JIT toggle propagates as XCFLAGS.
-if(MODORE_SCRIPT_JIT)
-    set(_LUAJIT_XCFLAGS "")
-else()
-    set(_LUAJIT_XCFLAGS "XCFLAGS=-DLUAJIT_DISABLE_JIT")
-endif()
-
-set(LUAJIT_STATIC_LIB "${LUAJIT_DIR}/src/libluajit.a")
-
-ExternalProject_Add(luajit_build
-    SOURCE_DIR        "${LUAJIT_DIR}"
-    CONFIGURE_COMMAND ""
-    BUILD_IN_SOURCE   1
-    BUILD_COMMAND     make -C <SOURCE_DIR> amalg
-                          BUILDMODE=static
-                          ${_LUAJIT_MACOSX_DEPLOYMENT_TARGET}
-                          ${_LUAJIT_XCFLAGS}
-    INSTALL_COMMAND   ""
-    BUILD_BYPRODUCTS  "${LUAJIT_STATIC_LIB}"
-)
-
-add_library(luajit STATIC IMPORTED GLOBAL)
-set_target_properties(luajit PROPERTIES
-    IMPORTED_LOCATION             "${LUAJIT_STATIC_LIB}"
-    INTERFACE_INCLUDE_DIRECTORIES "${LUAJIT_DIR}/src"
-)
-add_dependencies(luajit luajit_build)
 
 # ---- libmodore_script ------------------------------------------------------
 
 add_library(modore_script SHARED
-    src/engine.c
-    src/sandbox.c
-    src/marshal.c
-    src/reload.c
     src/classifier.c
     src/pickup_core.c
 )
+if(MODORE_SCRIPT_ENABLE_LUA)
+    target_sources(modore_script PRIVATE
+        src/engine.c
+        src/sandbox.c
+        src/marshal.c
+        src/reload.c
+    )
+else()
+    target_sources(modore_script PRIVATE src/engine_stub.c)
+    target_compile_definitions(modore_script PRIVATE MDR_SCRIPTING_DISABLED)
+endif()
 target_include_directories(modore_script
     PUBLIC  ${CMAKE_CURRENT_SOURCE_DIR}/include
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
-target_link_libraries(modore_script PRIVATE luajit)
+if(MODORE_SCRIPT_ENABLE_LUA)
+    target_link_libraries(modore_script PRIVATE luajit)
+endif()
 set_target_properties(modore_script PROPERTIES
     OUTPUT_NAME   modore_script
     C_VISIBILITY_PRESET hidden
@@ -99,7 +111,10 @@ target_compile_definitions(modore_script PRIVATE MDR_BUILDING)
 if(APPLE)
     target_link_libraries(modore_script PRIVATE m)
 elseif(UNIX)
-    target_link_libraries(modore_script PRIVATE m dl)
+    target_link_libraries(modore_script PRIVATE m)
+    if(MODORE_SCRIPT_ENABLE_LUA)
+        target_link_libraries(modore_script PRIVATE dl)
+    endif()
 endif()
 
 # Note: LuaJIT's classic -pagezero_size / -image_base trampoline hack is
@@ -111,11 +126,11 @@ endif()
 # LuaJIT's static archive was built with default visibility; without an
 # explicit export filter, every `lua_*` symbol would leak from our .dylib.
 # Whitelist only modore_script_* symbols.
-if(APPLE)
+if(MODORE_SCRIPT_ENABLE_LUA AND APPLE)
     target_link_options(modore_script PRIVATE
         "-Wl,-exported_symbols_list,${CMAKE_CURRENT_SOURCE_DIR}/exports/modore_script.symbols"
     )
-elseif(UNIX)
+elseif(MODORE_SCRIPT_ENABLE_LUA AND UNIX)
     target_link_options(modore_script PRIVATE
         "-Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/exports/modore_script.version"
         "-Wl,--exclude-libs,ALL"
@@ -126,14 +141,16 @@ endif()
 
 if(MODORE_SCRIPT_BUILD_TESTS)
     enable_testing()
-    foreach(t smoke test_pickup test_pickup_core test_replacement test_route test_candidates test_acquire test_sandbox test_engine test_text)
-        add_executable(${t} tests/${t}.c)
-        target_link_libraries(${t} PRIVATE modore_script)
-        target_include_directories(${t} PRIVATE
-            ${CMAKE_CURRENT_SOURCE_DIR}/include
-            ${CMAKE_CURRENT_SOURCE_DIR}/tests)
-        add_test(NAME ${t} COMMAND ${t})
-    endforeach()
+    if(MODORE_SCRIPT_ENABLE_LUA)
+        foreach(t smoke test_pickup test_pickup_core test_replacement test_route test_candidates test_acquire test_sandbox test_engine test_text)
+            add_executable(${t} tests/${t}.c)
+            target_link_libraries(${t} PRIVATE modore_script)
+            target_include_directories(${t} PRIVATE
+                ${CMAKE_CURRENT_SOURCE_DIR}/include
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+            add_test(NAME ${t} COMMAND ${t})
+        endforeach()
+    endif()
     # Classifier test links directly against the shared lib (includes classifier.c)
     add_executable(test_classifier tests/test_classifier.c)
     target_link_libraries(test_classifier PRIVATE modore_script)

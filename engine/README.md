@@ -10,12 +10,13 @@ From repo root:
 
 ```sh
 make fetch-luajit   # one-time: clones LuaJIT 2.1 into third_party/luajit/
-make engine         # builds build/engine/libmodore_script.{dylib,so}
+make engine         # builds helpers-only libmodore_script.{dylib,so}
+make engine MODORE_ENABLE_SCRIPTING=1   # builds Lua-backed hooks too
 make engine-test    # runs the smoke harness
 ```
 
-LuaJIT is fetched lazily, not a submodule. Only users who want scripting
-pay the clone (~3 MB).
+LuaJIT is fetched lazily, not a submodule. Helpers-only builds avoid that
+dependency entirely; only users who want scripting pay the clone (~3 MB).
 
 ## Layout
 

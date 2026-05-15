@@ -9,6 +9,6 @@
     "test": "MODORE_E2E_TRACE=1 node modore-pipeline.mjs"
   },
   "devDependencies": {
-    "puppeteer": "^24.2.0"
+    "puppeteer-core": "^24.43.1"
   }
 }
