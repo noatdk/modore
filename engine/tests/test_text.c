@@ -55,5 +55,17 @@ int main(void) {
         CHECK(strcmp(out, "R&D|iraisho") == 0, "split_acronym_head value");
     }
 
+    {
+        char out[64] = {0};
+        int rc = run_replacement_hook(
+            "modore.on_replacement = function()\n"
+            "  local c, s = modore.text.split_trailing_ascii_punctuation('ge-mu,-')\n"
+            "  return c .. '|' .. modore.text.normalize_pickup_suffix(s)\n"
+            "end\n",
+            out, sizeof(out));
+        CHECK(rc == 1, "split_trailing_ascii_punctuation hook rc");
+        CHECK(strcmp(out, "ge-mu|、ー") == 0, "normalize_pickup_suffix value");
+    }
+
     REPORT_AND_EXIT("test_text");
 }

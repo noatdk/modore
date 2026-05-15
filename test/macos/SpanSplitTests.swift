@@ -63,6 +63,69 @@ struct SpanSplitTests {
         // canonical "tsuchi-yoshi" test.
         expectTuple(splitTrailingASCII("𠮷野yoshi"),       ("𠮷野", "yoshi"),       "split keeps surrogate pair intact")
 
+        // Trailing punctuation is kept separate so the pickup path can
+        // normalize it to Japanese punctuation after conversion.
+        expectTuple(splitTrailingASCIIPunctuation("IME."),       ("IME", "."),   "split trailing period")
+        expectTuple(splitTrailingASCIIPunctuation("kane,"),      ("kane", ","),  "split trailing comma")
+        expectTuple(splitTrailingASCIIPunctuation("koe."),       ("koe", "."),   "split Chrome punctuation suffix")
+        expectTuple(splitTrailingASCIIPunctuation("koe,"),       ("koe", ","),   "split comma suffix after romaji")
+        expectTuple(splitTrailingASCIIPunctuation("sureiya-"),    ("sureiya", "-"), "split trailing hyphen")
+        expectTuple(splitTrailingASCIIPunctuation("pa-ka-"),      ("pa-ka", "-"), "split hyphenated chouon suffix")
+        expectTuple(splitTrailingASCIIPunctuation("C++"),         ("C", "++"),    "split trailing symbol run")
+        expectTuple(splitTrailingASCIIPunctuation("API"),         ("API", ""),    "split no suffix")
+
+        // The clipboard fallback sometimes has to decide whether to spend
+        // one more selection probe on a plain lowercase word. Chromium
+        // text boxes split hyphenated romaji more aggressively than the
+        // other fallback targets, so `thingu` in Chrome can actually be
+        // the tail of `mi-thingu`.
+        expectEqual(
+            shouldProbeForcedHyphenatedSelectionExpansion(
+                original: "thingu",
+                appBundleID: "com.google.Chrome"),
+            true,
+            "probe plain lowercase word in Chrome"
+        )
+        expectEqual(
+            shouldProbeForcedHyphenatedSelectionExpansion(
+                original: "thingu",
+                appBundleID: "md.obsidian"),
+            false,
+            "do not probe plain lowercase word in Obsidian"
+        )
+        expectEqual(
+            shouldProbeForcedHyphenatedSelectionExpansion(
+                original: "mi-thingu",
+                appBundleID: "md.obsidian"),
+            true,
+            "probe already-hyphenated lowercase token everywhere"
+        )
+        expectEqual(
+            shouldProbeForcedHyphenatedSelectionExpansion(
+                original: "desu",
+                appBundleID: nil),
+            false,
+            "do not probe plain lowercase word outside Chromium without a hyphen"
+        )
+        expectEqual(isConvertiblePunctuationOnly("."), true, "period-only selection can normalize")
+        expectEqual(isConvertiblePunctuationOnly(","), true, "comma-only selection can normalize")
+        expectEqual(isConvertiblePunctuationOnly("-"), true, "hyphen-only selection can normalize")
+        expectEqual(isConvertiblePunctuationOnly("。"), false, "Japanese punctuation is not ASCII-normalized")
+        expectEqual(isConvertiblePunctuationOnly("koe."), false, "romaji punctuation token is not punctuation-only")
+
+        // Chrome HTML inputs can force-select only the final punctuation
+        // for `koe.[trigger]`. The expansion probe should accept the
+        // first selection that has lowercase ASCII before the punctuation,
+        // but it must not reinterpret already-converted Japanese text as a
+        // romaji token.
+        expectEqual(hasLowerASCIICoreBeforePunctuation("koe."), true, "accept romaji before period")
+        expectEqual(hasLowerASCIICoreBeforePunctuation("koe,"), true, "accept romaji before comma")
+        expectEqual(hasLowerASCIICoreBeforePunctuation("sureiya-"), true, "accept romaji before hyphen")
+        expectEqual(hasLowerASCIICoreBeforePunctuation("."), false, "reject punctuation-only expansion candidate")
+        expectEqual(hasLowerASCIICoreBeforePunctuation("声."), false, "reject Japanese core before punctuation")
+        expectEqual(hasLowerASCIICoreBeforePunctuation("API."), false, "reject uppercase-only ASCII core")
+        expectEqual(hasLowerASCIICoreBeforePunctuation("声koe."), true, "accept trailing romaji after Japanese prefix")
+
         // MARK: - splitAcronymHead
         //
         // Acronyms/codes embedded as a prefix to romaji (`R&Diraisho`) would
@@ -107,6 +170,12 @@ struct SpanSplitTests {
         let kanjiRoman = Array("対人sen".utf16)
         let (kStart, kEnd) = wordBounds(kanjiRoman, caret: kanjiRoman.count)
         expectTuple((kStart, kEnd), (2, 5), "wordBounds stops at ASCII↔non-ASCII transition")
+        expectTuple(wordBounds(Array("声,".utf16), caret: 1), (1, 2), "wordBounds picks comma before caret after kanji")
+        expectTuple(wordBounds(Array("声,".utf16), caret: 2), (1, 2), "wordBounds picks comma after caret after kanji")
+        expectTuple(wordBounds(Array("声,".utf16), caret: 0), (1, 2), "wordBounds picks comma from caret before kanji")
+        expectTuple(wordBounds(Array("声,次".utf16), caret: 1), (1, 2), "wordBounds picks comma before following kanji")
+        expectTuple(wordBounds(Array("声,abc".utf16), caret: 1), (0, 1), "wordBounds ignores comma before ASCII tail")
+        expectTuple(wordBounds(Array("声,abc".utf16), caret: 0), (0, 1), "wordBounds keeps kanji before comma ASCII tail")
 
         // MARK: - sliceUTF16
 

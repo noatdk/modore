@@ -138,7 +138,7 @@ enum ModoreScript {
             },
             { _, _, outRoute in
                 guard let out = outRoute else { return 0 }
-                out.pointee = MDR_ROUTE_AX
+                out.pointee = MDR_ROUTE_DEFAULT
                 return 1
             })
     }

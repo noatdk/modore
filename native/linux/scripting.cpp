@@ -119,7 +119,7 @@ int default_replacement(void* /*userdata*/,
 
 int default_route(void* /*userdata*/, const char* /*app_id*/, mdr_route_t* out_route) {
   if (!out_route) return 0;
-  *out_route = MDR_ROUTE_AX;
+  *out_route = MDR_ROUTE_DEFAULT;
   return 1;
 }
 
