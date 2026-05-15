@@ -17,6 +17,11 @@ MDR_1 {
         mdr_cls_free;
         mdr_cls_segment;
         mdr_cls_classify;
+        mdr_text_word_bounds;
+        mdr_text_split_trailing_ascii;
+        mdr_text_split_trailing_ascii_punctuation;
+        mdr_text_split_acronym_head;
+        mdr_text_normalize_pickup_suffix;
     local:
         *;
 };

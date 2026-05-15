@@ -400,31 +400,3 @@ private func withCStringArrayHelper<R>(
         return withCStringArrayHelper(remaining.dropFirst(), ptrs: &ptrs, body: body)
     }
 }
-
-// MARK: - UTF-8 ↔ UTF-16 mapping
-
-extension String {
-    /// UTF-8 byte offset corresponding to a UTF-16 code-unit offset.
-    /// Out-of-range inputs clamp to bounds. O(n) — the only callers run
-    /// on the pickup pipeline, not per keystroke.
-    func utf8ByteOffset(forUTF16Offset u: Int) -> Int {
-        if u <= 0 { return 0 }
-        let limit = utf16.count
-        let safe = min(u, limit)
-        let idx = String.Index(utf16Offset: safe, in: self)
-        let utf8Anchor = idx.samePosition(in: utf8) ?? utf8.endIndex
-        return utf8.distance(from: utf8.startIndex, to: utf8Anchor)
-    }
-
-    /// UTF-16 code-unit offset corresponding to a UTF-8 byte offset.
-    /// Returns -1 if the byte offset lands in the middle of a multi-byte
-    /// sequence (no valid UTF-16 anchor). Caller treats -1 as "ignore".
-    func utf16Offset(forUTF8Byte b: Int) -> Int {
-        if b <= 0 { return 0 }
-        let limit = utf8.count
-        let safe = min(b, limit)
-        let utf8Idx = utf8.index(utf8.startIndex, offsetBy: safe)
-        guard let mapped = utf8Idx.samePosition(in: utf16) else { return -1 }
-        return utf16.distance(from: utf16.startIndex, to: mapped)
-    }
-}

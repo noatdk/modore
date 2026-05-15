@@ -49,6 +49,24 @@ func enableElectronAXIfNeeded() {
     Log.ax("AXManualAccessibility set on pid=\(pid): rc=\(rc.rawValue)")
 }
 
+func frontmostAppLooksElectron() -> Bool {
+    guard let info = FrontmostApp.describe() else { return false }
+    let bundleID = info.bundleID.lowercased()
+    if bundleID.contains("electron") { return true }
+
+    if let proc = SecureInputMonitor.describeProcess(pid: info.pid) {
+        let path = proc.path.lowercased()
+        return path.contains("electron framework.framework")
+            || path.contains("/electron.app/")
+            || path.contains("/discord.app/")
+            || path.contains("/slack.app/")
+            || path.contains("/visual studio code.app/")
+            || path.contains("/cursor.app/")
+            || path.contains("/obsidian.app/")
+    }
+    return false
+}
+
 func readFocusedField() -> FocusedField? {
     let systemWide = AXUIElementCreateSystemWide()
     var focusedRef: CFTypeRef?

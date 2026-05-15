@@ -78,6 +78,95 @@ func callBackend(
     }
 }
 
+private func convertTrailingASCIISuffix(
+    _ suffix: String,
+    request: PickupRequest
+) -> String {
+    guard !suffix.isEmpty else { return "" }
+    var converted = ""
+    converted.reserveCapacity(suffix.count)
+    for scalar in suffix.unicodeScalars {
+        let raw = String(scalar)
+        switch scalar {
+        case ".", ",", "-":
+            converted += callBackend(raw, request: request)?.replacement
+                ?? (raw == "." ? "。" : raw == "," ? "、" : "ー")
+        default:
+            converted += raw
+        }
+    }
+    return converted
+}
+
+/// Use the ML classifier to split an ASCII string into romaji and ASCII
+/// segments, convert each romaji segment through Mozc independently, and
+/// reassemble. Falls back to nil when the classifier is not loaded or the
+/// string is not mixed (single-type -> let the caller use the normal path).
+private func classifierSegmentedConvert(
+    _ ascii: String,
+    request: PickupRequest
+) -> (replacement: String, candidates: [String])? {
+    guard let segments = Classifier.segment(ascii),
+          Classifier.isMixed(segments) else { return nil }
+
+    var primaryIdx = -1
+    var primaryLen = 0
+    for (i, seg) in segments.enumerated() where seg.isRomaji {
+        let len = seg.end - seg.start
+        if len > primaryLen {
+            primaryLen = len
+            primaryIdx = i
+        }
+    }
+
+    var parts: [String] = []
+    var primaryResult: ConvertResult? = nil
+    for (i, seg) in segments.enumerated() {
+        let startIdx = ascii.utf8.index(ascii.utf8.startIndex, offsetBy: seg.start)
+        let endIdx = ascii.utf8.index(ascii.utf8.startIndex, offsetBy: seg.end)
+        let chunk = String(ascii.utf8[startIdx..<endIdx])!
+
+        if seg.isRomaji {
+            let wantCands = i == primaryIdx
+            if let result = callBackend(chunk, request: request,
+                                        wantCandidates: wantCands) {
+                parts.append(result.replacement)
+                if wantCands { primaryResult = result }
+            } else {
+                parts.append(chunk)
+            }
+        } else {
+            parts.append(chunk)
+        }
+    }
+
+    let replacement = parts.joined()
+    var candidates: [String] = [replacement]
+    if let pr = primaryResult, !pr.candidates.isEmpty {
+        candidates = pr.candidates.map { cand in
+            var rebuilt: [String] = []
+            for (i, seg) in segments.enumerated() {
+                if i == primaryIdx {
+                    rebuilt.append(cand)
+                    continue
+                }
+                let startIdx = ascii.utf8.index(ascii.utf8.startIndex, offsetBy: seg.start)
+                let endIdx = ascii.utf8.index(ascii.utf8.startIndex, offsetBy: seg.end)
+                let chunk = String(ascii.utf8[startIdx..<endIdx])!
+                if seg.isRomaji, let r = callBackend(chunk, request: request) {
+                    rebuilt.append(r.replacement)
+                } else {
+                    rebuilt.append(chunk)
+                }
+            }
+            return rebuilt.joined()
+        }
+    }
+
+    Log.pickup("classifier segmented: \(segments.count) segments -> \(replacement)")
+    return (replacement, candidates)
+}
+
 // MARK: - Clipboard-based fallback (works in any app that supports Cmd+C / Cmd+V)
 
 /// Heuristic: a Cmd+C result that contains a newline or is huge is almost
@@ -87,6 +176,330 @@ private func looksLikeLineCopy(_ s: String) -> Bool {
     if s.contains("\n") || s.contains("\r") { return true }
     if s.count > 200 { return true }
     return false
+}
+
+private func copyCurrentSelection(
+    pasteboard pb: NSPasteboard,
+    timeoutMs: Int
+) -> String? {
+    let baseline = pb.changeCount
+    postKey(kVK_ANSI_C, flags: .maskCommand)
+    guard waitForClipboardChange(after: baseline, timeoutMs: timeoutMs),
+          let s = pb.string(forType: .string), !s.isEmpty else {
+        return nil
+    }
+    return s
+}
+
+private func isUsefulHyphenatedPickup(_ s: String) -> Bool {
+    var hasHyphen = false
+    var hasLetter = false
+    for byte in s.utf8 {
+        if byte == 0x2D { hasHyphen = true }
+        if byte >= 0x61 && byte <= 0x7A { hasLetter = true }
+    }
+    return hasHyphen && hasLetter
+}
+
+private func shrinkSelectionRight(_ count: Int) {
+    guard count > 0 else { return }
+    for _ in 0..<count {
+        postKey(kVK_RightArrow, flags: .maskShift)
+    }
+}
+
+private func reselectPreviousUTF16Units(_ count: Int) {
+    guard count > 0 else { return }
+    postKey(kVK_RightArrow)
+    for _ in 0..<count {
+        postKey(kVK_LeftArrow, flags: .maskShift)
+    }
+}
+
+private func trailingUsefulHyphenatedRun(_ s: String) -> String? {
+    var start = s.endIndex
+    while start > s.startIndex {
+        let prev = s.index(before: start)
+        let byte = s[prev].utf8.first ?? 0
+        guard (byte >= 0x61 && byte <= 0x7A) || byte == 0x2D else { break }
+        start = prev
+    }
+    guard start < s.endIndex else { return nil }
+    let tail = String(s[start..<s.endIndex])
+    return isUsefulHyphenatedPickup(tail) ? tail : nil
+}
+
+private func maybeExpandForcedHyphenatedSelectionWindow(
+    _ original: String,
+    pasteboard pb: NSPasteboard,
+    timeoutMs: Int
+) -> String? {
+    let window = 24
+    for _ in 0..<window {
+        postKey(kVK_LeftArrow, flags: .maskShift)
+    }
+    Thread.sleep(forTimeInterval: 0.02)
+
+    guard let expanded = copyCurrentSelection(
+        pasteboard: pb,
+        timeoutMs: timeoutMs
+    ) else {
+        shrinkSelectionRight(window)
+        return nil
+    }
+
+    guard let tail = trailingUsefulHyphenatedRun(expanded),
+          expanded.hasSuffix(tail) else {
+        shrinkSelectionRight(window)
+        return nil
+    }
+
+    let shrinkCount = expanded.utf16.count - tail.utf16.count
+    shrinkSelectionRight(shrinkCount)
+    return tail == original ? nil : tail
+}
+
+private func maybeExpandForcedHyphenatedSelectionByWord(
+    _ original: String,
+    pasteboard pb: NSPasteboard,
+    timeoutMs: Int
+) -> String? {
+    var expandedWords = 0
+    var best: (text: String, selectionLen: Int, expandedWords: Int)?
+    var current = original
+
+    for _ in 0..<4 {
+        postKey(kVK_LeftArrow, flags: [.maskShift, .maskAlternate])
+        expandedWords += 1
+        Thread.sleep(forTimeInterval: 0.02)
+
+        guard let probe = copyCurrentSelection(
+            pasteboard: pb,
+            timeoutMs: timeoutMs
+        ) else {
+            reselectPreviousUTF16Units(original.utf16.count)
+            return nil
+        }
+
+        guard probe != current else {
+            expandedWords -= 1
+            break
+        }
+
+        guard let tail = trailingUsefulHyphenatedRun(probe),
+              probe.hasSuffix(tail) else {
+            reselectPreviousUTF16Units(original.utf16.count)
+            return nil
+        }
+
+        current = probe
+        best = (tail, probe.utf16.count, expandedWords)
+        if tail.utf16.count < probe.utf16.count {
+            break
+        }
+    }
+
+    guard let best, best.text != original else {
+        reselectPreviousUTF16Units(original.utf16.count)
+        return nil
+    }
+
+    shrinkSelectionRight(best.selectionLen - best.text.utf16.count)
+    return best.text
+}
+
+private func maybeExpandForcedHyphenatedSelection(
+    _ original: String,
+    pasteboard pb: NSPasteboard,
+    timings: ModoreConfig.ClipboardTimings,
+    appBundleID: String?
+) -> String? {
+    guard shouldProbeForcedHyphenatedSelectionExpansion(
+        original: original,
+        appBundleID: appBundleID
+    ) else {
+        return nil
+    }
+    let expansionTimeoutMs = min(timings.readTimeoutMs, 120)
+
+    if let expanded = maybeExpandForcedHyphenatedSelectionWindow(
+        original,
+        pasteboard: pb,
+        timeoutMs: expansionTimeoutMs
+    ) {
+        return expanded
+    }
+
+    if let expanded = maybeExpandForcedHyphenatedSelectionByWord(
+        original,
+        pasteboard: pb,
+        timeoutMs: expansionTimeoutMs
+    ) {
+        return expanded
+    }
+
+    var current = original
+    var expandedChars = 0
+    var best: (text: String, expandedChars: Int)?
+    if isUsefulHyphenatedPickup(original) {
+        best = (original, 0)
+    }
+
+    for _ in 0..<40 {
+        postKey(kVK_LeftArrow, flags: .maskShift)
+        expandedChars += 1
+
+        guard let probe = copyCurrentSelection(
+            pasteboard: pb,
+            timeoutMs: expansionTimeoutMs
+        ) else {
+            shrinkSelectionRight(expandedChars)
+            return nil
+        }
+
+        guard probe != current else {
+            expandedChars -= 1
+            break
+        }
+
+        guard isLowerASCIIHyphenRun(probe) else {
+            shrinkSelectionRight(1)
+            expandedChars -= 1
+            break
+        }
+
+        current = probe
+        if isUsefulHyphenatedPickup(probe) {
+            best = (probe, expandedChars)
+        }
+    }
+
+    guard let best else {
+        shrinkSelectionRight(expandedChars)
+        return nil
+    }
+    shrinkSelectionRight(expandedChars - best.expandedChars)
+    return best.text == original ? nil : best.text
+}
+
+private func maybeExpandForcedPunctuationSelection(
+    _ original: String,
+    pasteboard pb: NSPasteboard,
+    timings: ModoreConfig.ClipboardTimings
+) -> String? {
+    guard isConvertiblePunctuationOnly(original) else { return nil }
+    let expansionTimeoutMs = min(timings.readTimeoutMs, 120)
+    var current = original
+    var expandedChars = 0
+    var best: (text: String, expandedChars: Int)?
+
+    for _ in 0..<40 {
+        postKey(kVK_LeftArrow, flags: .maskShift)
+        expandedChars += 1
+
+        guard let probe = copyCurrentSelection(
+            pasteboard: pb,
+            timeoutMs: expansionTimeoutMs
+        ) else {
+            shrinkSelectionRight(expandedChars)
+            return nil
+        }
+
+        guard probe != current else {
+            expandedChars -= 1
+            break
+        }
+
+        current = probe
+        if hasLowerASCIICoreBeforePunctuation(probe) {
+            best = (probe, expandedChars)
+        }
+
+        let firstByte = probe.utf8.first ?? 0
+        if firstByte >= 0x80 || firstByte <= 0x20 {
+            break
+        }
+    }
+
+    guard let best else {
+        shrinkSelectionRight(expandedChars)
+        return nil
+    }
+    shrinkSelectionRight(expandedChars - best.expandedChars)
+    return best.text == original ? nil : best.text
+}
+
+private func stripLineCopySuffix(_ s: String) -> String {
+    var out = s
+    while out.hasSuffix("\n") || out.hasSuffix("\r") {
+        out.removeLast()
+    }
+    return out
+}
+
+private func trailingASCIIPickupTokenFromLineCopy(_ s: String) -> String? {
+    let line = stripLineCopySuffix(s)
+    guard !line.isEmpty else { return nil }
+    var start = line.endIndex
+    while start > line.startIndex {
+        let prev = line.index(before: start)
+        let byte = line[prev].utf8.first ?? 0
+        guard byte > 0x20 && byte < 0x7F else { break }
+        start = prev
+    }
+    guard start < line.endIndex else { return nil }
+    let tail = String(line[start..<line.endIndex])
+    return tail.utf8.contains(where: { $0 >= 0x61 && $0 <= 0x7A }) ? tail : nil
+}
+
+private func postClipboardReplacement(_ replacement: String, deleteBeforeInsert: Int) {
+    if deleteBeforeInsert > 0 {
+        for _ in 0..<deleteBeforeInsert {
+            postKey(kVK_Backspace)
+        }
+    }
+    postUnicode(replacement)
+}
+
+private let kChromiumOmniboxBundleIDs: Set<String> = [
+    "com.google.Chrome",
+    "com.google.Chrome.canary",
+    "org.chromium.Chromium",
+]
+
+private func axStringAttr(_ element: AXUIElement, _ attr: String) -> String? {
+    var ref: CFTypeRef?
+    let err = AXUIElementCopyAttributeValue(element, attr as CFString, &ref)
+    guard err == .success else { return nil }
+    return ref as? String
+}
+
+private func isChromiumOmnibox(
+    field: FocusedField,
+    appId: String?
+) -> Bool {
+    guard let appId, kChromiumOmniboxBundleIDs.contains(appId) else { return false }
+    let role = axStringAttr(field.element, kAXRoleAttribute as String)
+    let desc = axStringAttr(field.element, kAXDescriptionAttribute as String)
+    return role == kAXTextFieldRole as String
+        && desc == "Address and search bar"
+}
+
+private func postUnicodeOverAXSelection(
+    in element: AXUIElement,
+    start: Int,
+    end: Int,
+    replacement: String
+) -> Bool {
+    var range = CFRange(location: start, length: end - start)
+    guard let rangeValue = AXValueCreate(.cfRange, &range) else { return false }
+    let rc = AXUIElementSetAttributeValue(
+        element,
+        kAXSelectedTextRangeAttribute as CFString,
+        rangeValue)
+    guard rc == .success else { return false }
+    postUnicode(replacement)
+    return true
 }
 
 /// Bundle IDs where the Cmd+C-peek heuristic in step 1 below is unreliable
@@ -117,6 +530,7 @@ func doClipboardPickup(_ request: PickupRequest = .init()) {
 
     let pb = NSPasteboard.general
     var picked: String? = nil
+    var deletePickedBeforeInsert = false
 
     // Step 1: peek at the user's current selection (if any) with Cmd+C.
     // Aggressive timeout — apps with a real selection respond in <30ms.
@@ -132,7 +546,14 @@ func doClipboardPickup(_ request: PickupRequest = .init()) {
         if waitForClipboardChange(after: baseline, timeoutMs: 80),
            let s = pb.string(forType: .string), !s.isEmpty {
             if looksLikeLineCopy(s) {
-                Log.clipboard("Cmd+C looks like a line-copy (no real selection); will force-select previous word")
+                if frontmostBundleID == "com.sublimetext.4",
+                   let tail = trailingASCIIPickupTokenFromLineCopy(s) {
+                    picked = tail
+                    deletePickedBeforeInsert = true
+                    Log.clipboard("using Sublime line-copy tail: \(tail)")
+                } else {
+                    Log.clipboard("Cmd+C looks like a line-copy (no real selection); will force-select previous word")
+                }
             } else {
                 picked = s
                 Log.clipboard("using existing user selection: \(s)")
@@ -160,7 +581,24 @@ func doClipboardPickup(_ request: PickupRequest = .init()) {
         // User-tunable via [clipboard] read_timeout_ms.
         if waitForClipboardChange(after: baseline2, timeoutMs: timings.readTimeoutMs),
            let s = pb.string(forType: .string), !s.isEmpty {
-            picked = s
+            if let expanded = maybeExpandForcedPunctuationSelection(
+                s,
+                pasteboard: pb,
+                timings: timings
+            ) {
+                picked = expanded
+                Log.clipboard("expanded punctuation romaji selection: \(s) → \(expanded)")
+            } else if let expanded = maybeExpandForcedHyphenatedSelection(
+                s,
+                pasteboard: pb,
+                timings: timings,
+                appBundleID: frontmostBundleID
+            ) {
+                picked = expanded
+                Log.clipboard("expanded hyphenated romaji selection: \(s) → \(expanded)")
+            } else {
+                picked = s
+            }
         }
     }
 
@@ -186,10 +624,61 @@ func doClipboardPickup(_ request: PickupRequest = .init()) {
     // come out as Latin-1 mojibake. Strip the non-ASCII prefix here, send
     // only the trailing romaji to the bridge, then re-attach the prefix.
     let (asciiPrefix, romajiTail) = splitTrailingASCII(pickedText)
-    guard !romajiTail.isEmpty else {
-        Log.clipboard("nothing to convert (no trailing romaji in \(pickedText))")
+    let (romajiCore, romajiSuffix) = splitTrailingASCIIPunctuation(romajiTail)
+    let convertedSuffix = convertTrailingASCIISuffix(romajiSuffix, request: request)
+    guard !romajiCore.isEmpty else {
+        let replacement = asciiPrefix + convertedSuffix
+        guard replacement != pickedText else {
+            Log.clipboard("nothing to convert (no trailing romaji in \(pickedText))")
+            if didForceSelect {
+                postKey(kVK_RightArrow)
+            }
+            return
+        }
+        Log.clipboard("punctuation-only pickup -> \(replacement)")
+        postClipboardReplacement(
+            replacement,
+            deleteBeforeInsert: deletePickedBeforeInsert ? pickedText.utf16.count : 0)
         if didForceSelect {
             postKey(kVK_RightArrow)
+        }
+        return
+    }
+
+    let (acronymHead, mozcInput) = splitAcronymHead(romajiCore)
+    let frozenPrefix = asciiPrefix + acronymHead
+    if mozcInput.first?.isLowercase != true {
+        let replacement = frozenPrefix + mozcInput + convertedSuffix
+        guard replacement != pickedText else {
+            Log.clipboard("skipping: no romaji tail after acronym split (\(mozcInput))")
+            if didForceSelect {
+                postKey(kVK_RightArrow)
+            }
+            return
+        }
+        let baseCandidates = [replacement]
+        let scriptSpan = mdr_span_t(span_start_byte: 0, span_end_byte: 0,
+                                    romaji: nil, romaji_len: 0)
+        let finalReplacement = ModoreScript.replacement(
+            appId: frontmostBundleID, span: scriptSpan, candidates: baseCandidates) ?? replacement
+        let snapshotCandidates = ModoreScript.candidates(
+            appId: frontmostBundleID, list: baseCandidates, currentIndex: 0) ?? baseCandidates
+        Log.clipboard("replace -> \(finalReplacement) (alts=\(snapshotCandidates.count))")
+        postClipboardReplacement(
+            finalReplacement,
+            deleteBeforeInsert: deletePickedBeforeInsert ? pickedText.utf16.count : 0)
+        let frontmost = FrontmostApp.describe()
+        let session = ConversionSession(
+            backing: .clipboard(
+                frontmostBundleId: frontmost?.bundleID,
+                frontmostPid: frontmost?.pid ?? 0),
+            originalReading: pickedText,
+            candidates: snapshotCandidates,
+            candidateIndex: 0,
+            timestamp: Date())
+        ConversionSessionStore.set(session)
+        if gCandidatePanelMode == .onConvert {
+            CandidatePanel.shared.show(session: session)
         }
         return
     }
@@ -197,13 +686,11 @@ func doClipboardPickup(_ request: PickupRequest = .init()) {
     let baseReplacement: String
     let baseCandidates: [String]
     if gClassifierEnabled,
-       let segResult = classifierSegmentedConvert(romajiTail, request: request) {
-        baseReplacement = asciiPrefix + segResult.replacement
-        baseCandidates = segResult.candidates.map { asciiPrefix + $0 }
+       let segResult = classifierSegmentedConvert(mozcInput, request: request) {
+        baseReplacement = frozenPrefix + segResult.replacement + convertedSuffix
+        baseCandidates = segResult.candidates.map { frozenPrefix + $0 + convertedSuffix }
     } else {
         // Fallback: heuristic acronym split.
-        let (acronymHead, mozcInput) = splitAcronymHead(romajiTail)
-        let frozenPrefix = asciiPrefix + acronymHead
         guard let result = callBackend(mozcInput, request: request, wantCandidates: true) else {
             Log.clipboard("backend returned no result")
             if didForceSelect {
@@ -211,10 +698,10 @@ func doClipboardPickup(_ request: PickupRequest = .init()) {
             }
             return
         }
-        baseReplacement = frozenPrefix + result.replacement
+        baseReplacement = frozenPrefix + result.replacement + convertedSuffix
         baseCandidates = result.candidates.isEmpty
-            ? [frozenPrefix + result.replacement]
-            : result.candidates.map { frozenPrefix + $0 }
+            ? [frozenPrefix + result.replacement + convertedSuffix]
+            : result.candidates.map { frozenPrefix + $0 + convertedSuffix }
     }
     // Script overrides — no AX span on the clipboard path, so span byte
     // offsets are zeroed. Scripts that care about position should branch
@@ -230,7 +717,9 @@ func doClipboardPickup(_ request: PickupRequest = .init()) {
     // Replace the active selection by injecting the replacement as a Unicode
     // keystroke into the session event tap. No clipboard touch on the replace
     // path → no flicker, no race with the user's clipboard contents.
-    postUnicode(replacement)
+    postClipboardReplacement(
+        replacement,
+        deleteBeforeInsert: deletePickedBeforeInsert ? pickedText.utf16.count : 0)
 
     // Open a clipboard-backed session for follow-up gestures. The frontmost
     // app's pid + bundle ID are the identity check Esc-undo / cycle use to
@@ -280,21 +769,23 @@ func runConversionOnAcquiredText(_ raw: String, request: PickupRequest, appId: S
     Log.pickup("scripted acquire pick: \(pickedText)")
 
     let (asciiPrefix, romajiTail) = splitTrailingASCII(pickedText)
-    guard !romajiTail.isEmpty else {
+    let (romajiCore, romajiSuffix) = splitTrailingASCIIPunctuation(romajiTail)
+    let convertedSuffix = convertTrailingASCIISuffix(romajiSuffix, request: request)
+    guard !romajiCore.isEmpty else {
         Log.pickup("scripted acquire: no trailing romaji in \(pickedText)")
         return
     }
-    let (acronymHead, mozcInput) = splitAcronymHead(romajiTail)
+    let (acronymHead, mozcInput) = splitAcronymHead(romajiCore)
     let frozenPrefix = asciiPrefix + acronymHead
 
     guard let result = callBackend(mozcInput, request: request, wantCandidates: true) else {
         Log.pickup("scripted acquire: backend returned no result")
         return
     }
-    let baseReplacement = frozenPrefix + result.replacement
+    let baseReplacement = frozenPrefix + result.replacement + convertedSuffix
     let baseCandidates: [String] = result.candidates.isEmpty
         ? [baseReplacement]
-        : result.candidates.map { frozenPrefix + $0 }
+        : result.candidates.map { frozenPrefix + $0 + convertedSuffix }
 
     let scriptSpan = mdr_span_t(span_start_byte: 0, span_end_byte: 0,
                                 romaji: nil, romaji_len: 0)
@@ -363,15 +854,6 @@ func doPickup(_ request: PickupRequest = .init()) {
     // Frontmost-app capture once, threaded through script hooks below.
     let appId = FrontmostApp.describe()?.bundleID
 
-    // Imperative acquisition hook. Scripts compose their own selection /
-    // copy / read routine using `modore.host.*` and return the picked
-    // text. The script is expected to leave the focused-app selection
-    // ACTIVE so postUnicode below can overwrite it.
-    // Snapshot AX state *before* on_acquire runs. Compared against the
-    // pre-postUnicode snapshot inside runConversionOnAcquiredText, this
-    // pinpoints whether the script's send_chord sequence ends in a
-    // selection that's larger than the line content.
-    axSelectionSnapshot(label: "pre-acquire")
     if let picked = ModoreScript.acquire(appId: appId) {
         Log.pickup("scripted acquire → \(picked.count) chars\(FrontmostApp.logSuffix())")
         runConversionOnAcquiredText(picked, request: request, appId: appId)
@@ -395,7 +877,7 @@ func doPickup(_ request: PickupRequest = .init()) {
     // documented `AXManualAccessibility` switch on that app's pid and try
     // again. Once-per-pid; cheap no-op for apps that don't support it.
     var focusedField = readFocusedField()
-    if focusedField == nil {
+    if focusedField == nil, frontmostAppLooksElectron() {
         enableElectronAXIfNeeded()
         focusedField = readFocusedField()
     }
@@ -432,15 +914,93 @@ func doPickup(_ request: PickupRequest = .init()) {
         // the bridge feeds Mozc UTF-8 bytes as Latin-1 codepoints and
         // mojibake comes back.
         let (asciiPrefix, romajiTail) = splitTrailingASCII(spanText)
-        guard !romajiTail.isEmpty else {
-            Log.pickup("nothing to convert (no trailing romaji in \(spanText))")
+        let (romajiCore, romajiSuffix) = splitTrailingASCIIPunctuation(romajiTail)
+        let convertedSuffix = convertTrailingASCIISuffix(romajiSuffix, request: request)
+        guard !romajiCore.isEmpty else {
+            let replacement = asciiPrefix + convertedSuffix
+            guard replacement != spanText else {
+                Log.pickup("nothing to convert (no trailing romaji in \(spanText))")
+                return
+            }
+            Log.pickup("punctuation-only pickup -> \(replacement)")
+            let scriptSpanStart = field.value.utf8ByteOffset(forUTF16Offset: start)
+            let scriptSpanEnd   = field.value.utf8ByteOffset(forUTF16Offset: end)
+            let scriptSpan = mdr_span_t(
+                span_start_byte: size_t(scriptSpanStart),
+                span_end_byte: size_t(scriptSpanEnd),
+                romaji: nil, romaji_len: 0)
+            let baseCandidates = [replacement]
+            let finalReplacement = ModoreScript.replacement(
+                appId: appId, span: scriptSpan, candidates: baseCandidates) ?? replacement
+            let snapshotCandidates = ModoreScript.candidates(
+                appId: appId, list: baseCandidates, currentIndex: 0) ?? baseCandidates
+            if isChromiumOmnibox(field: field, appId: appId) {
+                Log.pickup("Chromium omnibox: using selected Unicode replace for typed-input sync")
+                if !postUnicodeOverAXSelection(
+                    in: field.element,
+                    start: start,
+                    end: end,
+                    replacement: finalReplacement) {
+                    keystrokeReplaceSpan(
+                        caret: (start: field.selStart, end: field.selEnd),
+                        spanEnd: end,
+                        spanLen: end - start,
+                        replacement: finalReplacement)
+                }
+                let frontmost = FrontmostApp.describe()
+                let session = ConversionSession(
+                    backing: .clipboard(
+                        frontmostBundleId: frontmost?.bundleID,
+                        frontmostPid: frontmost?.pid ?? 0),
+                    originalReading: spanText,
+                    candidates: snapshotCandidates,
+                    candidateIndex: 0,
+                    timestamp: Date())
+                ConversionSessionStore.set(session)
+                if gCandidatePanelMode == .onConvert {
+                    CandidatePanel.shared.show(session: session)
+                }
+                return
+            }
+            if replaceRange(in: field.element, start: start, end: end, replacement: finalReplacement) {
+                let session = ConversionSession(
+                    backing: .ax(element: field.element, spanStart: start),
+                    originalReading: spanText,
+                    candidates: snapshotCandidates,
+                    candidateIndex: 0,
+                    timestamp: Date())
+                ConversionSessionStore.set(session)
+                if gCandidatePanelMode == .onConvert {
+                    CandidatePanel.shared.show(session: session)
+                }
+                return
+            }
+            Log.pickup("AX write rejected after punctuation-only pickup; using backspace-retype for [\(start)..\(end)] \(spanText)\(FrontmostApp.logSuffix())")
+            keystrokeReplaceSpan(
+                caret: (start: start, end: end),
+                spanEnd: end,
+                spanLen: end - start,
+                replacement: finalReplacement)
+            let frontmost = FrontmostApp.describe()
+            let session = ConversionSession(
+                backing: .clipboard(
+                    frontmostBundleId: frontmost?.bundleID,
+                    frontmostPid: frontmost?.pid ?? 0),
+                originalReading: spanText,
+                candidates: snapshotCandidates,
+                candidateIndex: 0,
+                timestamp: Date())
+            ConversionSessionStore.set(session)
+            if gCandidatePanelMode == .onConvert {
+                CandidatePanel.shared.show(session: session)
+            }
             return
         }
 
         if gClassifierEnabled,
-           let segResult = classifierSegmentedConvert(romajiTail, request: request) {
-            let baseReplacement = asciiPrefix + segResult.replacement
-            let baseCandidates: [String] = segResult.candidates.map { asciiPrefix + $0 }
+           let segResult = classifierSegmentedConvert(romajiCore, request: request) {
+            let baseReplacement = asciiPrefix + segResult.replacement + convertedSuffix
+            let baseCandidates: [String] = segResult.candidates.map { asciiPrefix + $0 + convertedSuffix }
 
             let scriptSpanStart = field.value.utf8ByteOffset(forUTF16Offset: start)
             let scriptSpanEnd   = field.value.utf8ByteOffset(forUTF16Offset: end)
@@ -454,6 +1014,34 @@ func doPickup(_ request: PickupRequest = .init()) {
                 appId: appId, list: baseCandidates, currentIndex: 0) ?? baseCandidates
             Log.pickup("classifier replace -> \(replacement) (alts=\(snapshotCandidates.count))")
 
+            if isChromiumOmnibox(field: field, appId: appId) {
+                Log.pickup("Chromium omnibox: using selected Unicode replace for typed-input sync")
+                if !postUnicodeOverAXSelection(
+                    in: field.element,
+                    start: start,
+                    end: end,
+                    replacement: replacement) {
+                    keystrokeReplaceSpan(
+                        caret: (start: field.selStart, end: field.selEnd),
+                        spanEnd: end,
+                        spanLen: end - start,
+                        replacement: replacement)
+                }
+                let frontmost = FrontmostApp.describe()
+                let session = ConversionSession(
+                    backing: .clipboard(
+                        frontmostBundleId: frontmost?.bundleID,
+                        frontmostPid: frontmost?.pid ?? 0),
+                    originalReading: spanText,
+                    candidates: snapshotCandidates,
+                    candidateIndex: 0,
+                    timestamp: Date())
+                ConversionSessionStore.set(session)
+                if gCandidatePanelMode == .onConvert {
+                    CandidatePanel.shared.show(session: session)
+                }
+                return
+            }
             if replaceRange(in: field.element, start: start, end: end, replacement: replacement) {
                 let session = ConversionSession(
                     backing: .ax(element: field.element, spanStart: start),
@@ -495,7 +1083,7 @@ func doPickup(_ request: PickupRequest = .init()) {
 
         // Fallback: heuristic split. Carve off any leading acronym/code
         // (`R&D`, `API`, `JSON`) so Mozc only sees actual romaji.
-        let (acronymHead, mozcInput) = splitAcronymHead(romajiTail)
+        let (acronymHead, mozcInput) = splitAcronymHead(romajiCore)
         let frozenPrefix = asciiPrefix + acronymHead
 
         // If mozcInput still starts with uppercase, the acronym split
@@ -513,10 +1101,10 @@ func doPickup(_ request: PickupRequest = .init()) {
             Log.pickup("backend returned no result")
             return
         }
-        let baseReplacement = frozenPrefix + result.replacement
+        let baseReplacement = frozenPrefix + result.replacement + convertedSuffix
         let baseCandidates: [String] = result.candidates.isEmpty
             ? [baseReplacement]
-            : result.candidates.map { frozenPrefix + $0 }
+            : result.candidates.map { frozenPrefix + $0 + convertedSuffix }
 
         // Script overrides for replacement text and candidate list. Both
         // are independently optional. `replacement` is what gets written
@@ -533,6 +1121,34 @@ func doPickup(_ request: PickupRequest = .init()) {
             appId: appId, list: baseCandidates, currentIndex: 0) ?? baseCandidates
         Log.pickup("replace -> \(replacement) (alts=\(snapshotCandidates.count))")
 
+        if isChromiumOmnibox(field: field, appId: appId) {
+            Log.pickup("Chromium omnibox: using selected Unicode replace for typed-input sync")
+            if !postUnicodeOverAXSelection(
+                in: field.element,
+                start: start,
+                end: end,
+                replacement: replacement) {
+                keystrokeReplaceSpan(
+                    caret: (start: field.selStart, end: field.selEnd),
+                    spanEnd: end,
+                    spanLen: end - start,
+                    replacement: replacement)
+            }
+            let frontmost = FrontmostApp.describe()
+            let session = ConversionSession(
+                backing: .clipboard(
+                    frontmostBundleId: frontmost?.bundleID,
+                    frontmostPid: frontmost?.pid ?? 0),
+                originalReading: spanText,
+                candidates: snapshotCandidates,
+                candidateIndex: 0,
+                timestamp: Date())
+            ConversionSessionStore.set(session)
+            if gCandidatePanelMode == .onConvert {
+                CandidatePanel.shared.show(session: session)
+            }
+            return
+        }
         if replaceRange(in: field.element, start: start, end: end, replacement: replacement) {
             // Open a session so Esc-undo and the cycle gesture have
             // something to act on. Candidates already include the

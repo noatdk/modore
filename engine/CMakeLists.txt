@@ -82,6 +82,7 @@ add_library(modore_script SHARED
     src/marshal.c
     src/reload.c
     src/classifier.c
+    src/pickup_core.c
 )
 target_include_directories(modore_script
     PUBLIC  ${CMAKE_CURRENT_SOURCE_DIR}/include

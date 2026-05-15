@@ -15,3 +15,8 @@ _mdr_cls_load_dict
 _mdr_cls_free
 _mdr_cls_segment
 _mdr_cls_classify
+_mdr_text_word_bounds
+_mdr_text_split_trailing_ascii
+_mdr_text_split_trailing_ascii_punctuation
+_mdr_text_split_acronym_head
+_mdr_text_normalize_pickup_suffix

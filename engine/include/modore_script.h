@@ -74,6 +74,11 @@ typedef struct {
     size_t      romaji_len;
 } mdr_span_t;
 
+typedef struct {
+    size_t start_byte;
+    size_t end_byte;
+} mdr_byte_bounds_t;
+
 /* ----- Routing --------------------------------------------------------- */
 
 typedef enum {
@@ -228,6 +233,30 @@ MDR_EXPORT int mdr_set_host_ops(mdr_engine_t*, const mdr_host_ops_t* ops, void* 
 MDR_EXPORT int mdr_acquire(
     mdr_engine_t*,
     const char* app_id,
+    char* out_buf, size_t out_cap, size_t* out_len);
+
+/* ----- Portable pickup core --------------------------------------------
+ *
+ * Stateless UTF-8 helpers used by native hosts and Lua. Hosts keep platform
+ * IO; these functions own shared baseline text policy so macOS/Linux/Windows
+ * and scripts do not drift.
+ */
+
+MDR_EXPORT int mdr_text_word_bounds(
+    const char* text, size_t len, size_t caret_byte,
+    mdr_byte_bounds_t* out_bounds);
+
+MDR_EXPORT int mdr_text_split_trailing_ascii(
+    const char* text, size_t len, size_t* out_split_byte);
+
+MDR_EXPORT int mdr_text_split_trailing_ascii_punctuation(
+    const char* text, size_t len, size_t* out_core_end_byte);
+
+MDR_EXPORT int mdr_text_split_acronym_head(
+    const char* text, size_t len, size_t* out_head_end_byte);
+
+MDR_EXPORT int mdr_text_normalize_pickup_suffix(
+    const char* suffix, size_t suffix_len,
     char* out_buf, size_t out_cap, size_t* out_len);
 
 #ifdef __cplusplus

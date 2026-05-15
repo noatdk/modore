@@ -1,15 +1,57 @@
 // @testable
 //
-// Pure span-manipulation helpers used by the pickup pipeline. Kept here
+// Span-manipulation helpers used by the pickup pipeline. Kept here
 // (separate from Pickup.swift) so the test driver in test/macos/ can compile
 // them without dragging Cocoa / ApplicationServices in.
 //
 // The `@testable` marker above is the contract with native/macos/Makefile's
 // `test` target: any *.swift file that opens with that comment gets pulled
-// into the test binary alongside every *.swift under test/macos/. No need
-// to edit the Makefile when adding a new pure helper.
+// into the test binary alongside every *.swift under test/macos/. The test
+// target links the scripting engine because these helpers delegate portable
+// text policy to C.
 
 import Foundation
+
+// MARK: - UTF-8 ↔ UTF-16 mapping
+
+private let kChromiumClipboardProbeBundleIDs: Set<String> = [
+    "com.google.Chrome",
+    "com.google.Chrome.canary",
+    "org.chromium.Chromium",
+]
+
+extension String {
+    /// UTF-8 byte offset corresponding to a UTF-16 code-unit offset.
+    /// Out-of-range inputs clamp to bounds. O(n) — the only callers run
+    /// on the pickup pipeline, not per keystroke.
+    func utf8ByteOffset(forUTF16Offset u: Int) -> Int {
+        if u <= 0 { return 0 }
+        let limit = utf16.count
+        let safe = min(u, limit)
+        let idx = String.Index(utf16Offset: safe, in: self)
+        let utf8Anchor = idx.samePosition(in: utf8) ?? utf8.endIndex
+        return utf8.distance(from: utf8.startIndex, to: utf8Anchor)
+    }
+
+    /// UTF-16 code-unit offset corresponding to a UTF-8 byte offset.
+    /// Returns -1 if the byte offset lands in the middle of a multi-byte
+    /// sequence (no valid UTF-16 anchor). Caller treats -1 as "ignore".
+    func utf16Offset(forUTF8Byte b: Int) -> Int {
+        if b <= 0 { return 0 }
+        let limit = utf8.count
+        let safe = min(b, limit)
+        let utf8Idx = utf8.index(utf8.startIndex, offsetBy: safe)
+        guard let mapped = utf8Idx.samePosition(in: utf16) else { return -1 }
+        return utf16.distance(from: utf16.startIndex, to: mapped)
+    }
+}
+
+private func utf8Range(_ s: String, start: Int, end: Int) -> String {
+    guard start >= 0, end >= start else { return "" }
+    let bytes = Array(s.utf8)
+    guard end <= bytes.count else { return "" }
+    return String(decoding: bytes[start..<end], as: UTF8.self)
+}
 
 /// Walk outward from `caret` over `utf16` to find the run of "word" code
 /// units that contains it. Breaks at whitespace (space, tab, CR, LF) and at
@@ -22,33 +64,19 @@ import Foundation
 /// romaji→kana flow today; revisit when boundary cycling against Mozc's
 /// segment output lands, since that will subsume this logic.
 func wordBounds(_ utf16: [UInt16], caret: Int) -> (Int, Int) {
-    if utf16.isEmpty { return (0, 0) }
-    let c = min(max(caret, 0), utf16.count)
-    let isWS: (UInt16) -> Bool = { ch in
-        ch == 0x20 || ch == 0x09 || ch == 0x0A || ch == 0x0D
+    guard !utf16.isEmpty else { return (0, 0) }
+    let text = String(utf16CodeUnits: utf16, count: utf16.count)
+    let caretUTF16 = min(max(caret, 0), utf16.count)
+    let caretByte = text.utf8ByteOffset(forUTF16Offset: caretUTF16)
+    var bounds = mdr_byte_bounds_t(start_byte: 0, end_byte: 0)
+    let byteCount = text.utf8.count
+    let rc: Int32 = text.withCString { ptr in
+        mdr_text_word_bounds(ptr, byteCount, caretByte, &bounds)
     }
-    let isASCII: (UInt16) -> Bool = { $0 < 0x80 }
-    let scriptBreak: (UInt16, UInt16) -> Bool = { a, b in
-        isASCII(a) != isASCII(b)
-    }
-    var start = c
-    while start > 0 && !isWS(utf16[start - 1]) {
-        if start < utf16.count, scriptBreak(utf16[start - 1], utf16[start]) {
-            break
-        }
-        start -= 1
-    }
-    var end = c
-    while end < utf16.count && !isWS(utf16[end]) {
-        if end > 0, scriptBreak(utf16[end - 1], utf16[end]) {
-            break
-        }
-        end += 1
-    }
-    if start == end {
-        if c < utf16.count { return (c, c + 1) }
-        if c > 0 { return (c - 1, c) }
-    }
+    guard rc == 0 else { return (0, 0) }
+    let start = text.utf16Offset(forUTF8Byte: Int(bounds.start_byte))
+    let end = text.utf16Offset(forUTF8Byte: Int(bounds.end_byte))
+    guard start >= 0, end >= start else { return (0, 0) }
     return (start, end)
 }
 
@@ -60,18 +88,90 @@ func wordBounds(_ utf16: [UInt16], caret: Int) -> (Int, Int) {
 /// bridge sends UTF-8 bytes individually as `key_code`, so non-ASCII inputs
 /// come back as Latin-1 mojibake.
 func splitTrailingASCII(_ s: String) -> (prefix: String, tail: String) {
-    let utf16 = Array(s.utf16)
-    var split = utf16.count
-    while split > 0 && utf16[split - 1] < 0x80 {
-        split -= 1
+    let byteCount = s.utf8.count
+    var split: size_t = 0
+    let rc: Int32 = s.withCString { ptr in
+        mdr_text_split_trailing_ascii(ptr, byteCount, &split)
     }
-    let prefix = split > 0
-        ? String(utf16CodeUnits: Array(utf16[0..<split]), count: split)
-        : ""
-    let tail = split < utf16.count
-        ? String(utf16CodeUnits: Array(utf16[split..<utf16.count]), count: utf16.count - split)
-        : ""
-    return (prefix, tail)
+    guard rc == 0 else { return (s, "") }
+    return (
+        utf8Range(s, start: 0, end: Int(split)),
+        utf8Range(s, start: Int(split), end: byteCount)
+    )
+}
+
+/// Split off a trailing ASCII punctuation run from an ASCII string while
+/// keeping the core intact. Used after `splitTrailingASCII` so the pickup
+/// pipeline can convert the core and suffix separately.
+func splitTrailingASCIIPunctuation(_ ascii: String) -> (core: String, suffix: String) {
+    let byteCount = ascii.utf8.count
+    var split: size_t = 0
+    let rc: Int32 = ascii.withCString { ptr in
+        mdr_text_split_trailing_ascii_punctuation(ptr, byteCount, &split)
+    }
+    guard rc == 0 else { return (ascii, "") }
+    return (
+        utf8Range(ascii, start: 0, end: Int(split)),
+        utf8Range(ascii, start: Int(split), end: byteCount)
+    )
+}
+
+/// True when the selection is a plain lowercase ASCII word.
+///
+/// Shared between the clipboard fallback's expansion heuristics and the
+/// tests so the Chrome-specific probe behavior stays explicit.
+func isLowerASCIIWord(_ s: String) -> Bool {
+    !s.isEmpty && s.utf8.allSatisfy { $0 >= 0x61 && $0 <= 0x7A }
+}
+
+/// True when the selection is a lowercase ASCII token that already
+/// contains a hyphen. Kept separate from `isLowerASCIIWord` because the
+/// clipboard fallback uses the two cases slightly differently.
+func isLowerASCIIHyphenRun(_ s: String) -> Bool {
+    !s.isEmpty && s.utf8.allSatisfy {
+        ($0 >= 0x61 && $0 <= 0x7A) || $0 == 0x2D
+    }
+}
+
+/// Decide whether the clipboard fallback should spend extra effort probing
+/// leftward expansion for a hyphenated romaji token.
+///
+/// Chromium text fields split on hyphens more aggressively than the other
+/// fallback targets we care about, so a plain lowercase word like
+/// `thingu` can actually be the tail of `mi-thingu`. In those apps we
+/// allow one extra probe even when the initial pick does not already
+/// contain a hyphen.
+func shouldProbeForcedHyphenatedSelectionExpansion(
+    original: String,
+    appBundleID: String?
+) -> Bool {
+    guard isLowerASCIIWord(original) || isLowerASCIIHyphenRun(original) else {
+        return false
+    }
+    if original.utf8.contains(0x2D) || original.utf16.count <= 3 {
+        return true
+    }
+    guard let appBundleID else { return false }
+    return kChromiumClipboardProbeBundleIDs.contains(appBundleID)
+}
+
+/// True for the ASCII punctuation that the pickup pipeline can normalize
+/// without a romaji core. Used to decide whether the clipboard fallback
+/// should expand a one-character punctuation selection leftward.
+func isConvertiblePunctuationOnly(_ s: String) -> Bool {
+    !s.isEmpty && s.utf8.allSatisfy { $0 == 0x2E || $0 == 0x2C || $0 == 0x2D }
+}
+
+/// True when a forced clipboard selection has grown from punctuation-only
+/// (`.`) into a useful romaji+punctuation token (`koe.`). This protects
+/// Chrome HTML inputs, where Shift+Opt+Left often selects only the final
+/// punctuation for `koe.[trigger]`.
+func hasLowerASCIICoreBeforePunctuation(_ s: String) -> Bool {
+    let (prefix, tail) = splitTrailingASCII(s)
+    let ascii = prefix.isEmpty ? tail : tail
+    let (core, suffix) = splitTrailingASCIIPunctuation(ascii)
+    guard !core.isEmpty, !suffix.isEmpty else { return false }
+    return core.utf8.contains { $0 >= 0x61 && $0 <= 0x7A }
 }
 
 /// Split off a leading acronym/code head from an ASCII string so Mozc only
@@ -90,33 +190,16 @@ func splitTrailingASCII(_ s: String) -> (prefix: String, tail: String) {
 /// romaji. Phase 2 will add a user dictionary at
 /// `~/.config/modore/non-japanese.txt` for tokens this heuristic misses.
 func splitAcronymHead(_ ascii: String) -> (head: String, tail: String) {
-    let chars = Array(ascii.unicodeScalars)
-    guard chars.count >= 2 else { return ("", ascii) }
-    let isUpper: (Unicode.Scalar) -> Bool = { $0.value >= 0x41 && $0.value <= 0x5A }
-    let isLower: (Unicode.Scalar) -> Bool = { $0.value >= 0x61 && $0.value <= 0x7A }
-    let isDigit: (Unicode.Scalar) -> Bool = { $0.value >= 0x30 && $0.value <= 0x39 }
-    let acronymSymbols: Set<Unicode.Scalar> = ["&", "-", ".", "_", "+", "/", ":", "@", "#"]
-    let isAcronymSym: (Unicode.Scalar) -> Bool = { acronymSymbols.contains($0) }
-
-    guard isUpper(chars[0]) else { return ("", ascii) }
-    var i = 1
-    var sawNonLetter = false
-    while i < chars.count {
-        let c = chars[i]
-        if isUpper(c) {
-            i += 1
-        } else if isDigit(c) || isAcronymSym(c) {
-            sawNonLetter = true
-            i += 1
-        } else {
-            break
-        }
+    let byteCount = ascii.utf8.count
+    var split: size_t = 0
+    let rc: Int32 = ascii.withCString { ptr in
+        mdr_text_split_acronym_head(ptr, byteCount, &split)
     }
-    guard i >= 2, i < chars.count, isLower(chars[i]) else { return ("", ascii) }
-    guard i >= 3 || sawNonLetter else { return ("", ascii) }
-    let head = String(String.UnicodeScalarView(chars[0..<i]))
-    let tail = String(String.UnicodeScalarView(chars[i..<chars.count]))
-    return (head, tail)
+    guard rc == 0 else { return ("", ascii) }
+    return (
+        utf8Range(ascii, start: 0, end: Int(split)),
+        utf8Range(ascii, start: Int(split), end: byteCount)
+    )
 }
 
 /// UTF-16 substring helper, matching the AX/JS index domain used throughout
@@ -125,89 +208,4 @@ func sliceUTF16(_ text: String, start: Int, end: Int) -> String? {
     let utf16 = Array(text.utf16)
     guard start >= 0, end <= utf16.count, start < end else { return nil }
     return String(utf16CodeUnits: Array(utf16[start..<end]), count: end - start)
-}
-
-/// Use the ML classifier to split an ASCII string into romaji and ASCII
-/// segments, convert each romaji segment through Mozc independently, and
-/// reassemble. Falls back to nil when the classifier is not loaded or the
-/// string is not mixed (single-type → let the caller use the normal path).
-///
-/// When mixed, returns `(replacement, candidates)` where candidates are
-/// generated for the primary (longest) romaji segment with other segments
-/// frozen.
-func classifierSegmentedConvert(
-    _ ascii: String,
-    request: PickupRequest
-) -> (replacement: String, candidates: [String])? {
-    guard let segments = Classifier.segment(ascii),
-          Classifier.isMixed(segments) else { return nil }
-
-    let utf8 = Array(ascii.utf8)
-
-    // Find the primary romaji segment (longest) for candidate generation
-    var primaryIdx = -1
-    var primaryLen = 0
-    for (i, seg) in segments.enumerated() where seg.isRomaji {
-        let len = seg.end - seg.start
-        if len > primaryLen {
-            primaryLen = len
-            primaryIdx = i
-        }
-    }
-
-    // Convert each segment
-    var parts: [String] = []
-    var primaryResult: ConvertResult? = nil
-
-    for (i, seg) in segments.enumerated() {
-        let startIdx = ascii.utf8.index(ascii.utf8.startIndex, offsetBy: seg.start)
-        let endIdx = ascii.utf8.index(ascii.utf8.startIndex, offsetBy: seg.end)
-        let chunk = String(ascii.utf8[startIdx..<endIdx])!
-
-        if seg.isRomaji {
-            let wantCands = (i == primaryIdx)
-            if let result = callBackend(chunk, request: request,
-                                        wantCandidates: wantCands) {
-                parts.append(result.replacement)
-                if wantCands { primaryResult = result }
-            } else {
-                parts.append(chunk)
-            }
-        } else {
-            parts.append(chunk)
-        }
-    }
-
-    let replacement = parts.joined()
-
-    // Build candidate list: for each candidate of the primary segment,
-    // splice it back with the other (fixed) parts.
-    var candidates: [String] = [replacement]
-    if let pr = primaryResult, !pr.candidates.isEmpty {
-        candidates = pr.candidates.map { cand in
-            var rebuilt: [String] = []
-            for (i, seg) in segments.enumerated() {
-                if i == primaryIdx {
-                    rebuilt.append(cand)
-                } else {
-                    let startIdx = ascii.utf8.index(ascii.utf8.startIndex, offsetBy: seg.start)
-                    let endIdx = ascii.utf8.index(ascii.utf8.startIndex, offsetBy: seg.end)
-                    let chunk = String(ascii.utf8[startIdx..<endIdx])!
-                    if seg.isRomaji {
-                        if let r = callBackend(chunk, request: request) {
-                            rebuilt.append(r.replacement)
-                        } else {
-                            rebuilt.append(chunk)
-                        }
-                    } else {
-                        rebuilt.append(chunk)
-                    }
-                }
-            }
-            return rebuilt.joined()
-        }
-    }
-
-    Log.pickup("classifier segmented: \(segments.count) segments → \(replacement)")
-    return (replacement, candidates)
 }

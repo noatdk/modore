@@ -46,7 +46,10 @@ Pure text helpers mirror the host baseline in UTF-8 byte offsets:
 
 - `modore.text.word_bounds(text, caret_byte)` — `{ start_byte, end_byte }`
 - `modore.text.split_trailing_ascii(s)` — `prefix, tail`
+- `modore.text.split_trailing_ascii_punctuation(s)` — `core, suffix`
 - `modore.text.split_acronym_head(s)` — `head, tail`
+- `modore.text.normalize_pickup_suffix(s)` — maps terminal `.` / `,` / `-`
+  the same way the native pickup path does
 
 `modore.default.{pickup,replacement,route}` calls the host baseline when
 the host has registered it. This is the preferred way to wrap default
