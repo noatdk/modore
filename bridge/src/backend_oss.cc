@@ -132,6 +132,22 @@ class OssBackend final : public Backend {
                               unsigned int flags,
                               std::string *error) override;
 
+  int ConvertWithCandidateDetailsEx(
+      const char *romaji,
+      size_t romaji_len,
+      char *commit_buf,
+      size_t commit_cap,
+      size_t *commit_len,
+      mozc_bridge_candidate_record_t *cand_records,
+      size_t cand_records_cap,
+      char *cand_strings_buf,
+      size_t cand_strings_cap,
+      size_t *cand_strings_len,
+      int max_candidates,
+      int *out_candidate_count,
+      unsigned int flags,
+      std::string *error) override;
+
  private:
   std::unique_ptr<MozcDirectClient> client_;
 };
@@ -212,6 +228,28 @@ int OssBackend::ConvertWithCandidatesEx(const char *romaji,
   return RunConvertFlow(&driver, romaji, romaji_len, commit_buf, commit_cap,
                         commit_len, cands_buf, cands_cap, cands_total_len,
                         max_candidates, out_candidate_count, flags, error);
+}
+
+int OssBackend::ConvertWithCandidateDetailsEx(
+    const char *romaji,
+    size_t romaji_len,
+    char *commit_buf,
+    size_t commit_cap,
+    size_t *commit_len,
+    mozc_bridge_candidate_record_t *cand_records,
+    size_t cand_records_cap,
+    char *cand_strings_buf,
+    size_t cand_strings_cap,
+    size_t *cand_strings_len,
+    int max_candidates,
+    int *out_candidate_count,
+    unsigned int flags,
+    std::string *error) {
+  OssSessionDriver driver(client_.get());
+  return RunConvertFlowWithDetails(
+      &driver, romaji, romaji_len, commit_buf, commit_cap, commit_len,
+      cand_records, cand_records_cap, cand_strings_buf, cand_strings_cap,
+      cand_strings_len, max_candidates, out_candidate_count, flags, error);
 }
 
 std::unique_ptr<Backend> CreateBackend(const char *requested_backend,

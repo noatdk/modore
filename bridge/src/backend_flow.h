@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 
+#include "backend_candidates.h"
 #include "protocol/commands.pb.h"
 
 namespace modore::mozc_bridge {
@@ -39,14 +40,31 @@ int RunConvertFlow(SessionDriver *driver,
                    unsigned int flags,
                    std::string *error);
 
-std::vector<std::string> CaptureFocusedSegmentCandidates(
+std::vector<CandidateEntry> CaptureFocusedSegmentCandidates(
     SessionDriver *driver,
     mozc::commands::Output *out,
     std::string *error);
 
-std::vector<std::string> RebuildFullSpanCandidates(
+std::vector<CandidateEntry> RebuildFullSpanCandidates(
     const mozc::commands::Output &base_output,
-    const std::vector<std::string> &focused_segment_candidates);
+    const std::vector<CandidateEntry> &focused_segment_candidates);
+
+int RunConvertFlowWithDetails(
+    SessionDriver *driver,
+    const char *romaji,
+    size_t romaji_len,
+    char *commit_buf,
+    size_t commit_cap,
+    size_t *commit_len,
+    mozc_bridge_candidate_record_t *cand_records,
+    size_t cand_records_cap,
+    char *cand_strings_buf,
+    size_t cand_strings_cap,
+    size_t *cand_strings_len,
+    int max_candidates,
+    int *out_candidate_count,
+    unsigned int flags,
+    std::string *error);
 
 }  // namespace modore::mozc_bridge
 

@@ -64,7 +64,7 @@ func cycleNext(verbose: Bool) -> Bool {
     }
 
     let from = snap.currentText
-    let to = (nextIndex < snap.candidates.count) ? snap.candidates[nextIndex] : from
+    let to = (nextIndex < snap.candidates.count) ? snap.candidates[nextIndex].value : from
 
     // Session-in-scope failures (focus changed, span shifted, frontmost
     // app changed) are always logged — see comment above the

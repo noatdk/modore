@@ -5,6 +5,8 @@
 #include <memory>
 #include <string>
 
+#include "mozc_bridge.h"
+
 namespace modore::mozc_bridge {
 
 // Internal backend contract behind the flat C ABI in mozc_bridge.h.
@@ -25,6 +27,22 @@ class Backend {
                                       int *out_candidate_count,
                                       unsigned int flags,
                                       std::string *error) = 0;
+
+  virtual int ConvertWithCandidateDetailsEx(
+      const char *romaji,
+      size_t romaji_len,
+      char *commit_buf,
+      size_t commit_cap,
+      size_t *commit_len,
+      mozc_bridge_candidate_record_t *cand_records,
+      size_t cand_records_cap,
+      char *cand_strings_buf,
+      size_t cand_strings_cap,
+      size_t *cand_strings_len,
+      int max_candidates,
+      int *out_candidate_count,
+      unsigned int flags,
+      std::string *error) = 0;
 };
 
 // Creates the current default backend for this build/platform.

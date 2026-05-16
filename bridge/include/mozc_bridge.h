@@ -57,6 +57,38 @@ int mozc_bridge_convert(const char *romaji,
 // loanwords where Mozc's top-1 is a forced kanji ("シドッチ" vs "史奉行").
 #define MOZC_CONVERT_FLAG_KATAKANA 0x1u
 
+// Logical grouping for candidate presentation. This is a bridge-level hint
+// derived from Mozc's candidate window category plus lightweight script
+// classification; frontends may ignore it, but it is stable enough to drive
+// section labels and muted transliteration rows.
+typedef enum mozc_bridge_candidate_group {
+  MOZC_CANDIDATE_GROUP_UNKNOWN = 0,
+  MOZC_CANDIDATE_GROUP_CONVERSION = 1,
+  MOZC_CANDIDATE_GROUP_TRANSLITERATION = 2,
+  MOZC_CANDIDATE_GROUP_ENGLISH = 3,
+  MOZC_CANDIDATE_GROUP_HIRAGANA = 4,
+  MOZC_CANDIDATE_GROUP_KATAKANA = 5,
+  MOZC_CANDIDATE_GROUP_INPUT = 6
+} mozc_bridge_candidate_group_t;
+
+// Metadata for one candidate entry. String fields are stored in a shared
+// UTF-8 blob returned by mozc_bridge_convert_with_candidate_details_ex();
+// each offset/length pair points into that blob. Missing strings use
+// length=0 and offset=0.
+typedef struct mozc_bridge_candidate_record {
+  size_t value_offset;
+  size_t value_len;
+  size_t description_offset;
+  size_t description_len;
+  size_t prefix_offset;
+  size_t prefix_len;
+  size_t suffix_offset;
+  size_t suffix_len;
+  int id;
+  unsigned int window_category;
+  unsigned int group;
+} mozc_bridge_candidate_record_t;
+
 // Convert a romaji span with explicit conversion-shape flags.
 //
 // Semantics, parameters, and return contract are identical to
@@ -107,6 +139,36 @@ int mozc_bridge_convert_with_candidates_ex(const char *romaji,
                                            int max_candidates,
                                            int *out_candidate_count,
                                            unsigned int flags);
+
+// Convert and return structured candidate metadata. Same conversion behavior
+// as mozc_bridge_convert_with_candidates_ex, but candidate strings and their
+// annotations are serialized into `cand_strings_buf` and described by
+// `cand_records`.
+//
+// cand_records:      caller-provided array of candidate records.
+// cand_records_cap:  number of records available in cand_records.
+// cand_strings_buf:  caller-provided UTF-8 blob backing all string fields in
+//                    the records.
+// cand_strings_cap:  capacity of cand_strings_buf in bytes.
+// cand_strings_len:  on success, bytes written into cand_strings_buf.
+//
+// Truncation is silent: if either the record array or string blob fills,
+// remaining candidates are skipped. `max_candidates <= 0` means "no explicit
+// cap beyond the provided buffers."
+int mozc_bridge_convert_with_candidate_details_ex(
+    const char *romaji,
+    size_t romaji_len,
+    char *commit_buf,
+    size_t commit_cap,
+    size_t *commit_len,
+    mozc_bridge_candidate_record_t *cand_records,
+    size_t cand_records_cap,
+    char *cand_strings_buf,
+    size_t cand_strings_cap,
+    size_t *cand_strings_len,
+    int max_candidates,
+    int *out_candidate_count,
+    unsigned int flags);
 
 // Releases the engine. Optional — process exit is fine too.
 void mozc_bridge_shutdown(void);

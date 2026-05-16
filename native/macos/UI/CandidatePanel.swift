@@ -34,6 +34,11 @@ final class CandidatePanel {
     private var panel: NSPanel?
     private var stackView: NSStackView?
     private var rowViews: [RowView] = []
+    /// Stable frame for one conversion's candidate list. Cleared on hide so a
+    /// fresh convert can re-anchor; held across cycle presses so selection
+    /// styling (semibold, highlight) never changes panel geometry.
+    private var lockedLayoutKey: String?
+    private var lockedPanelSize: NSSize?
     /// Pending auto-hide. Reset on every `show()` so a cycle chain keeps
     /// the panel alive. Cancelled by explicit `hide()` calls (Esc-undo,
     /// session clear). nil when no auto-hide is scheduled.
@@ -300,15 +305,29 @@ final class CandidatePanel {
 
     private func showOnMain(snapshot: PanelSnapshot, anchor: Anchor) {
         let panel = ensurePanel()
+        guard stackView != nil else { return }
         rebuildRows(snapshot: snapshot)
 
-        // Size to fit content, then position relative to the anchor.
-        panel.layoutIfNeeded()
-        let contentSize = stackView?.fittingSize ?? NSSize(width: 180, height: 24)
-        let panelSize = NSSize(
-            width: max(160, contentSize.width + 16),
-            height: contentSize.height + 12)
+        let layoutKey = snapshot.layoutKey
+        let contentWidth = measureStableContentWidth(snapshot: snapshot)
 
+        panel.layoutIfNeeded()
+        let fitted = stackView?.fittingSize ?? NSSize(width: contentWidth, height: 24)
+        // Width from pre-measured max row (not fittingSize) so cycling selection
+        // does not shrink/grow the panel; height still comes from the stack.
+        let computedSize = NSSize(
+            width: max(PanelMetrics.minWidth, contentWidth + PanelMetrics.panelPadH),
+            height: fitted.height + PanelMetrics.panelPadV)
+
+        let panelSize: NSSize
+        if layoutKey == lockedLayoutKey,
+           let locked = lockedPanelSize {
+            panelSize = locked
+        } else {
+            panelSize = computedSize
+            lockedLayoutKey = layoutKey
+            lockedPanelSize = panelSize
+        }
         let origin = panelOrigin(for: anchor, size: panelSize)
         panel.setFrame(NSRect(origin: origin, size: panelSize), display: false)
         panel.orderFront(nil)
@@ -319,7 +338,38 @@ final class CandidatePanel {
     private func hideOnMain() {
         autoHideWork?.cancel()
         autoHideWork = nil
+        lockedLayoutKey = nil
+        lockedPanelSize = nil
         panel?.orderOut(nil)
+    }
+
+    /// Width from the widest row (semibold value + detail), independent of
+    /// which candidate is selected — avoids resize when cycling to FULLCAP etc.
+    private func measureStableContentWidth(snapshot: PanelSnapshot) -> CGFloat {
+        let valueFont = NSFont.systemFont(
+            ofSize: PanelMetrics.candidateFontSize, weight: .semibold)
+        let detailFont = NSFont.systemFont(
+            ofSize: PanelMetrics.detailFontSize, weight: .regular)
+        let inputFont = NSFont.systemFont(
+            ofSize: PanelMetrics.inputFontSize, weight: .medium)
+        let sectionFont = NSFont.systemFont(
+            ofSize: PanelMetrics.sectionFontSize, weight: .semibold)
+
+        var maxRow = PanelMetrics.minWidth
+            - PanelMetrics.stackInsets.left
+            - PanelMetrics.stackInsets.right
+        maxRow = max(maxRow, InputRowView.measuredWidth(text: snapshot.originalReading, font: inputFont))
+
+        var lastGroup: MozcBridge.Candidate.Group?
+        for candidate in snapshot.candidates {
+            if candidate.group != lastGroup {
+                maxRow = max(maxRow, SectionHeaderView.measuredWidth(title: candidate.group.sectionTitle, font: sectionFont))
+                lastGroup = candidate.group
+            }
+            maxRow = max(maxRow, CandidateRowView.measuredWidth(
+                candidate: candidate, valueFont: valueFont, detailFont: detailFont))
+        }
+        return maxRow + PanelMetrics.stackInsets.left + PanelMetrics.stackInsets.right
     }
 
     /// Replace the pending auto-hide (if any) with a new one scheduled
@@ -367,7 +417,7 @@ final class CandidatePanel {
         container.blendingMode = .behindWindow
         container.state = .active
         container.wantsLayer = true
-        container.layer?.cornerRadius = 8
+        container.layer?.cornerRadius = PanelMetrics.cornerRadius
         container.layer?.borderWidth = 0.5
         container.layer?.borderColor = NSColor.separatorColor.cgColor
         container.translatesAutoresizingMaskIntoConstraints = false
@@ -375,8 +425,8 @@ final class CandidatePanel {
         let stack = NSStackView()
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 2
-        stack.edgeInsets = NSEdgeInsets(top: 6, left: 8, bottom: 6, right: 8)
+        stack.spacing = PanelMetrics.stackSpacing
+        stack.edgeInsets = PanelMetrics.stackInsets
         stack.translatesAutoresizingMaskIntoConstraints = false
 
         container.addSubview(stack)
@@ -399,19 +449,47 @@ final class CandidatePanel {
         for v in stack.arrangedSubviews { v.removeFromSuperview() }
         rowViews.removeAll(keepingCapacity: true)
 
-        // Row 0 = original reading (the post-Esc / undone state,
-        // candidateIndex = -1). Dimmed so it reads as "what you typed"
-        // distinct from the actual candidates underneath.
-        let originalRow = RowView(text: snapshot.originalReading,
-                                  selected: snapshot.index < 0,
-                                  isOriginal: true)
-        stack.addArrangedSubview(originalRow)
-        rowViews.append(originalRow)
+        let inputRow = InputRowView(text: snapshot.originalReading,
+                                    selected: snapshot.index < 0)
+        stack.addArrangedSubview(inputRow)
 
-        for (i, c) in snapshot.candidates.enumerated() {
-            let row = RowView(text: c, selected: i == snapshot.index, isOriginal: false)
+        let divider = NSBox()
+        divider.boxType = .separator
+        divider.translatesAutoresizingMaskIntoConstraints = false
+        divider.heightAnchor.constraint(equalToConstant: 1).isActive = true
+        stack.addArrangedSubview(divider)
+
+        var lastGroup: MozcBridge.Candidate.Group? = nil
+        for (i, candidate) in snapshot.candidates.enumerated() {
+            if candidate.group != lastGroup {
+                let header = SectionHeaderView(title: candidate.group.sectionTitle)
+                stack.addArrangedSubview(header)
+                lastGroup = candidate.group
+            }
+            let row = CandidateRowView(
+                candidate: candidate,
+                selected: i == snapshot.index,
+                prominence: prominence(for: candidate, index: i, selectedIndex: snapshot.index))
             stack.addArrangedSubview(row)
             rowViews.append(row)
+        }
+    }
+
+    private func prominence(
+        for candidate: MozcBridge.Candidate,
+        index: Int,
+        selectedIndex: Int
+    ) -> CGFloat {
+        if index == selectedIndex { return 1.0 }
+        switch candidate.group {
+        case .conversion:
+            return index == 0 ? 0.86 : 0.8
+        case .hiragana, .katakana, .transliteration:
+            return 0.7
+        case .english:
+            return 0.64
+        case .input, .unknown:
+            return 0.58
         }
     }
 
@@ -489,7 +567,7 @@ final class CandidatePanel {
 /// the session lock. Cheap to copy.
 private struct PanelSnapshot {
     let originalReading: String
-    let candidates: [String]
+    let candidates: [MozcBridge.Candidate]
     let index: Int
 
     init(session: ConversionSession) {
@@ -497,39 +575,168 @@ private struct PanelSnapshot {
         self.candidates = session.candidates
         self.index = session.candidateIndex
     }
+
+    /// Identity of list content (not selection). Used to keep panel geometry
+    /// stable while the user cycles through the same conversion.
+    var layoutKey: String {
+        var parts: [String] = [originalReading]
+        for c in candidates {
+            parts.append(c.value)
+            parts.append(c.detailLabel ?? "")
+            parts.append(String(c.group.rawValue))
+        }
+        return parts.joined(separator: "\u{1e}")
+    }
 }
 
-/// One row in the candidate list. Selected rows get a tinted background;
-/// the original-reading row reads dimmed so the user can distinguish "what
-/// I typed" from the conversion candidates without a separator widget.
-private final class RowView: NSView {
-    private let textField = NSTextField(labelWithString: "")
+/// Layout tuned to stay at or below Google Japanese IME candidate-window footprint.
+private enum PanelMetrics {
+    static let cornerRadius: CGFloat = 6
+    static let stackSpacing: CGFloat = 1
+    static let stackInsets = NSEdgeInsets(top: 5, left: 7, bottom: 5, right: 7)
+    static let panelPadH: CGFloat = 6
+    static let panelPadV: CGFloat = 2
+    static let minWidth: CGFloat = 140
+    static let rowMinHeight: CGFloat = 22
+    static let candidateFontSize: CGFloat = 13
+    static let detailFontSize: CGFloat = 10
+    static let inputFontSize: CGFloat = 11
+    static let sectionFontSize: CGFloat = 9
+}
 
-    init(text: String, selected: Bool, isOriginal: Bool) {
+private class RowView: NSView {}
+
+private final class InputRowView: RowView {
+    static func measuredWidth(text: String, font: NSFont) -> CGFloat {
+        let iconFont = NSFont.systemFont(
+            ofSize: PanelMetrics.inputFontSize - 1, weight: .semibold)
+        let iconW = ("⌨" as NSString).size(withAttributes: [.font: iconFont]).width
+        let textW = (text as NSString).size(withAttributes: [.font: font]).width
+        return ceil(iconW) + 4 + ceil(textW)
+    }
+
+    init(text: String, selected: Bool) {
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+        let icon = NSTextField(labelWithString: "⌨")
+        icon.font = .systemFont(ofSize: PanelMetrics.inputFontSize - 1, weight: .semibold)
+        icon.textColor = NSColor.tertiaryLabelColor
+        icon.translatesAutoresizingMaskIntoConstraints = false
+
+        let label = NSTextField(labelWithString: text)
+        label.font = .systemFont(ofSize: PanelMetrics.inputFontSize, weight: .medium)
+        label.textColor = selected ? NSColor.secondaryLabelColor : NSColor.tertiaryLabelColor
+        label.translatesAutoresizingMaskIntoConstraints = false
+
+        addSubview(icon)
+        addSubview(label)
+        NSLayoutConstraint.activate([
+            icon.leadingAnchor.constraint(equalTo: leadingAnchor),
+            icon.centerYAnchor.constraint(equalTo: label.centerYAnchor),
+            label.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 4),
+            label.trailingAnchor.constraint(equalTo: trailingAnchor),
+            label.topAnchor.constraint(equalTo: topAnchor, constant: 1),
+            label.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -1),
+        ])
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError() }
+}
+
+private final class SectionHeaderView: RowView {
+    static func measuredWidth(title: String, font: NSFont) -> CGFloat {
+        (title.uppercased() as NSString).size(withAttributes: [.font: font]).width
+    }
+
+    init(title: String) {
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+        let label = NSTextField(labelWithString: title.uppercased())
+        label.font = .systemFont(ofSize: PanelMetrics.sectionFontSize, weight: .semibold)
+        label.textColor = NSColor.tertiaryLabelColor
+        label.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(label)
+        NSLayoutConstraint.activate([
+            label.leadingAnchor.constraint(equalTo: leadingAnchor),
+            label.trailingAnchor.constraint(equalTo: trailingAnchor),
+            label.topAnchor.constraint(equalTo: topAnchor, constant: 3),
+            label.bottomAnchor.constraint(equalTo: bottomAnchor),
+        ])
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError() }
+}
+
+private final class CandidateRowView: RowView {
+    /// Same horizontal chrome as Auto Layout in `init` (indicator + gaps).
+    static func measuredWidth(
+        candidate: MozcBridge.Candidate,
+        valueFont: NSFont,
+        detailFont: NSFont
+    ) -> CGFloat {
+        let valueW = ceil((candidate.value as NSString)
+            .size(withAttributes: [.font: valueFont]).width)
+        let detail = candidate.detailLabel ?? ""
+        let detailW = detail.isEmpty
+            ? 0
+            : ceil((detail as NSString).size(withAttributes: [.font: detailFont]).width)
+        let detailGap: CGFloat = detailW > 0 ? 6 : 0
+        return 2 + 6 + valueW + detailGap + detailW
+    }
+
+    init(candidate: MozcBridge.Candidate, selected: Bool, prominence: CGFloat) {
         super.init(frame: .zero)
         wantsLayer = true
         translatesAutoresizingMaskIntoConstraints = false
 
-        textField.stringValue = text
-        textField.font = .systemFont(
-            ofSize: 13,
-            weight: selected && !isOriginal ? .semibold : .regular)
-        textField.textColor = isOriginal
-            ? .tertiaryLabelColor
-            : (selected ? .labelColor : .secondaryLabelColor)
-        textField.translatesAutoresizingMaskIntoConstraints = false
+        let indicator = NSView()
+        indicator.wantsLayer = true
+        indicator.layer?.cornerRadius = 1.5
+        indicator.layer?.backgroundColor = (selected
+            ? NSColor.controlAccentColor
+            : NSColor.clear).cgColor
+        indicator.translatesAutoresizingMaskIntoConstraints = false
 
-        addSubview(textField)
+        let valueLabel = NSTextField(labelWithString: candidate.value)
+        // Keep weight constant so cycling selection does not change intrinsic
+        // width; highlight is background + accent bar only.
+        valueLabel.font = .systemFont(ofSize: PanelMetrics.candidateFontSize, weight: .regular)
+        valueLabel.textColor = NSColor.labelColor.withAlphaComponent(prominence)
+        valueLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        let detailText = candidate.detailLabel ?? ""
+        let detailLabel = NSTextField(labelWithString: detailText)
+        detailLabel.font = .systemFont(ofSize: PanelMetrics.detailFontSize, weight: .regular)
+        detailLabel.textColor = selected
+            ? NSColor.controlAccentColor
+            : NSColor.tertiaryLabelColor
+        detailLabel.isHidden = detailText.isEmpty
+        detailLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        addSubview(indicator)
+        addSubview(valueLabel)
+        addSubview(detailLabel)
         NSLayoutConstraint.activate([
-            textField.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
-            textField.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
-            textField.topAnchor.constraint(equalTo: topAnchor, constant: 2),
-            textField.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -2),
+            heightAnchor.constraint(greaterThanOrEqualToConstant: PanelMetrics.rowMinHeight),
+            indicator.leadingAnchor.constraint(equalTo: leadingAnchor),
+            indicator.topAnchor.constraint(equalTo: topAnchor, constant: 2),
+            indicator.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -2),
+            indicator.widthAnchor.constraint(equalToConstant: 2),
+
+            valueLabel.leadingAnchor.constraint(equalTo: indicator.trailingAnchor, constant: 6),
+            valueLabel.topAnchor.constraint(equalTo: topAnchor, constant: 3),
+            valueLabel.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor, constant: -3),
+
+            detailLabel.leadingAnchor.constraint(greaterThanOrEqualTo: valueLabel.trailingAnchor, constant: 6),
+            detailLabel.trailingAnchor.constraint(equalTo: trailingAnchor),
+            detailLabel.centerYAnchor.constraint(equalTo: valueLabel.centerYAnchor),
         ])
 
         if selected {
             layer?.backgroundColor = NSColor.controlAccentColor
-                .withAlphaComponent(0.18).cgColor
+                .withAlphaComponent(0.14).cgColor
             layer?.cornerRadius = 4
         }
     }

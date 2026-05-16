@@ -62,7 +62,7 @@ struct ConversionSession {
     /// committed; cycling advances through the list. May be empty for
     /// inputs Mozc didn't offer alternatives on (rare — usually only
     /// trivial single-kana inputs), in which case cycle is a no-op.
-    let candidates: [String]
+    let candidates: [MozcBridge.Candidate]
 
     /// Which slot is currently committed where the conversion landed.
     /// `-1` means `originalReading` (post-Esc); `0..<candidates.count`
@@ -82,7 +82,7 @@ struct ConversionSession {
     /// the next candidate.
     var currentText: String {
         if candidateIndex < 0 { return originalReading }
-        return candidates[candidateIndex]
+        return candidates[candidateIndex].value
     }
 
     /// Index that "cycle next" should advance to. `-1` (post-Esc) snaps

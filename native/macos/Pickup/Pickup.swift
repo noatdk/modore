@@ -24,7 +24,7 @@ struct ConvertResult {
     /// Usually starts with `replacement` (Mozc's top candidate); may be
     /// empty when the AX path didn't request candidates or Mozc had no
     /// alternatives to offer.
-    let candidates: [String]
+    let candidates: [MozcBridge.Candidate]
 }
 
 /// Per-invocation request threaded through the pickup pipeline. Built at the
@@ -105,7 +105,7 @@ private func convertTrailingASCIISuffix(
 private func classifierSegmentedConvert(
     _ ascii: String,
     request: PickupRequest
-) -> (replacement: String, candidates: [String])? {
+) -> (replacement: String, candidates: [MozcBridge.Candidate])? {
     guard let segments = Classifier.segment(ascii),
           Classifier.isMixed(segments) else { return nil }
 
@@ -141,13 +141,13 @@ private func classifierSegmentedConvert(
     }
 
     let replacement = parts.joined()
-    var candidates: [String] = [replacement]
+    var candidates: [MozcBridge.Candidate] = [candidateFromValue(replacement)]
     if let pr = primaryResult, !pr.candidates.isEmpty {
         candidates = pr.candidates.map { cand in
             var rebuilt: [String] = []
             for (i, seg) in segments.enumerated() {
                 if i == primaryIdx {
-                    rebuilt.append(cand)
+                    rebuilt.append(cand.value)
                     continue
                 }
                 let startIdx = ascii.utf8.index(ascii.utf8.startIndex, offsetBy: seg.start)
@@ -159,12 +159,82 @@ private func classifierSegmentedConvert(
                     rebuilt.append(chunk)
                 }
             }
-            return rebuilt.joined()
+            return candidateByReplacingValue(cand, with: rebuilt.joined())
         }
     }
 
     Log.pickup("classifier segmented: \(segments.count) segments -> \(replacement)")
     return (replacement, candidates)
+}
+
+private func candidateFromValue(
+    _ value: String,
+    group: MozcBridge.Candidate.Group = .conversion
+) -> MozcBridge.Candidate {
+    MozcBridge.Candidate(
+        value: value,
+        description: nil,
+        prefix: nil,
+        suffix: nil,
+        id: -1,
+        windowCategory: 0,
+        group: group)
+}
+
+private func candidateByReplacingValue(
+    _ candidate: MozcBridge.Candidate,
+    with value: String
+) -> MozcBridge.Candidate {
+    MozcBridge.Candidate(
+        value: value,
+        description: candidate.description,
+        prefix: candidate.prefix,
+        suffix: candidate.suffix,
+        id: candidate.id,
+        windowCategory: candidate.windowCategory,
+        group: candidate.group)
+}
+
+private func candidateValues(_ candidates: [MozcBridge.Candidate]) -> [String] {
+    candidates.map(\.value)
+}
+
+private func mapCandidateValues(
+    _ candidates: [MozcBridge.Candidate],
+    _ transform: (MozcBridge.Candidate) -> String
+) -> [MozcBridge.Candidate] {
+    candidates.map { candidateByReplacingValue($0, with: transform($0)) }
+}
+
+private func candidatesFromValues(
+    _ values: [String],
+    group: MozcBridge.Candidate.Group = .conversion
+) -> [MozcBridge.Candidate] {
+    values.map { candidateFromValue($0, group: group) }
+}
+
+private func applyScriptCandidateValues(
+    _ values: [String],
+    onto base: [MozcBridge.Candidate]
+) -> [MozcBridge.Candidate] {
+    values.enumerated().map { idx, value in
+        if idx < base.count {
+            return candidateByReplacingValue(base[idx], with: value)
+        }
+        return candidateFromValue(value)
+    }
+}
+
+private func normalizeCommittedCandidateState(
+    replacement: String,
+    candidates: [MozcBridge.Candidate]
+) -> (candidates: [MozcBridge.Candidate], currentIndex: Int) {
+    if let idx = candidates.firstIndex(where: { $0.value == replacement }) {
+        return (candidates, idx)
+    }
+    var normalized = candidates
+    normalized.insert(candidateFromValue(replacement), at: 0)
+    return (normalized, 0)
 }
 
 // MARK: - Clipboard-based fallback (works in any app that supports Cmd+C / Cmd+V)
@@ -656,14 +726,20 @@ func doClipboardPickup(_ request: PickupRequest = .init()) {
             }
             return
         }
-        let baseCandidates = [replacement]
+        let baseCandidates = [candidateFromValue(replacement, group: .input)]
         let scriptSpan = mdr_span_t(span_start_byte: 0, span_end_byte: 0,
                                     romaji: nil, romaji_len: 0)
         let finalReplacement = ModoreScript.replacement(
-            appId: frontmostBundleID, span: scriptSpan, candidates: baseCandidates) ?? replacement
-        let snapshotCandidates = ModoreScript.candidates(
-            appId: frontmostBundleID, list: baseCandidates, currentIndex: 0) ?? baseCandidates
+            appId: frontmostBundleID, span: scriptSpan, candidates: candidateValues(baseCandidates)) ?? replacement
+        let snapshotCandidateValues = ModoreScript.candidates(
+            appId: frontmostBundleID, list: candidateValues(baseCandidates), currentIndex: 0)
+            ?? candidateValues(baseCandidates)
+        let snapshotCandidates = applyScriptCandidateValues(
+            snapshotCandidateValues, onto: baseCandidates)
         Log.clipboard("replace -> \(finalReplacement) (alts=\(snapshotCandidates.count))")
+        let sessionSeed = normalizeCommittedCandidateState(
+            replacement: finalReplacement,
+            candidates: snapshotCandidates)
         postClipboardReplacement(
             finalReplacement,
             deleteBeforeInsert: deletePickedBeforeInsert ? pickedText.utf16.count : 0)
@@ -673,8 +749,8 @@ func doClipboardPickup(_ request: PickupRequest = .init()) {
                 frontmostBundleId: frontmost?.bundleID,
                 frontmostPid: frontmost?.pid ?? 0),
             originalReading: pickedText,
-            candidates: snapshotCandidates,
-            candidateIndex: 0,
+            candidates: sessionSeed.candidates,
+            candidateIndex: sessionSeed.currentIndex,
             timestamp: Date())
         ConversionSessionStore.set(session)
         if gCandidatePanelMode == .onConvert {
@@ -684,11 +760,13 @@ func doClipboardPickup(_ request: PickupRequest = .init()) {
     }
 
     let baseReplacement: String
-    let baseCandidates: [String]
+    let baseCandidates: [MozcBridge.Candidate]
     if gClassifierEnabled,
        let segResult = classifierSegmentedConvert(mozcInput, request: request) {
         baseReplacement = frozenPrefix + segResult.replacement + convertedSuffix
-        baseCandidates = segResult.candidates.map { frozenPrefix + $0 + convertedSuffix }
+        baseCandidates = mapCandidateValues(segResult.candidates) {
+            frozenPrefix + $0.value + convertedSuffix
+        }
     } else {
         // Fallback: heuristic acronym split.
         guard let result = callBackend(mozcInput, request: request, wantCandidates: true) else {
@@ -700,8 +778,10 @@ func doClipboardPickup(_ request: PickupRequest = .init()) {
         }
         baseReplacement = frozenPrefix + result.replacement + convertedSuffix
         baseCandidates = result.candidates.isEmpty
-            ? [frozenPrefix + result.replacement + convertedSuffix]
-            : result.candidates.map { frozenPrefix + $0 + convertedSuffix }
+            ? [candidateFromValue(frozenPrefix + result.replacement + convertedSuffix)]
+            : mapCandidateValues(result.candidates) {
+                frozenPrefix + $0.value + convertedSuffix
+            }
     }
     // Script overrides — no AX span on the clipboard path, so span byte
     // offsets are zeroed. Scripts that care about position should branch
@@ -709,10 +789,16 @@ func doClipboardPickup(_ request: PickupRequest = .init()) {
     let scriptSpan = mdr_span_t(span_start_byte: 0, span_end_byte: 0,
                                 romaji: nil, romaji_len: 0)
     let replacement = ModoreScript.replacement(
-        appId: frontmostBundleID, span: scriptSpan, candidates: baseCandidates) ?? baseReplacement
-    let snapshotCandidates = ModoreScript.candidates(
-        appId: frontmostBundleID, list: baseCandidates, currentIndex: 0) ?? baseCandidates
+        appId: frontmostBundleID, span: scriptSpan, candidates: candidateValues(baseCandidates)) ?? baseReplacement
+    let snapshotCandidateValues = ModoreScript.candidates(
+        appId: frontmostBundleID, list: candidateValues(baseCandidates), currentIndex: 0)
+        ?? candidateValues(baseCandidates)
+    let snapshotCandidates = applyScriptCandidateValues(
+        snapshotCandidateValues, onto: baseCandidates)
     Log.clipboard("replace -> \(replacement) (alts=\(snapshotCandidates.count))")
+    let sessionSeed = normalizeCommittedCandidateState(
+        replacement: replacement,
+        candidates: snapshotCandidates)
 
     // Replace the active selection by injecting the replacement as a Unicode
     // keystroke into the session event tap. No clipboard touch on the replace
@@ -730,8 +816,8 @@ func doClipboardPickup(_ request: PickupRequest = .init()) {
             frontmostBundleId: frontmost?.bundleID,
             frontmostPid: frontmost?.pid ?? 0),
         originalReading: pickedText,
-        candidates: snapshotCandidates,
-        candidateIndex: 0,
+        candidates: sessionSeed.candidates,
+        candidateIndex: sessionSeed.currentIndex,
         timestamp: Date())
     ConversionSessionStore.set(session)
     if gCandidatePanelMode == .onConvert {
@@ -783,18 +869,26 @@ func runConversionOnAcquiredText(_ raw: String, request: PickupRequest, appId: S
         return
     }
     let baseReplacement = frozenPrefix + result.replacement + convertedSuffix
-    let baseCandidates: [String] = result.candidates.isEmpty
-        ? [baseReplacement]
-        : result.candidates.map { frozenPrefix + $0 + convertedSuffix }
+    let baseCandidates: [MozcBridge.Candidate] = result.candidates.isEmpty
+        ? [candidateFromValue(baseReplacement)]
+        : mapCandidateValues(result.candidates) {
+            frozenPrefix + $0.value + convertedSuffix
+        }
 
     let scriptSpan = mdr_span_t(span_start_byte: 0, span_end_byte: 0,
                                 romaji: nil, romaji_len: 0)
     let replacement = ModoreScript.replacement(
-        appId: appId, span: scriptSpan, candidates: baseCandidates) ?? baseReplacement
-    let snapshotCandidates = ModoreScript.candidates(
-        appId: appId, list: baseCandidates, currentIndex: 0) ?? baseCandidates
+        appId: appId, span: scriptSpan, candidates: candidateValues(baseCandidates)) ?? baseReplacement
+    let snapshotCandidateValues = ModoreScript.candidates(
+        appId: appId, list: candidateValues(baseCandidates), currentIndex: 0)
+        ?? candidateValues(baseCandidates)
+    let snapshotCandidates = applyScriptCandidateValues(
+        snapshotCandidateValues, onto: baseCandidates)
 
     Log.pickup("scripted acquire replace → \(replacement) (alts=\(snapshotCandidates.count))")
+    let sessionSeed = normalizeCommittedCandidateState(
+        replacement: replacement,
+        candidates: snapshotCandidates)
 
     // Observability for CodeMirror one-row-drift investigation: capture the
     // AX selection range immediately before postUnicode, and again ~80ms
@@ -821,8 +915,8 @@ func runConversionOnAcquiredText(_ raw: String, request: PickupRequest, appId: S
             frontmostBundleId: appId,
             frontmostPid: FrontmostApp.currentPid() ?? 0),
         originalReading: pickedText,
-        candidates: snapshotCandidates,
-        candidateIndex: 0,
+        candidates: sessionSeed.candidates,
+        candidateIndex: sessionSeed.currentIndex,
         timestamp: Date())
     ConversionSessionStore.set(session)
     if gCandidatePanelMode == .onConvert {
@@ -929,11 +1023,17 @@ func doPickup(_ request: PickupRequest = .init()) {
                 span_start_byte: size_t(scriptSpanStart),
                 span_end_byte: size_t(scriptSpanEnd),
                 romaji: nil, romaji_len: 0)
-            let baseCandidates = [replacement]
+            let baseCandidates = [candidateFromValue(replacement, group: .input)]
             let finalReplacement = ModoreScript.replacement(
-                appId: appId, span: scriptSpan, candidates: baseCandidates) ?? replacement
-            let snapshotCandidates = ModoreScript.candidates(
-                appId: appId, list: baseCandidates, currentIndex: 0) ?? baseCandidates
+                appId: appId, span: scriptSpan, candidates: candidateValues(baseCandidates)) ?? replacement
+            let snapshotCandidateValues = ModoreScript.candidates(
+                appId: appId, list: candidateValues(baseCandidates), currentIndex: 0)
+                ?? candidateValues(baseCandidates)
+            let snapshotCandidates = applyScriptCandidateValues(
+                snapshotCandidateValues, onto: baseCandidates)
+            let sessionSeed = normalizeCommittedCandidateState(
+                replacement: finalReplacement,
+                candidates: snapshotCandidates)
             if isChromiumOmnibox(field: field, appId: appId) {
                 Log.pickup("Chromium omnibox: using selected Unicode replace for typed-input sync")
                 if !postUnicodeOverAXSelection(
@@ -953,8 +1053,8 @@ func doPickup(_ request: PickupRequest = .init()) {
                         frontmostBundleId: frontmost?.bundleID,
                         frontmostPid: frontmost?.pid ?? 0),
                     originalReading: spanText,
-                    candidates: snapshotCandidates,
-                    candidateIndex: 0,
+                    candidates: sessionSeed.candidates,
+                    candidateIndex: sessionSeed.currentIndex,
                     timestamp: Date())
                 ConversionSessionStore.set(session)
                 if gCandidatePanelMode == .onConvert {
@@ -966,8 +1066,8 @@ func doPickup(_ request: PickupRequest = .init()) {
                 let session = ConversionSession(
                     backing: .ax(element: field.element, spanStart: start),
                     originalReading: spanText,
-                    candidates: snapshotCandidates,
-                    candidateIndex: 0,
+                    candidates: sessionSeed.candidates,
+                    candidateIndex: sessionSeed.currentIndex,
                     timestamp: Date())
                 ConversionSessionStore.set(session)
                 if gCandidatePanelMode == .onConvert {
@@ -987,8 +1087,8 @@ func doPickup(_ request: PickupRequest = .init()) {
                     frontmostBundleId: frontmost?.bundleID,
                     frontmostPid: frontmost?.pid ?? 0),
                 originalReading: spanText,
-                candidates: snapshotCandidates,
-                candidateIndex: 0,
+                candidates: sessionSeed.candidates,
+                candidateIndex: sessionSeed.currentIndex,
                 timestamp: Date())
             ConversionSessionStore.set(session)
             if gCandidatePanelMode == .onConvert {
@@ -1000,7 +1100,9 @@ func doPickup(_ request: PickupRequest = .init()) {
         if gClassifierEnabled,
            let segResult = classifierSegmentedConvert(romajiCore, request: request) {
             let baseReplacement = asciiPrefix + segResult.replacement + convertedSuffix
-            let baseCandidates: [String] = segResult.candidates.map { asciiPrefix + $0 + convertedSuffix }
+            let baseCandidates = mapCandidateValues(segResult.candidates) {
+                asciiPrefix + $0.value + convertedSuffix
+            }
 
             let scriptSpanStart = field.value.utf8ByteOffset(forUTF16Offset: start)
             let scriptSpanEnd   = field.value.utf8ByteOffset(forUTF16Offset: end)
@@ -1009,10 +1111,16 @@ func doPickup(_ request: PickupRequest = .init()) {
                 span_end_byte: size_t(scriptSpanEnd),
                 romaji: nil, romaji_len: 0)
             let replacement = ModoreScript.replacement(
-                appId: appId, span: scriptSpan, candidates: baseCandidates) ?? baseReplacement
-            let snapshotCandidates = ModoreScript.candidates(
-                appId: appId, list: baseCandidates, currentIndex: 0) ?? baseCandidates
+                appId: appId, span: scriptSpan, candidates: candidateValues(baseCandidates)) ?? baseReplacement
+            let snapshotCandidateValues = ModoreScript.candidates(
+                appId: appId, list: candidateValues(baseCandidates), currentIndex: 0)
+                ?? candidateValues(baseCandidates)
+            let snapshotCandidates = applyScriptCandidateValues(
+                snapshotCandidateValues, onto: baseCandidates)
             Log.pickup("classifier replace -> \(replacement) (alts=\(snapshotCandidates.count))")
+            let sessionSeed = normalizeCommittedCandidateState(
+                replacement: replacement,
+                candidates: snapshotCandidates)
 
             if isChromiumOmnibox(field: field, appId: appId) {
                 Log.pickup("Chromium omnibox: using selected Unicode replace for typed-input sync")
@@ -1033,8 +1141,8 @@ func doPickup(_ request: PickupRequest = .init()) {
                         frontmostBundleId: frontmost?.bundleID,
                         frontmostPid: frontmost?.pid ?? 0),
                     originalReading: spanText,
-                    candidates: snapshotCandidates,
-                    candidateIndex: 0,
+                    candidates: sessionSeed.candidates,
+                    candidateIndex: sessionSeed.currentIndex,
                     timestamp: Date())
                 ConversionSessionStore.set(session)
                 if gCandidatePanelMode == .onConvert {
@@ -1046,8 +1154,8 @@ func doPickup(_ request: PickupRequest = .init()) {
                 let session = ConversionSession(
                     backing: .ax(element: field.element, spanStart: start),
                     originalReading: spanText,
-                    candidates: snapshotCandidates,
-                    candidateIndex: 0,
+                    candidates: sessionSeed.candidates,
+                    candidateIndex: sessionSeed.currentIndex,
                     timestamp: Date())
                 ConversionSessionStore.set(session)
                 if gCandidatePanelMode == .onConvert {
@@ -1071,8 +1179,8 @@ func doPickup(_ request: PickupRequest = .init()) {
                     frontmostBundleId: frontmost?.bundleID,
                     frontmostPid: frontmost?.pid ?? 0),
                 originalReading: spanText,
-                candidates: snapshotCandidates,
-                candidateIndex: 0,
+                candidates: sessionSeed.candidates,
+                candidateIndex: sessionSeed.currentIndex,
                 timestamp: Date())
             ConversionSessionStore.set(session)
             if gCandidatePanelMode == .onConvert {
@@ -1102,9 +1210,11 @@ func doPickup(_ request: PickupRequest = .init()) {
             return
         }
         let baseReplacement = frozenPrefix + result.replacement + convertedSuffix
-        let baseCandidates: [String] = result.candidates.isEmpty
-            ? [baseReplacement]
-            : result.candidates.map { frozenPrefix + $0 + convertedSuffix }
+        let baseCandidates: [MozcBridge.Candidate] = result.candidates.isEmpty
+            ? [candidateFromValue(baseReplacement)]
+            : mapCandidateValues(result.candidates) {
+                frozenPrefix + $0.value + convertedSuffix
+            }
 
         // Script overrides for replacement text and candidate list. Both
         // are independently optional. `replacement` is what gets written
@@ -1116,10 +1226,16 @@ func doPickup(_ request: PickupRequest = .init()) {
             span_end_byte: size_t(scriptSpanEnd),
             romaji: nil, romaji_len: 0)
         let replacement = ModoreScript.replacement(
-            appId: appId, span: scriptSpan, candidates: baseCandidates) ?? baseReplacement
-        let snapshotCandidates = ModoreScript.candidates(
-            appId: appId, list: baseCandidates, currentIndex: 0) ?? baseCandidates
+            appId: appId, span: scriptSpan, candidates: candidateValues(baseCandidates)) ?? baseReplacement
+        let snapshotCandidateValues = ModoreScript.candidates(
+            appId: appId, list: candidateValues(baseCandidates), currentIndex: 0)
+            ?? candidateValues(baseCandidates)
+        let snapshotCandidates = applyScriptCandidateValues(
+            snapshotCandidateValues, onto: baseCandidates)
         Log.pickup("replace -> \(replacement) (alts=\(snapshotCandidates.count))")
+        let sessionSeed = normalizeCommittedCandidateState(
+            replacement: replacement,
+            candidates: snapshotCandidates)
 
         if isChromiumOmnibox(field: field, appId: appId) {
             Log.pickup("Chromium omnibox: using selected Unicode replace for typed-input sync")
@@ -1140,8 +1256,8 @@ func doPickup(_ request: PickupRequest = .init()) {
                     frontmostBundleId: frontmost?.bundleID,
                     frontmostPid: frontmost?.pid ?? 0),
                 originalReading: spanText,
-                candidates: snapshotCandidates,
-                candidateIndex: 0,
+                candidates: sessionSeed.candidates,
+                candidateIndex: sessionSeed.currentIndex,
                 timestamp: Date())
             ConversionSessionStore.set(session)
             if gCandidatePanelMode == .onConvert {
@@ -1157,8 +1273,8 @@ func doPickup(_ request: PickupRequest = .init()) {
             let session = ConversionSession(
                 backing: .ax(element: field.element, spanStart: start),
                 originalReading: spanText,
-                candidates: snapshotCandidates,
-                candidateIndex: 0,
+                candidates: sessionSeed.candidates,
+                candidateIndex: sessionSeed.currentIndex,
                 timestamp: Date())
             ConversionSessionStore.set(session)
             if gCandidatePanelMode == .onConvert {
@@ -1208,8 +1324,8 @@ func doPickup(_ request: PickupRequest = .init()) {
                 frontmostBundleId: frontmost?.bundleID,
                 frontmostPid: frontmost?.pid ?? 0),
             originalReading: spanText,
-            candidates: snapshotCandidates,
-            candidateIndex: 0,
+            candidates: sessionSeed.candidates,
+            candidateIndex: sessionSeed.currentIndex,
             timestamp: Date())
         ConversionSessionStore.set(session)
         if gCandidatePanelMode == .onConvert {

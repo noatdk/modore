@@ -121,6 +121,43 @@ extern "C" int mozc_bridge_convert_with_candidates_ex(
     return rc;
 }
 
+extern "C" int mozc_bridge_convert_with_candidate_details_ex(
+    const char *romaji,
+    size_t romaji_len,
+    char *commit_buf,
+    size_t commit_cap,
+    size_t *commit_len,
+    mozc_bridge_candidate_record_t *cand_records,
+    size_t cand_records_cap,
+    char *cand_strings_buf,
+    size_t cand_strings_cap,
+    size_t *cand_strings_len,
+    int max_candidates,
+    int *out_candidate_count,
+    unsigned int flags) {
+    if (!g_initialized || !g_backend) {
+        set_error("mozc_bridge_init has not been called");
+        return -1;
+    }
+    std::string error;
+    const int rc = g_backend->ConvertWithCandidateDetailsEx(
+        romaji, romaji_len,
+        commit_buf, commit_cap, commit_len,
+        cand_records, cand_records_cap,
+        cand_strings_buf, cand_strings_cap,
+        cand_strings_len,
+        max_candidates,
+        out_candidate_count,
+        flags,
+        &error);
+    if (rc == 0 || rc > 0) {
+        clear_error();
+    } else {
+        set_error(error);
+    }
+    return rc;
+}
+
 extern "C" void mozc_bridge_shutdown(void) {
     std::lock_guard<std::mutex> lock(g_init_mutex);
     g_backend.reset();
