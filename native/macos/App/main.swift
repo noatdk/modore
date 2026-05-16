@@ -140,6 +140,9 @@ gConversionCoreFlags = modoreHotkey.coreFlags
 gKatakanaModifier = ModoreConfig.loadKatakanaModifier()
 Log.config("katakana modifier: \(gKatakanaModifier.displayName)")
 
+gKatakanaModifierBehavior = ModoreConfig.loadKatakanaModifierBehavior()
+Log.config("katakana modifier behavior: \(gKatakanaModifierBehavior.displayName)")
+
 gCycleModifier = ModoreConfig.loadCycleModifier()
 Log.config("cycle modifier: \(gCycleModifier.displayName)")
 

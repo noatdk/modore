@@ -82,6 +82,27 @@ honors the katakana modifier too; the only divergence between the AX
 fast-path and the clipboard fallback is *how* the replacement is
 written back, not what Mozc returns.
 
+## `[conversion] katakana_modifier_behavior`
+
+**Available**: macOS
+
+Controls what the katakana chord does while a conversion session is
+already active.
+
+| Value            | Effect                                                                 |
+| ---------------- | ---------------------------------------------------------------------- |
+| `cycle_backwards` | Shift+hotkey steps to the previous candidate when a session is active. |
+| `katakana`       | Shift+hotkey always forces katakana, even during an active session.    |
+
+**Default**: `cycle_backwards`.
+
+This only changes the active-session path. A fresh Shift+hotkey still
+does a katakana conversion when no session is in scope.
+
+**Validation**: unknown values log `ignoring [conversion]
+katakana_modifier_behavior=<value> (expected katakana|cycle_backwards)`
+and fall back to `cycle_backwards`.
+
 **Status item**: when a secondary chord is bound, the menu-bar item
 shows an extra `Katakana: <chord>` line below `Hotkey:` so the binding
 is visible without rechecking the config.
@@ -308,6 +329,8 @@ are independent and only the changed one logs.
 | `[clipboard]` value malformed / unknown | Ignore that key. Logs `ignoring [clipboard] …`. Other keys still applied. |
 | `katakana_modifier` changed             | Re-bind secondary chord. Logs `katakana modifier: …` + `katakana chord registered/cleared`. |
 | `katakana_modifier` malformed           | Keep previous value. Logs `ignoring [conversion] katakana_modifier=…`.    |
+| `katakana_modifier_behavior` changed    | Swap active-session behavior. Logs `katakana modifier behavior: …`.       |
+| `katakana_modifier_behavior` malformed   | Keep previous value. Logs `ignoring [conversion] katakana_modifier_behavior=…`. |
 | `undo_window_ms` changed                | Swap window for the next Esc check. Logs `undo window: Nms` (or `disabled`). |
 | `undo_window_ms` malformed / out-of-range | Keep previous value. Logs `ignoring [conversion] undo_window_ms=…`.       |
 

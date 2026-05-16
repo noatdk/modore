@@ -572,6 +572,61 @@ private func postUnicodeOverAXSelection(
     return true
 }
 
+/// Chromium omnibox needs a stricter first attempt than the generic AX
+/// path. Try a direct AX replacement first so Chromium can keep its typed
+/// input model aligned; if that fails, fall back to the existing
+/// selected-Unicode path that has the best chance of syncing the live
+/// omnibox state.
+private func replaceChromiumOmnibox(
+    field: FocusedField,
+    start: Int,
+    end: Int,
+    originalReading: String,
+    replacement: String,
+    sessionSeed: (candidates: [MozcBridge.Candidate], currentIndex: Int)
+) -> Bool {
+    Log.pickup("Chromium omnibox: trying AX replace before fallback")
+    if replaceRange(in: field.element, start: start, end: end, replacement: replacement) {
+        let session = ConversionSession(
+            backing: .ax(element: field.element, spanStart: start),
+            originalReading: originalReading,
+            candidates: sessionSeed.candidates,
+            candidateIndex: sessionSeed.currentIndex,
+            timestamp: Date())
+        ConversionSessionStore.set(session)
+        if gCandidatePanelMode == .onConvert {
+            CandidatePanel.shared.show(session: session)
+        }
+        return true
+    }
+    Log.pickup("Chromium omnibox: AX replace failed; falling back to typed-input sync")
+    if !postUnicodeOverAXSelection(
+        in: field.element,
+        start: start,
+        end: end,
+        replacement: replacement) {
+        keystrokeReplaceSpan(
+            caret: (start: field.selStart, end: field.selEnd),
+            spanEnd: end,
+            spanLen: end - start,
+            replacement: replacement)
+    }
+    let frontmost = FrontmostApp.describe()
+    let session = ConversionSession(
+        backing: .clipboard(
+            frontmostBundleId: frontmost?.bundleID,
+            frontmostPid: frontmost?.pid ?? 0),
+        originalReading: originalReading,
+        candidates: sessionSeed.candidates,
+        candidateIndex: sessionSeed.currentIndex,
+        timestamp: Date())
+    ConversionSessionStore.set(session)
+    if gCandidatePanelMode == .onConvert {
+        CandidatePanel.shared.show(session: session)
+    }
+    return true
+}
+
 /// Bundle IDs where the Cmd+C-peek heuristic in step 1 below is unreliable
 /// because the app line-copies the caret's current line *without* a
 /// trailing newline (so `looksLikeLineCopy` misses it). Chrome's DevTools
@@ -929,14 +984,19 @@ func runConversionOnAcquiredText(_ raw: String, request: PickupRequest, appId: S
 func doPickup(_ request: PickupRequest = .init()) {
     // Single-key cycle: if an active session exists and gates hold, the
     // primary chord advances the candidate instead of doing a fresh
-    // conversion. Katakana presses always fresh-convert (no cycle in
-    // katakana mode). Failure to cycle (no session, expired window,
-    // gates broke) falls through silently to fresh convert below — the
-    // tap callback clears the session on any non-chord keystroke, so by
-    // the time we get here a stale session almost always means "user is
-    // legitimately starting a new conversion."
+    // conversion. Katakana presses either convert katakana or cycle
+    // backwards depending on `[conversion] katakana_modifier_behavior`.
+    // Failure to cycle (no session, expired window, gates broke) falls
+    // through silently to fresh convert below — the tap callback clears
+    // the session on any non-chord keystroke, so by the time we get here
+    // a stale session almost always means "user is legitimately starting
+    // a new conversion."
     if request.target != .katakana {
         if cycleNext(verbose: false) {
+            return
+        }
+    } else if gKatakanaModifierBehavior == .cycleBackwards {
+        if cyclePrevious(verbose: false) {
             return
         }
     }
@@ -1035,31 +1095,13 @@ func doPickup(_ request: PickupRequest = .init()) {
                 replacement: finalReplacement,
                 candidates: snapshotCandidates)
             if isChromiumOmnibox(field: field, appId: appId) {
-                Log.pickup("Chromium omnibox: using selected Unicode replace for typed-input sync")
-                if !postUnicodeOverAXSelection(
-                    in: field.element,
+                _ = replaceChromiumOmnibox(
+                    field: field,
                     start: start,
                     end: end,
-                    replacement: finalReplacement) {
-                    keystrokeReplaceSpan(
-                        caret: (start: field.selStart, end: field.selEnd),
-                        spanEnd: end,
-                        spanLen: end - start,
-                        replacement: finalReplacement)
-                }
-                let frontmost = FrontmostApp.describe()
-                let session = ConversionSession(
-                    backing: .clipboard(
-                        frontmostBundleId: frontmost?.bundleID,
-                        frontmostPid: frontmost?.pid ?? 0),
                     originalReading: spanText,
-                    candidates: sessionSeed.candidates,
-                    candidateIndex: sessionSeed.currentIndex,
-                    timestamp: Date())
-                ConversionSessionStore.set(session)
-                if gCandidatePanelMode == .onConvert {
-                    CandidatePanel.shared.show(session: session)
-                }
+                    replacement: finalReplacement,
+                    sessionSeed: sessionSeed)
                 return
             }
             if replaceRange(in: field.element, start: start, end: end, replacement: finalReplacement) {
@@ -1123,31 +1165,13 @@ func doPickup(_ request: PickupRequest = .init()) {
                 candidates: snapshotCandidates)
 
             if isChromiumOmnibox(field: field, appId: appId) {
-                Log.pickup("Chromium omnibox: using selected Unicode replace for typed-input sync")
-                if !postUnicodeOverAXSelection(
-                    in: field.element,
+                _ = replaceChromiumOmnibox(
+                    field: field,
                     start: start,
                     end: end,
-                    replacement: replacement) {
-                    keystrokeReplaceSpan(
-                        caret: (start: field.selStart, end: field.selEnd),
-                        spanEnd: end,
-                        spanLen: end - start,
-                        replacement: replacement)
-                }
-                let frontmost = FrontmostApp.describe()
-                let session = ConversionSession(
-                    backing: .clipboard(
-                        frontmostBundleId: frontmost?.bundleID,
-                        frontmostPid: frontmost?.pid ?? 0),
                     originalReading: spanText,
-                    candidates: sessionSeed.candidates,
-                    candidateIndex: sessionSeed.currentIndex,
-                    timestamp: Date())
-                ConversionSessionStore.set(session)
-                if gCandidatePanelMode == .onConvert {
-                    CandidatePanel.shared.show(session: session)
-                }
+                    replacement: replacement,
+                    sessionSeed: sessionSeed)
                 return
             }
             if replaceRange(in: field.element, start: start, end: end, replacement: replacement) {
@@ -1238,31 +1262,13 @@ func doPickup(_ request: PickupRequest = .init()) {
             candidates: snapshotCandidates)
 
         if isChromiumOmnibox(field: field, appId: appId) {
-            Log.pickup("Chromium omnibox: using selected Unicode replace for typed-input sync")
-            if !postUnicodeOverAXSelection(
-                in: field.element,
+            _ = replaceChromiumOmnibox(
+                field: field,
                 start: start,
                 end: end,
-                replacement: replacement) {
-                keystrokeReplaceSpan(
-                    caret: (start: field.selStart, end: field.selEnd),
-                    spanEnd: end,
-                    spanLen: end - start,
-                    replacement: replacement)
-            }
-            let frontmost = FrontmostApp.describe()
-            let session = ConversionSession(
-                backing: .clipboard(
-                    frontmostBundleId: frontmost?.bundleID,
-                    frontmostPid: frontmost?.pid ?? 0),
                 originalReading: spanText,
-                candidates: sessionSeed.candidates,
-                candidateIndex: sessionSeed.currentIndex,
-                timestamp: Date())
-            ConversionSessionStore.set(session)
-            if gCandidatePanelMode == .onConvert {
-                CandidatePanel.shared.show(session: session)
-            }
+                replacement: replacement,
+                sessionSeed: sessionSeed)
             return
         }
         if replaceRange(in: field.element, start: start, end: end, replacement: replacement) {

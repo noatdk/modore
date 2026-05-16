@@ -36,6 +36,11 @@ var gKatakanaChordFlags: CGEventFlags? = nil
 /// of truth so reloads can diff against it.
 var gKatakanaModifier: ModoreConfig.KatakanaModifier = .none
 
+/// Current `[conversion] katakana_modifier_behavior` setting. Controls
+/// whether the katakana chord keeps katakana on an active session or
+/// cycles backward through candidates.
+var gKatakanaModifierBehavior: ModoreConfig.KatakanaModifierBehavior = .cycleBackwards
+
 /// True when the Carbon hotkey grab is active. The tap callback consults
 /// this to decide whether to also match-and-swallow the chord. If Carbon
 /// succeeded, the OS consumes the keystroke before the tap sees it anyway;
@@ -312,6 +317,17 @@ func applyKatakanaModifierReload() {
     }
 }
 
+/// Reload `[conversion] katakana_modifier_behavior` from disk. This
+/// only changes what the katakana chord does when a conversion session
+/// is already active.
+func applyKatakanaModifierBehaviorReload() {
+    let next = ModoreConfig.loadKatakanaModifierBehavior()
+    if next != gKatakanaModifierBehavior {
+        gKatakanaModifierBehavior = next
+        Log.config("katakana modifier behavior: \(next.displayName)")
+    }
+}
+
 /// Reload `[conversion] cycle_modifier` from disk. Mirrors the katakana
 /// reload — re-bind the chord and refresh the status item if it changed.
 func applyCycleModifierReload() {
@@ -389,6 +405,7 @@ func applyConfigReload() {
     applyConversionHotkeyReload()
     applyMozcBackendReloadNotice()
     applyKatakanaModifierReload()
+    applyKatakanaModifierBehaviorReload()
     applyCycleModifierReload()
     applyCycleFromUndoneReload()
     applyUndoWindowReload()

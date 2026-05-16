@@ -8,8 +8,8 @@ import Foundation
 /// Run preflight config validation, print a human-readable report to stdout,
 /// and exit. Exit code: 0 on a healthy load (including "no config, defaults
 /// will be used"), 1 if the file contains a `[conversion] hotkey` that
-/// doesn't parse, 2 if any `[clipboard]` or `katakana_modifier` value is
-/// rejected.
+/// doesn't parse, 2 if any `[clipboard]`, `katakana_modifier`, or
+/// `katakana_modifier_behavior` value is rejected.
 func runConfigCheck() -> Never {
     let url = ModoreConfig.configFileURL()
     print("config path: \(url.path)")
@@ -49,6 +49,15 @@ func runConfigCheck() -> Never {
         print("                \(issue)")
     }
     if !katIssues.isEmpty && exit_code == 0 {
+        exit_code = 2
+    }
+
+    let (katakanaBehavior, katBehaviorIssues) = ModoreConfig.parseKatakanaModifierBehavior()
+    print("  [conversion]  katakana_modifier_behavior=\(katakanaBehavior.displayName)")
+    for issue in katBehaviorIssues {
+        print("                \(issue)")
+    }
+    if !katBehaviorIssues.isEmpty && exit_code == 0 {
         exit_code = 2
     }
 

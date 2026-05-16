@@ -93,6 +93,14 @@ struct ConversionSession {
         if candidateIndex < 0 { return 0 }
         return (candidateIndex + 1) % candidates.count
     }
+
+    /// Index that "cycle previous" should move to. Returns `nil` when
+    /// there is no active candidate to move from (undone state or no
+    /// candidates captured).
+    func previousCandidateIndex() -> Int? {
+        guard !candidates.isEmpty, candidateIndex >= 0 else { return nil }
+        return (candidateIndex - 1 + candidates.count) % candidates.count
+    }
 }
 
 /// Single-slot store for the most recent conversion. Holds at most one

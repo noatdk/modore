@@ -26,6 +26,15 @@ func performCycleNext() {
     }
 }
 
+/// Worker-queue entry point for the reverse cycle gesture. Used by the
+/// katakana chord when the active config says it should step backward
+/// through candidates while a session is live.
+func performCyclePrevious() {
+    if !cyclePrevious(verbose: true) {
+        // No-op was already explained in the helper's log lines.
+    }
+}
+
 /// Attempt to cycle the active session. Returns `true` when the swap
 /// actually happened — used by `doPickup` to decide between cycling on
 /// the primary chord (when a session is active) and falling through to
@@ -90,6 +99,54 @@ func cycleNext(verbose: Bool) -> Bool {
     // on_convert was already visible from the convert path). show() is
     // idempotent — repeated calls during a cycle chain just refresh the
     // highlighted row.
+    if gCandidatePanelMode != .none, let session = refreshed {
+        CandidatePanel.shared.show(session: session)
+    }
+    return true
+}
+
+/// Reverse cycle the active session. Mirrors `cycleNext` but steps to
+/// the previous candidate. Used by the katakana chord when the config
+/// opts into "cycle backwards on active session."
+@discardableResult
+func cyclePrevious(verbose: Bool) -> Bool {
+    guard let snap = ConversionSessionStore.peek(windowMs: gUndoWindowMs) else {
+        if verbose {
+            Log.cycle("no session in scope; nothing to cycle backward\(FrontmostApp.logSuffix())")
+        }
+        return false
+    }
+    guard snap.candidateIndex >= 0 else {
+        if verbose {
+            Log.cycle("session is in undone state; katakana chord keeps katakana behavior")
+        }
+        return false
+    }
+    guard let prevIndex = snap.previousCandidateIndex() else {
+        Log.cycle("session has no candidates to cycle backward through (single-result conversion)")
+        return false
+    }
+
+    let from = snap.currentText
+    let to = snap.candidates[prevIndex].value
+
+    let swapped: Bool
+    switch snap.backing {
+    case .ax(let element, let spanStart):
+        swapped = cycleOnAX(snap, element: element, spanStart: spanStart, to: to, verbose: true)
+    case .clipboard(let bundleId, let pid):
+        swapped = cycleOnClipboard(snap, bundleId: bundleId, pid: pid, to: to, verbose: true)
+    }
+    if !swapped { return false }
+
+    var refreshed: ConversionSession? = nil
+    ConversionSessionStore.update { session in
+        session.candidateIndex = prevIndex
+        session.timestamp = Date()
+        refreshed = session
+    }
+    let totalN = snap.candidates.count
+    Log.cycle("'\(from)' ← '\(to)' (\(prevIndex + 1)/\(totalN))")
     if gCandidatePanelMode != .none, let session = refreshed {
         CandidatePanel.shared.show(session: session)
     }

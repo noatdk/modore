@@ -3,6 +3,7 @@
 // Sections:
 //   [conversion] hotkey=...             — global trigger chord (same format as Linux)
 //   [conversion] katakana_modifier=...  — extra modifier that forces katakana (macOS only)
+//   [conversion] katakana_modifier_behavior=...  — katakana vs cycle_backwards (macOS only)
 //   [conversion] mozc_backend=...       — oss in-process vs system Google IME (macOS only)
 //   [clipboard]  *_ms=<integer>         — fallback-path timings (macOS only)
 
@@ -98,6 +99,23 @@ enum ModoreConfig {
             switch self {
             case .none:  return "none"
             case .shift: return "Shift"
+            }
+        }
+    }
+
+    /// What the katakana chord does when a conversion session is active.
+    /// Default `.cycleBackwards` matches the new UX: Shift+hotkey keeps
+    /// katakana on a fresh conversion, but steps backward through the
+    /// current candidate list while a session is live. `.katakana`
+    /// preserves the old behavior.
+    enum KatakanaModifierBehavior: Equatable {
+        case cycleBackwards
+        case katakana
+
+        var displayName: String {
+            switch self {
+            case .cycleBackwards: return "cycle_backwards"
+            case .katakana: return "katakana"
             }
         }
     }
@@ -334,6 +352,35 @@ enum ModoreConfig {
                 m = .shift
             default:
                 issues.append("ignoring [conversion] katakana_modifier=\(value) (expected none|shift)")
+            }
+        }
+        return (m, issues)
+    }
+
+    /// Parse `[conversion] katakana_modifier_behavior`. Wrapper that logs issues.
+    static func loadKatakanaModifierBehavior() -> KatakanaModifierBehavior {
+        let (m, issues) = parseKatakanaModifierBehavior()
+        for issue in issues {
+            Log.config(issue)
+        }
+        return m
+    }
+
+    /// Same parse as `loadKatakanaModifierBehavior()` but returns the
+    /// validation issues separately instead of logging them.
+    static func parseKatakanaModifierBehavior() -> (KatakanaModifierBehavior, [String]) {
+        var m: KatakanaModifierBehavior = .cycleBackwards
+        var issues: [String] = []
+        let url = configFileURL()
+        _ = forEachKeyValue(url) { section, key, value in
+            guard section == "conversion" && key == "katakana_modifier_behavior" else { return }
+            switch value.lowercased() {
+            case "cycle_backwards", "":
+                m = .cycleBackwards
+            case "katakana":
+                m = .katakana
+            default:
+                issues.append("ignoring [conversion] katakana_modifier_behavior=\(value) (expected katakana|cycle_backwards)")
             }
         }
         return (m, issues)

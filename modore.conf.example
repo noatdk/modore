@@ -28,6 +28,13 @@ hotkey = Ctrl+Shift+grave
 # katakana_modifier = shift
 
 # Available: macOS
+# What Shift+hotkey does when a conversion session is already active.
+#   cycle_backwards = step to the previous Mozc candidate on active sessions
+#   katakana        = always force katakana (old behavior)
+# Defaults to cycle_backwards.
+# katakana_modifier_behavior = cycle_backwards
+
+# Available: macOS
 # How long after a conversion Esc still reverts it back to the original
 # reading. Default 5000 (5 s). Set to 0 to disable Esc-undo entirely;
 # max 30000.
