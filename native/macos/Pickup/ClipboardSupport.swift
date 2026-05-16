@@ -8,9 +8,10 @@ import Cocoa
 func waitForClipboardChange(after baseline: Int, timeoutMs: Int) -> Bool {
     let pb = NSPasteboard.general
     let deadline = Date().addingTimeInterval(Double(timeoutMs) / 1000.0)
+    let pollInterval: TimeInterval = 0.005
     while Date() < deadline {
         if pb.changeCount != baseline { return true }
-        Thread.sleep(forTimeInterval: 0.01)
+        Thread.sleep(forTimeInterval: pollInterval)
     }
     return false
 }
@@ -55,4 +56,3 @@ func guardClipboard(restoreDelayMs: Int = 50) -> (saved: [NSPasteboardItem], res
     }
     return (saved, restore)
 }
-

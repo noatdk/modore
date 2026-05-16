@@ -120,7 +120,7 @@ enum ModoreScript {
                 guard let text = String(data: data, encoding: .utf8) else { return 0 }
                 let caretUTF16 = text.utf16Offset(forUTF8Byte: Int(ctx.pointee.caret_byte))
                 guard caretUTF16 >= 0 else { return 0 }
-                let bounds = wordBounds(Array(text.utf16), caret: caretUTF16)
+                let bounds = wordBounds(text, caret: caretUTF16)
                 out.pointee.span_start_byte = size_t(text.utf8ByteOffset(forUTF16Offset: bounds.0))
                 out.pointee.span_end_byte = size_t(text.utf8ByteOffset(forUTF16Offset: bounds.1))
                 out.pointee.romaji = nil
@@ -309,8 +309,9 @@ enum ModoreScript {
 /// log line when the chord is unparseable so scripts surface their typos
 /// instead of silently no-op'ing.
 /// Set `MODORE_AX_TRACE=1` to log an AX snapshot after every host-driven
-/// chord. The post-chord state is taken after a short sleep to give the
-/// receiving app's event loop a tick to commit the selection change.
+/// chord. The post-chord state is captured asynchronously after a short
+/// delay so we do not block the caller while waiting for the receiving app
+/// to commit the selection change.
 fileprivate let gAxTraceEnabled: Bool = {
     if let v = ProcessInfo.processInfo.environment["MODORE_AX_TRACE"] {
         return v == "1" || v.lowercased() == "true"
@@ -331,8 +332,9 @@ fileprivate func hostSendChord(_ chord: String) {
         // Tiny delay so the receiving app's event loop has a tick to
         // commit selection state before we read it back. 20ms is enough
         // for CodeMirror's transaction batching in informal tests.
-        Thread.sleep(forTimeInterval: 0.020)
-        axSelectionSnapshot(label: "post-chord '\(chord)'")
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(20)) {
+            axSelectionSnapshot(label: "post-chord '\(chord)'")
+        }
     }
 }
 

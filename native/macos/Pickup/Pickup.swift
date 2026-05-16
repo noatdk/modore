@@ -14,6 +14,7 @@
 
 import Cocoa
 import ApplicationServices
+import Dispatch
 
 // MARK: - Cross-phase shape
 
@@ -98,6 +99,30 @@ private func convertTrailingASCIISuffix(
     return converted
 }
 
+/// Strip leading ASCII punctuation only when the first real alnum is lowercase.
+///
+/// This keeps quoted HTML text like `"gion` from tripping the acronym split
+/// while leaving uppercase code-ish prefixes (`.NET`, `Wi-Fi`) intact.
+private func splitLeadingASCIIJunkBeforeLowercase(
+    _ ascii: String
+) -> (prefix: String, tail: String) {
+    guard !ascii.isEmpty else { return ("", "") }
+    var split = ascii.startIndex
+    while split < ascii.endIndex {
+        let byte = ascii[split].utf8.first ?? 0
+        if (byte >= 0x61 && byte <= 0x7A) ||
+            (byte >= 0x41 && byte <= 0x5A) ||
+            (byte >= 0x30 && byte <= 0x39) {
+            break
+        }
+        split = ascii.index(after: split)
+    }
+    guard split < ascii.endIndex else { return (ascii, "") }
+    let first = ascii[split].utf8.first ?? 0
+    guard first >= 0x61 && first <= 0x7A else { return ("", ascii) }
+    return (String(ascii[..<split]), String(ascii[split...]))
+}
+
 /// Use the ML classifier to split an ASCII string into romaji and ASCII
 /// segments, convert each romaji segment through Mozc independently, and
 /// reassemble. Falls back to nil when the classifier is not loaded or the
@@ -119,7 +144,7 @@ private func classifierSegmentedConvert(
         }
     }
 
-    var parts: [String] = []
+    var segmentReplacements = Array(repeating: "", count: segments.count)
     var primaryResult: ConvertResult? = nil
     for (i, seg) in segments.enumerated() {
         let startIdx = ascii.utf8.index(ascii.utf8.startIndex, offsetBy: seg.start)
@@ -130,37 +155,41 @@ private func classifierSegmentedConvert(
             let wantCands = i == primaryIdx
             if let result = callBackend(chunk, request: request,
                                         wantCandidates: wantCands) {
-                parts.append(result.replacement)
+                segmentReplacements[i] = result.replacement
                 if wantCands { primaryResult = result }
             } else {
-                parts.append(chunk)
+                segmentReplacements[i] = chunk
             }
         } else {
-            parts.append(chunk)
+            segmentReplacements[i] = chunk
         }
     }
 
-    let replacement = parts.joined()
+    let replacement = segmentReplacements.joined()
     var candidates: [MozcBridge.Candidate] = [candidateFromValue(replacement)]
     if let pr = primaryResult, !pr.candidates.isEmpty {
-        candidates = pr.candidates.map { cand in
-            var rebuilt: [String] = []
-            for (i, seg) in segments.enumerated() {
-                if i == primaryIdx {
-                    rebuilt.append(cand.value)
-                    continue
-                }
-                let startIdx = ascii.utf8.index(ascii.utf8.startIndex, offsetBy: seg.start)
-                let endIdx = ascii.utf8.index(ascii.utf8.startIndex, offsetBy: seg.end)
-                let chunk = String(ascii.utf8[startIdx..<endIdx])!
-                if seg.isRomaji, let r = callBackend(chunk, request: request) {
-                    rebuilt.append(r.replacement)
-                } else {
-                    rebuilt.append(chunk)
+        let rebuiltCount = pr.candidates.count
+        let prefix = segmentReplacements[..<primaryIdx].joined()
+        let suffix = segmentReplacements[segmentReplacements.index(after: primaryIdx)...].joined()
+        var rebuilt = Array<MozcBridge.Candidate>(
+            repeating: candidateFromValue(replacement),
+            count: rebuiltCount)
+        if rebuiltCount > 1 {
+            rebuilt.withUnsafeMutableBufferPointer { buffer in
+                DispatchQueue.concurrentPerform(iterations: rebuiltCount) { idx in
+                    let cand = pr.candidates[idx]
+                    buffer[idx] = candidateByReplacingValue(
+                        cand,
+                        with: prefix + cand.value + suffix)
                 }
             }
-            return candidateByReplacingValue(cand, with: rebuilt.joined())
+        } else {
+            let cand = pr.candidates[0]
+            rebuilt[0] = candidateByReplacingValue(
+                cand,
+                with: prefix + cand.value + suffix)
         }
+        candidates = rebuilt
     }
 
     Log.pickup("classifier segmented: \(segments.count) segments -> \(replacement)")
@@ -770,8 +799,9 @@ func doClipboardPickup(_ request: PickupRequest = .init()) {
         return
     }
 
-    let (acronymHead, mozcInput) = splitAcronymHead(romajiCore)
-    let frozenPrefix = asciiPrefix + acronymHead
+    let (leadingJunk, romajiBody) = splitLeadingASCIIJunkBeforeLowercase(romajiCore)
+    let (acronymHead, mozcInput) = splitAcronymHead(romajiBody)
+    let frozenPrefix = asciiPrefix + leadingJunk + acronymHead
     if mozcInput.first?.isLowercase != true {
         let replacement = frozenPrefix + mozcInput + convertedSuffix
         guard replacement != pickedText else {
@@ -916,8 +946,9 @@ func runConversionOnAcquiredText(_ raw: String, request: PickupRequest, appId: S
         Log.pickup("scripted acquire: no trailing romaji in \(pickedText)")
         return
     }
-    let (acronymHead, mozcInput) = splitAcronymHead(romajiCore)
-    let frozenPrefix = asciiPrefix + acronymHead
+    let (leadingJunk, romajiBody) = splitLeadingASCIIJunkBeforeLowercase(romajiCore)
+    let (acronymHead, mozcInput) = splitAcronymHead(romajiBody)
+    let frozenPrefix = asciiPrefix + leadingJunk + acronymHead
 
     guard let result = callBackend(mozcInput, request: request, wantCandidates: true) else {
         Log.pickup("scripted acquire: backend returned no result")
@@ -1036,7 +1067,6 @@ func doPickup(_ request: PickupRequest = .init()) {
         focusedField = readFocusedField()
     }
     if let field = focusedField {
-        let utf16 = Array(field.value.utf16)
         let (start, end): (Int, Int)
         if field.selStart != field.selEnd {
             (start, end) = (field.selStart, field.selEnd)
@@ -1048,9 +1078,9 @@ func doPickup(_ request: PickupRequest = .init()) {
             (start, end) = scripted
             Log.pickup("scripted pickup span [\(start)..\(end)]")
         } else {
-            (start, end) = wordBounds(utf16, caret: field.selStart)
+            (start, end) = wordBounds(field.value, caret: field.selStart)
         }
-        guard start >= 0, end <= utf16.count, start < end else {
+        guard start >= 0, end <= field.value.utf16.count, start < end else {
             Log.pickup("empty span; nothing to convert")
             return
         }
@@ -1070,6 +1100,7 @@ func doPickup(_ request: PickupRequest = .init()) {
         let (asciiPrefix, romajiTail) = splitTrailingASCII(spanText)
         let (romajiCore, romajiSuffix) = splitTrailingASCIIPunctuation(romajiTail)
         let convertedSuffix = convertTrailingASCIISuffix(romajiSuffix, request: request)
+        let (leadingJunk, romajiBody) = splitLeadingASCIIJunkBeforeLowercase(romajiCore)
         guard !romajiCore.isEmpty else {
             let replacement = asciiPrefix + convertedSuffix
             guard replacement != spanText else {
@@ -1140,10 +1171,10 @@ func doPickup(_ request: PickupRequest = .init()) {
         }
 
         if gClassifierEnabled,
-           let segResult = classifierSegmentedConvert(romajiCore, request: request) {
-            let baseReplacement = asciiPrefix + segResult.replacement + convertedSuffix
+           let segResult = classifierSegmentedConvert(romajiBody, request: request) {
+            let baseReplacement = asciiPrefix + leadingJunk + segResult.replacement + convertedSuffix
             let baseCandidates = mapCandidateValues(segResult.candidates) {
-                asciiPrefix + $0.value + convertedSuffix
+                asciiPrefix + leadingJunk + $0.value + convertedSuffix
             }
 
             let scriptSpanStart = field.value.utf8ByteOffset(forUTF16Offset: start)
@@ -1215,8 +1246,8 @@ func doPickup(_ request: PickupRequest = .init()) {
 
         // Fallback: heuristic split. Carve off any leading acronym/code
         // (`R&D`, `API`, `JSON`) so Mozc only sees actual romaji.
-        let (acronymHead, mozcInput) = splitAcronymHead(romajiCore)
-        let frozenPrefix = asciiPrefix + acronymHead
+        let (acronymHead, mozcInput) = splitAcronymHead(romajiBody)
+        let frozenPrefix = asciiPrefix + leadingJunk + acronymHead
 
         // If mozcInput still starts with uppercase, the acronym split
         // didn't find a romaji tail — the text is English (e.g. "Wi-fi",

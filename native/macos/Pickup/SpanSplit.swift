@@ -53,7 +53,7 @@ private func utf8Range(_ s: String, start: Int, end: Int) -> String {
     return String(decoding: bytes[start..<end], as: UTF8.self)
 }
 
-/// Walk outward from `caret` over `utf16` to find the run of "word" code
+/// Walk outward from `caret` over `text` to find the run of "word" code
 /// units that contains it. Breaks at whitespace (space, tab, CR, LF) and at
 /// ASCII ↔ non-ASCII script transitions. The script-break stop is what
 /// keeps `kaitou`→hotkey→`hentai` from grabbing `回答hentai` as one word —
@@ -63,10 +63,9 @@ private func utf8Range(_ s: String, start: Int, end: Int) -> String {
 /// "non-ASCII" (kana, kanji, fullwidth, latin-1 supplement, …). Fine for
 /// romaji→kana flow today; revisit when boundary cycling against Mozc's
 /// segment output lands, since that will subsume this logic.
-func wordBounds(_ utf16: [UInt16], caret: Int) -> (Int, Int) {
-    guard !utf16.isEmpty else { return (0, 0) }
-    let text = String(utf16CodeUnits: utf16, count: utf16.count)
-    let caretUTF16 = min(max(caret, 0), utf16.count)
+func wordBounds(_ text: String, caret: Int) -> (Int, Int) {
+    guard !text.isEmpty else { return (0, 0) }
+    let caretUTF16 = min(max(caret, 0), text.utf16.count)
     let caretByte = text.utf8ByteOffset(forUTF16Offset: caretUTF16)
     var bounds = mdr_byte_bounds_t(start_byte: 0, end_byte: 0)
     let byteCount = text.utf8.count
@@ -205,7 +204,8 @@ func splitAcronymHead(_ ascii: String) -> (head: String, tail: String) {
 /// UTF-16 substring helper, matching the AX/JS index domain used throughout
 /// the pickup pipeline. Returns `nil` if the bounds are out of range or empty.
 func sliceUTF16(_ text: String, start: Int, end: Int) -> String? {
-    let utf16 = Array(text.utf16)
-    guard start >= 0, end <= utf16.count, start < end else { return nil }
-    return String(utf16CodeUnits: Array(utf16[start..<end]), count: end - start)
+    guard start >= 0, end <= text.utf16.count, start < end else { return nil }
+    let startIdx = String.Index(utf16Offset: start, in: text)
+    let endIdx = String.Index(utf16Offset: end, in: text)
+    return String(text[startIdx..<endIdx])
 }
