@@ -19,7 +19,7 @@ hotkey = Ctrl+Shift+grave
 # Bridge-owned knobs. These values are read once before the Mozc bridge is
 # initialized, so edits take effect on the next restart.
 [bridge]
-mozc_backend = google_ime
+mozc_backend = built-in
 candidate_mixing_mode = 0
 trace_raw_candidates = off
 
@@ -99,16 +99,17 @@ Launch-time knobs that the host maps to bridge env vars before
 
 | Key                    | Type    | Effect                                                                 |
 | ---------------------- | ------- | ---------------------------------------------------------------------- |
-| `mozc_backend`         | string  | Picks the bridge backend: `oss` or `google_ime`.                      |
+| `mozc_backend`         | string  | Picks the bridge backend: `built-in` or `google_ime`.                |
 | `candidate_mixing_mode` | integer | Sets `MODORE_MOZC_CANDIDATE_MIXING_MODE` for the Google IME bridge.   |
 | `trace_raw_candidates`  | bool    | Sets `MODORE_BRIDGE_TRACE_RAW_CANDIDATES` for debug candidate tracing. |
 
 **Default**: deterministic values from config defaults are applied at
 startup (`candidate_mixing_mode = 0`, `trace_raw_candidates = off`,
-`mozc_backend = oss`). The running bridge session does not hot-swap
+`mozc_backend = built-in`). The running bridge session does not hot-swap
 these values; restart modore after editing them.
 
-`mozc_backend` accepts `oss`, `google_ime`, `google-ime`, or `googleime`.
+`mozc_backend` accepts `built-in`, `built_in`, `oss`, `google_ime`,
+`google-ime`, or `googleime`.
 **Validation**: `candidate_mixing_mode` must be a non-negative integer.
 `trace_raw_candidates` accepts `on|off|true|false|1|0|yes|no`. Unknown
 values log a `[config]` warning and are ignored.

@@ -4,7 +4,7 @@
 //   [conversion] hotkey=...             — global trigger chord (same format as Linux)
 //   [conversion] katakana_modifier=...  — extra modifier that forces katakana (macOS only)
 //   [conversion] katakana_modifier_behavior=...  — katakana vs cycle_backwards (macOS only)
-//   [bridge]     mozc_backend=...       — oss in-process vs system Google IME (macOS only)
+//   [bridge]     mozc_backend=...       — built-in Mozc vs system Google IME (macOS only)
 //   [bridge]     ...                    — launch-time knobs for bridge/env-gated backend tweaks
 //   [clipboard]  *_ms=<integer>         — fallback-path timings (macOS only)
 
@@ -14,7 +14,7 @@ import Foundation
 enum ModoreConfig {
 
     /// Which bridge backend the macOS host should request at startup.
-    /// `.oss` keeps the existing in-process Mozc path. `.googleIme`
+    /// `.oss` keeps the existing built-in Mozc path. `.googleIme`
     /// targets the system-installed Google Japanese Input service via the
     /// bridge's macOS-only backend.
     enum MozcBackend: Equatable {
@@ -30,7 +30,7 @@ enum ModoreConfig {
 
         var displayName: String {
             switch self {
-            case .oss:       return "oss"
+            case .oss:       return "built-in"
             case .googleIme: return "google_ime"
             }
         }
@@ -265,7 +265,7 @@ enum ModoreConfig {
 
     /// Parse `[bridge] mozc_backend` with `[conversion]` as a compatibility
     /// fallback. Wrapper that logs issues.
-    /// Default `.oss` preserves the long-standing in-process behavior.
+    /// Default `.oss` preserves the long-standing built-in behavior.
     static func loadMozcBackend() -> MozcBackend {
         let (v, issues) = parseMozcBackend()
         for issue in issues { Log.config(issue) }
@@ -284,12 +284,12 @@ enum ModoreConfig {
             guard key == "mozc_backend" else { return }
             guard section == "bridge" || section == "conversion" else { return }
             switch value.lowercased() {
-            case "oss", "":
+            case "oss", "built-in", "built_in", "":
                 backend = .oss
             case "google_ime", "google-ime", "googleime":
                 backend = .googleIme
             default:
-                issues.append("ignoring [\(section)] mozc_backend=\(value) (expected oss|google_ime)")
+                issues.append("ignoring [\(section)] mozc_backend=\(value) (expected built-in|google_ime)")
             }
         }
         return (backend, issues)

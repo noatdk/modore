@@ -50,22 +50,23 @@ Electron quirks, and the systemd user unit, see [docs/linux.md](docs/linux.md).
 ## Configuration
 
 `~/.config/modore/modore.conf` (or `$XDG_CONFIG_HOME/modore/modore.conf`),
-INI-style, only `[conversion]` is defined today:
+INI-style:
 
 ```ini
 [conversion]
 hotkey = Ctrl+Shift+grave
-# macOS only:
-# mozc_backend = oss
+# [bridge]
+# mozc_backend = built-in
 ```
 
 Default is `Cmd+Semicolon` on macOS and `Super+Semicolon` on Linux. Full
 hotkey grammar, modifier aliases, and key names in
 [docs/configuration.md](docs/configuration.md).
 
-On macOS, `[conversion] mozc_backend` selects the bridge backend:
-`oss` (default, in-process OSS Mozc) or `google_ime` (system-installed
-Google Japanese Input service). Backend changes require restarting the app.
+On macOS, `[bridge] mozc_backend` selects the bridge backend:
+`built-in` (default, bundled Mozc; `oss` is still accepted as an alias)
+or `google_ime` (system-installed Google Japanese Input service).
+Backend changes require restarting the app.
 
 ## Layout
 

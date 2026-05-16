@@ -18,11 +18,11 @@ hotkey = Ctrl+Shift+grave
 # Defaults are applied at startup; edit these to override them.
 # [bridge]
 # Which Mozc backend the macOS host should use.
-#   oss         = bundled in-process OSS Mozc engine (default)
+#   built-in    = bundled Mozc engine (default; `oss` also works)
 #   google_ime  = preinstalled Google Japanese Input service
 # Note: google_ime currently depends on app-bundle launch context; if bridge
-# init fails, switch back to `oss`.
-# mozc_backend = oss
+# init fails, switch back to `built-in`.
+# mozc_backend = built-in
 # candidate_mixing_mode = 0
 # trace_raw_candidates = off
 

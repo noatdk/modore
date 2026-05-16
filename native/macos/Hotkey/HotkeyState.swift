@@ -421,7 +421,7 @@ func applyConfigReload() {
     applyClassifierReload()
 }
 
-/// Reload notice for `[conversion] mozc_backend`. The bridge is initialized
+/// Reload notice for `[bridge] mozc_backend`. The bridge is initialized
 /// once at boot and owns backend-specific engine/session state, so live
 /// swapping is intentionally unsupported. We still parse the key on reload
 /// so the user gets immediate feedback that a restart is required.
