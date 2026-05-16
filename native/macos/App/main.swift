@@ -40,6 +40,19 @@ let MOZC_PROFILE_DIR: String = {
 /// initialized once and the backend owns long-lived engine/session state.
 let MOZC_BACKEND: ModoreConfig.MozcBackend = ModoreConfig.loadMozcBackend()
 
+/// Bridge tuning that maps onto env vars before bridge init.
+func applyBridgeRuntimeEnv(_ runtime: ModoreConfig.BridgeRuntime) {
+    setenv("MODORE_MOZC_CANDIDATE_MIXING_MODE", "\(runtime.candidateMixingMode)", 1)
+    Log.config("bridge env: MODORE_MOZC_CANDIDATE_MIXING_MODE=\(runtime.candidateMixingMode)")
+
+    if runtime.traceRawCandidates {
+        setenv("MODORE_BRIDGE_TRACE_RAW_CANDIDATES", "1", 1)
+    } else {
+        unsetenv("MODORE_BRIDGE_TRACE_RAW_CANDIDATES")
+    }
+    Log.config("bridge env: MODORE_BRIDGE_TRACE_RAW_CANDIDATES=\(runtime.traceRawCandidates ? "1" : "0")")
+}
+
 /// Menu-bar item showing "running" state + current hotkey. Created late in
 /// boot so its initial refresh sees the post-Carbon-registration values.
 /// `applyConversionHotkeyChord` calls `refresh` on every chord update.
@@ -111,6 +124,58 @@ if CommandLine.arguments.contains("--print-paths") {
     exit(0)
 }
 
+if let probeArg = CommandLine.arguments.first(where: { $0.hasPrefix("--probe-words=") }) {
+    let probeWords = String(probeArg.dropFirst("--probe-words=".count))
+    let probeBackend = CommandLine.arguments.first(where: { $0.hasPrefix("--probe-backend=") })
+        .map { String($0.dropFirst("--probe-backend=".count)) }
+    let probeLogPath = CommandLine.arguments.first(where: { $0.hasPrefix("--probe-log=") })
+        .map { String($0.dropFirst("--probe-log=".count)) }
+    func probeWrite(_ line: String) {
+        print(line)
+        guard let probeLogPath, !probeLogPath.isEmpty else { return }
+        let data = (line + "\n").data(using: .utf8) ?? Data()
+        if FileManager.default.fileExists(atPath: probeLogPath) {
+            if let handle = try? FileHandle(forWritingTo: URL(fileURLWithPath: probeLogPath)) {
+                try? handle.seekToEnd()
+                try? handle.write(contentsOf: data)
+                try? handle.close()
+            }
+        } else {
+            try? data.write(to: URL(fileURLWithPath: probeLogPath))
+        }
+    }
+    let words = probeWords
+        .split(whereSeparator: { $0 == "," || $0 == "\n" || $0 == "\t" || $0 == " " })
+        .map(String.init)
+        .filter { !$0.isEmpty }
+    if words.isEmpty {
+        probeWrite("MODORE_PROBE_WORDS was set but empty")
+        exit(2)
+    }
+    if let probeBackend, !probeBackend.isEmpty {
+        setenv("MODORE_MOZC_BACKEND", probeBackend, /*overwrite=*/1)
+    }
+    do {
+        try MozcBridge.initialize(userProfileDir: MOZC_PROFILE_DIR)
+    } catch {
+        probeWrite("bridge init failed: \(error)")
+        exit(1)
+    }
+    defer { MozcBridge.shutdown() }
+    for word in words {
+        do {
+            let result = try MozcBridge.convertWithCandidates(word, target: .kanji, maxCandidates: 8)
+            probeWrite("INPUT=\(word) committed=\(result.committed)")
+            for (idx, cand) in result.candidates.enumerated() {
+                probeWrite("  [\(idx)] \(cand.value)")
+            }
+        } catch {
+            probeWrite("INPUT=\(word) error=\(error)")
+        }
+    }
+    exit(0)
+}
+
 // MARK: - Main launch sequence
 //
 // Order is load-bearing:
@@ -163,6 +228,9 @@ Log.config(gCandidatePanelDurationMs == 0
     : "candidate panel duration: \(gCandidatePanelDurationMs)ms")
 
 Log.config("mozc backend: \(MOZC_BACKEND.displayName)")
+
+gBridgeRuntime = ModoreConfig.loadBridgeRuntime()
+applyBridgeRuntimeEnv(gBridgeRuntime)
 
 gClipboardTimings = ModoreConfig.loadClipboardTimings()
 Log.config("clipboard timings: pre_copy=\(gClipboardTimings.preCopyDelayMs)ms"

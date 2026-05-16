@@ -14,12 +14,17 @@
 hotkey = Ctrl+Shift+grave
 
 # Available: macOS
+# Bridge-side knobs that map onto env vars before the Mozc bridge starts.
+# Defaults are applied at startup; edit these to override them.
+# [bridge]
 # Which Mozc backend the macOS host should use.
 #   oss         = bundled in-process OSS Mozc engine (default)
 #   google_ime  = preinstalled Google Japanese Input service
 # Note: google_ime currently depends on app-bundle launch context; if bridge
 # init fails, switch back to `oss`.
 # mozc_backend = oss
+# candidate_mixing_mode = 0
+# trace_raw_candidates = off
 
 # Available: macOS
 # Extra modifier on top of `hotkey` that forces a katakana commit

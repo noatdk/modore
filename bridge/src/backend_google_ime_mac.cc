@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <string>
 
@@ -15,6 +16,7 @@
 #include <unistd.h>
 
 #include "protocol/commands.pb.h"
+#include "protocol/config.pb.h"
 
 namespace modore::mozc_bridge {
 namespace {
@@ -23,6 +25,41 @@ constexpr int kProtocolVersion = 3;
 constexpr char kSessionService[] =
     "com.google.inputmethod.Japanese.Converter.session";
 constexpr int kTimeoutMs = 2000;
+
+mozc::commands::Request BuildDefaultRequest() {
+  mozc::commands::Request request;
+  mozc::commands::DecoderExperimentParams params;
+  uint32_t variation_types = params.variation_character_types();
+  variation_types |= mozc::commands::DecoderExperimentParams::SVS_JAPANESE;
+  request.mutable_decoder_experiment_params()->set_variation_character_types(
+      variation_types);
+  request.set_zero_query_suggestion(true);
+  request.set_mixed_conversion(true);
+  request.set_update_input_mode_from_surrounding_text(false);
+
+  if (const char *candidate_mixing_mode = std::getenv(
+          "MODORE_MOZC_CANDIDATE_MIXING_MODE");
+      candidate_mixing_mode != nullptr && candidate_mixing_mode[0] != '\0') {
+    char *end = nullptr;
+    const long value = std::strtol(candidate_mixing_mode, &end, 10);
+    if (end != candidate_mixing_mode && end != nullptr && *end == '\0' &&
+        value >= 0 && value <= std::numeric_limits<int32_t>::max()) {
+      request.mutable_decoder_experiment_params()->set_candidate_mixing_mode(
+          static_cast<int32_t>(value));
+    }
+  }
+  return request;
+}
+
+mozc::commands::Context BuildDefaultContext() {
+  mozc::commands::Context context;
+  context.set_input_field_type(mozc::commands::Context::NORMAL);
+  // Mozc treats revision as a typing-session identifier. modore creates a
+  // fresh bridge session for each conversion, so a stable non-zero revision is
+  // enough to mirror the frontend's "new typing session" shape.
+  context.set_revision(1);
+  return context;
+}
 
 struct SendMessage {
   mach_msg_header_t header;
@@ -176,6 +213,15 @@ bool CallInput(const mozc::commands::Input &input,
   return true;
 }
 
+bool CallInputWithContext(const mozc::commands::Input &input,
+                          const mozc::commands::Context &context,
+                          mozc::commands::Output *output,
+                          std::string *error) {
+  mozc::commands::Input with_context = input;
+  *with_context.mutable_context() = context;
+  return CallInput(with_context, output, error);
+}
+
 class GoogleImeMacBackend final : public Backend {
  public:
   int ConvertWithCandidatesEx(const char *romaji,
@@ -213,6 +259,7 @@ bool ProbeSession(std::string *error) {
   create.set_type(mozc::commands::Input::CREATE_SESSION);
   create.mutable_application_info()->set_process_id(static_cast<uint32_t>(getpid()));
   create.mutable_application_info()->set_thread_id(0);
+  *create.mutable_context() = BuildDefaultContext();
   mozc::commands::Output out;
   if (!CallInput(create, &out, error)) {
     return false;
@@ -226,28 +273,6 @@ bool ProbeSession(std::string *error) {
   return true;
 }
 
-bool SendKey(uint64_t session_id,
-             const mozc::commands::KeyEvent &key,
-             mozc::commands::Output *output,
-             std::string *error) {
-  mozc::commands::Input input;
-  input.set_id(session_id);
-  input.set_type(mozc::commands::Input::SEND_KEY);
-  *input.mutable_key() = key;
-  return CallInput(input, output, error);
-}
-
-bool SendCommand(uint64_t session_id,
-                 const mozc::commands::SessionCommand &command,
-                 mozc::commands::Output *output,
-                 std::string *error) {
-  mozc::commands::Input input;
-  input.set_id(session_id);
-  input.set_type(mozc::commands::Input::SEND_COMMAND);
-  *input.mutable_command() = command;
-  return CallInput(input, output, error);
-}
-
 void DeleteSessionBestEffort(uint64_t session_id) {
   mozc::commands::Input input;
   input.set_id(session_id);
@@ -259,7 +284,9 @@ void DeleteSessionBestEffort(uint64_t session_id) {
 
 class GoogleImeSessionDriver final : public SessionDriver {
  public:
-  GoogleImeSessionDriver() = default;
+  GoogleImeSessionDriver()
+      : request_(BuildDefaultRequest()),
+        context_(BuildDefaultContext()) {}
 
   bool Begin(mozc::commands::Output *out, std::string *error) override {
     mozc::commands::Input create;
@@ -267,10 +294,21 @@ class GoogleImeSessionDriver final : public SessionDriver {
     create.mutable_application_info()->set_process_id(
         static_cast<uint32_t>(getpid()));
     create.mutable_application_info()->set_thread_id(0);
+    *create.mutable_context() = context_;
     if (!CallInput(create, out, error)) {
       return false;
     }
     session_id_ = out->id();
+    if (session_id_ != 0) {
+      mozc::commands::Input request;
+      request.set_id(session_id_);
+      request.set_type(mozc::commands::Input::SET_REQUEST);
+      *request.mutable_request() = request_;
+      mozc::commands::Output ignored;
+      if (!CallInputWithContext(request, context_, &ignored, error)) {
+        return false;
+      }
+    }
     return true;
   }
 
@@ -278,7 +316,11 @@ class GoogleImeSessionDriver final : public SessionDriver {
                mozc::commands::Output *out,
                const char *step,
                std::string *error) override {
-    if (!::modore::mozc_bridge::SendKey(session_id_, key, out, error)) {
+    mozc::commands::Input input;
+    input.set_id(session_id_);
+    input.set_type(mozc::commands::Input::SEND_KEY);
+    *input.mutable_key() = key;
+    if (!CallInputWithContext(input, context_, out, error)) {
       if (error->empty()) {
         *error = std::string("SendKey failed at step: ") + step;
       }
@@ -293,13 +335,21 @@ class GoogleImeSessionDriver final : public SessionDriver {
     mozc::commands::SessionCommand command;
     command.set_type(mozc::commands::SessionCommand::HIGHLIGHT_CANDIDATE);
     command.set_id(id);
-    return SendCommand(session_id_, command, out, error);
+    mozc::commands::Input input;
+    input.set_id(session_id_);
+    input.set_type(mozc::commands::Input::SEND_COMMAND);
+    *input.mutable_command() = command;
+    return CallInputWithContext(input, context_, out, error);
   }
 
   bool Submit(mozc::commands::Output *out, std::string *error) override {
     mozc::commands::SessionCommand command;
     command.set_type(mozc::commands::SessionCommand::SUBMIT);
-    return SendCommand(session_id_, command, out, error);
+    mozc::commands::Input input;
+    input.set_id(session_id_);
+    input.set_type(mozc::commands::Input::SEND_COMMAND);
+    *input.mutable_command() = command;
+    return CallInputWithContext(input, context_, out, error);
   }
 
   void Finish() override {
@@ -311,6 +361,8 @@ class GoogleImeSessionDriver final : public SessionDriver {
 
  private:
   uint64_t session_id_ = 0;
+  mozc::commands::Request request_;
+  mozc::commands::Context context_;
 };
 
 }  // namespace

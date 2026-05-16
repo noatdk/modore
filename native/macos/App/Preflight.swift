@@ -142,8 +142,18 @@ func runConfigCheck() -> Never {
         exit_code = 2
     }
 
+    let (bridgeRuntime, bridgeIssues) = ModoreConfig.parseBridgeRuntime()
+    print("  [bridge]      candidate_mixing_mode=\(bridgeRuntime.candidateMixingMode)")
+    print("  [bridge]      trace_raw_candidates=\(bridgeRuntime.traceRawCandidates ? "on" : "off")")
+    for issue in bridgeIssues {
+        print("                \(issue)")
+    }
+    if !bridgeIssues.isEmpty && exit_code == 0 {
+        exit_code = 2
+    }
+
     let (mozcBackend, mozcBackendIssues) = ModoreConfig.parseMozcBackend()
-    print("  [conversion]  mozc_backend=\(mozcBackend.displayName)")
+    print("  [bridge]      mozc_backend=\(mozcBackend.displayName)")
     for issue in mozcBackendIssues {
         print("                \(issue)")
     }

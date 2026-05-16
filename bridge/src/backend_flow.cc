@@ -3,6 +3,8 @@
 #include "mozc_bridge.h"
 
 #include <cstring>
+#include <cstdlib>
+#include <cstdio>
 #include <string>
 #include <unordered_set>
 #include <utility>
@@ -40,6 +42,37 @@ std::string JoinSegments(const std::vector<std::string> &segments) {
     out += segment;
   }
   return out;
+}
+
+bool TraceRawCandidatesEnabled() {
+  static const bool enabled = std::getenv("MODORE_BRIDGE_TRACE_RAW_CANDIDATES") != nullptr;
+  return enabled;
+}
+
+void TraceRawCandidates(const mozc::commands::Output &out) {
+  if (!TraceRawCandidatesEnabled() || !out.has_candidate_window()) {
+    return;
+  }
+  const auto &window = out.candidate_window();
+  std::fprintf(stderr, "[com.modore.bridge:raw] has_focused_index=%d focused_index=%u size=%d\n",
+               window.has_focused_index() ? 1 : 0,
+               window.has_focused_index() ? window.focused_index() : 0u,
+               window.candidate_size());
+  for (int i = 0; i < window.candidate_size(); ++i) {
+    std::fprintf(stderr, "[com.modore.bridge:raw]   [%d] id=%d value=%s\n",
+                 i, window.candidate(i).id(), window.candidate(i).value().c_str());
+  }
+  if (window.has_sub_candidate_window()) {
+    const auto &sub = window.sub_candidate_window();
+    std::fprintf(stderr, "[com.modore.bridge:raw] sub has_focused_index=%d focused_index=%u size=%d\n",
+                 sub.has_focused_index() ? 1 : 0,
+                 sub.has_focused_index() ? sub.focused_index() : 0u,
+                 sub.candidate_size());
+    for (int i = 0; i < sub.candidate_size(); ++i) {
+      std::fprintf(stderr, "[com.modore.bridge:raw]   sub[%d] id=%d value=%s\n",
+                   i, sub.candidate(i).id(), sub.candidate(i).value().c_str());
+    }
+  }
 }
 
 void AppendUnique(std::vector<CandidateEntry> *out,
@@ -100,13 +133,6 @@ std::vector<CandidateEntry> RebuildFullSpanCandidates(
   std::unordered_set<std::string> seen;
 
   const std::vector<std::string> segments = PreeditSegments(base_output);
-  const std::string base = JoinSegments(segments);
-  CandidateEntry base_entry;
-  base_entry.value = base;
-  base_entry.window_category = mozc::commands::CONVERSION;
-  base_entry.group = MOZC_CANDIDATE_GROUP_CONVERSION;
-  AppendUnique(&full_candidates, &seen, std::move(base_entry));
-
   if (segments.empty() || focused_segment_candidates.empty()) {
     return full_candidates;
   }
@@ -207,17 +233,24 @@ int RunConvertFlow(SessionDriver *driver,
       }
     }
 
+    std::string candidate_commit;
     if (!force_katakana && capture_cands && out.has_candidate_window()) {
+      TraceRawCandidates(out);
       const mozc::commands::Output base_output = out;
       const std::vector<CandidateEntry> focused_candidates =
           CaptureFocusedSegmentCandidates(driver, &out, error);
       const std::vector<CandidateEntry> full_candidates =
           RebuildFullSpanCandidates(base_output, focused_candidates);
+      const std::string top_candidate =
+          !full_candidates.empty() ? full_candidates.front().value : std::string();
       const size_t written = CopyCandidateValuesToBuffer(
           full_candidates, cands_buf, cands_cap, max_candidates,
           out_candidate_count);
       if (cands_total_len) {
         *cands_total_len = written;
+      }
+      if (!top_candidate.empty()) {
+        candidate_commit = top_candidate;
       }
     }
 
@@ -234,6 +267,9 @@ int RunConvertFlow(SessionDriver *driver,
       } else {
         committed = JoinPreeditSegments(out);
       }
+    }
+    if (!candidate_commit.empty()) {
+      committed = candidate_commit;
     }
 
     if (committed.empty()) {
@@ -337,17 +373,24 @@ int RunConvertFlowWithDetails(
       }
     }
 
+    std::string candidate_commit;
     if (!force_katakana && capture_cands && out.has_candidate_window()) {
+      TraceRawCandidates(out);
       const mozc::commands::Output base_output = out;
       const std::vector<CandidateEntry> focused_candidates =
           CaptureFocusedSegmentCandidates(driver, &out, error);
       const std::vector<CandidateEntry> full_candidates =
           RebuildFullSpanCandidates(base_output, focused_candidates);
+      const std::string top_candidate =
+          !full_candidates.empty() ? full_candidates.front().value : std::string();
       const size_t written = CopyCandidateRecordsToBuffers(
           full_candidates, cand_records, cand_records_cap, cand_strings_buf,
           cand_strings_cap, max_candidates, out_candidate_count);
       if (cand_strings_len) {
         *cand_strings_len = written;
+      }
+      if (!top_candidate.empty()) {
+        candidate_commit = top_candidate;
       }
     }
 
@@ -364,6 +407,9 @@ int RunConvertFlowWithDetails(
       } else {
         committed = JoinPreeditSegments(out);
       }
+    }
+    if (!candidate_commit.empty()) {
+      committed = candidate_commit;
     }
 
     if (committed.empty()) {

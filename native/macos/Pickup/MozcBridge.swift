@@ -185,6 +185,10 @@ enum MozcBridge {
         return String(cString: cstr)
     }
 
+    static func shutdown() {
+        mozc_bridge_shutdown()
+    }
+
     private static func decodeCandidates(
         records: [mozc_bridge_candidate_record_t],
         count: Int,

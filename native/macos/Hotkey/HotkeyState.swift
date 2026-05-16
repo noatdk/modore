@@ -105,6 +105,11 @@ var gCandidatePanelDurationMs: Int = ModoreConfig.defaultCandidatePanelDurationM
 /// `[conversion] classifier = on` in the config file.
 var gClassifierEnabled: Bool = false
 
+/// Launch-time bridge tuning. The bridge reads these once at init, so reloads
+/// can update the process env for the next bridge start but cannot affect the
+/// already-running session. Defaults are applied deterministically at boot.
+var gBridgeRuntime = ModoreConfig.BridgeRuntime()
+
 // MARK: - Secondary chord (katakana modifier)
 
 /// Build the katakana-variant chord by layering the configured modifier on top
@@ -403,6 +408,7 @@ func applyCandidatePanelDurationReload() {
 /// Single entry point for the config watcher — reloads every section.
 func applyConfigReload() {
     applyConversionHotkeyReload()
+    applyBridgeRuntimeReloadNotice()
     applyMozcBackendReloadNotice()
     applyKatakanaModifierReload()
     applyKatakanaModifierBehaviorReload()
@@ -424,6 +430,20 @@ func applyMozcBackendReloadNotice() {
     if next != MOZC_BACKEND {
         Log.config("mozc backend changed to \(next.displayName) — restart modore to apply")
     }
+}
+
+/// Reload notice for `[bridge]` knobs. These are boot-time env overrides for
+/// the Mozc bridge, so a live bridge does not observe the change; the host
+/// keeps the new values in process env for the next bridge init.
+func applyBridgeRuntimeReloadNotice() {
+    let next = ModoreConfig.loadBridgeRuntime()
+    if next == gBridgeRuntime {
+        return
+    }
+    gBridgeRuntime = next
+    applyBridgeRuntimeEnv(next)
+    Log.config("bridge candidate_mixing_mode=\(next.candidateMixingMode) (applies on next bridge init)")
+    Log.config("bridge trace_raw_candidates=\(next.traceRawCandidates ? "on" : "off") (applies on next bridge init)")
 }
 
 private func applyClassifierReload() {

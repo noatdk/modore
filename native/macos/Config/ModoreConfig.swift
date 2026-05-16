@@ -4,7 +4,8 @@
 //   [conversion] hotkey=...             — global trigger chord (same format as Linux)
 //   [conversion] katakana_modifier=...  — extra modifier that forces katakana (macOS only)
 //   [conversion] katakana_modifier_behavior=...  — katakana vs cycle_backwards (macOS only)
-//   [conversion] mozc_backend=...       — oss in-process vs system Google IME (macOS only)
+//   [bridge]     mozc_backend=...       — oss in-process vs system Google IME (macOS only)
+//   [bridge]     ...                    — launch-time knobs for bridge/env-gated backend tweaks
 //   [clipboard]  *_ms=<integer>         — fallback-path timings (macOS only)
 
 import Carbon
@@ -33,6 +34,14 @@ enum ModoreConfig {
             case .googleIme: return "google_ime"
             }
         }
+    }
+
+    /// Launch-time bridge tuning that the host maps onto env vars before the
+    /// Mozc bridge is initialized. These are cheap, deterministic values:
+    /// parse once at boot, set once, and the bridge consumes them on init.
+    struct BridgeRuntime: Equatable {
+        var candidateMixingMode: Int = 0
+        var traceRawCandidates: Bool = false
     }
 
     struct ConversionHotkey: Equatable {
@@ -254,7 +263,8 @@ enum ModoreConfig {
         return (enabled, issues)
     }
 
-    /// Parse `[conversion] mozc_backend`. Wrapper that logs issues.
+    /// Parse `[bridge] mozc_backend` with `[conversion]` as a compatibility
+    /// fallback. Wrapper that logs issues.
     /// Default `.oss` preserves the long-standing in-process behavior.
     static func loadMozcBackend() -> MozcBackend {
         let (v, issues) = parseMozcBackend()
@@ -264,23 +274,64 @@ enum ModoreConfig {
 
     /// Same parse as `loadMozcBackend()` but returns issues separately.
     /// Missing key yields `.oss`; malformed values yield `.oss` with one
-    /// issue string.
+    /// issue string. `[bridge] mozc_backend` wins over the legacy
+    /// `[conversion]` location if both are set.
     static func parseMozcBackend() -> (MozcBackend, [String]) {
         var backend: MozcBackend = .oss
         var issues: [String] = []
         let url = configFileURL()
         _ = forEachKeyValue(url) { section, key, value in
-            guard section == "conversion" && key == "mozc_backend" else { return }
+            guard key == "mozc_backend" else { return }
+            guard section == "bridge" || section == "conversion" else { return }
             switch value.lowercased() {
             case "oss", "":
                 backend = .oss
             case "google_ime", "google-ime", "googleime":
                 backend = .googleIme
             default:
-                issues.append("ignoring [conversion] mozc_backend=\(value) (expected oss|google_ime)")
+                issues.append("ignoring [\(section)] mozc_backend=\(value) (expected oss|google_ime)")
             }
         }
         return (backend, issues)
+    }
+
+    /// Parse `[bridge]` knobs that map onto env vars before bridge init.
+    /// Values are only read once at boot and on config reload, so this adds
+    /// no per-conversion overhead.
+    static func loadBridgeRuntime() -> BridgeRuntime {
+        let (runtime, issues) = parseBridgeRuntime()
+        for issue in issues { Log.config(issue) }
+        return runtime
+    }
+
+    /// Same parse as `loadBridgeRuntime()` but returns issues separately.
+    static func parseBridgeRuntime() -> (BridgeRuntime, [String]) {
+        var runtime = BridgeRuntime()
+        var issues: [String] = []
+        let url = configFileURL()
+        _ = forEachKeyValue(url) { section, key, value in
+            guard section == "bridge" else { return }
+            switch key {
+            case "candidate_mixing_mode":
+                guard let parsed = Int(value), parsed >= 0 else {
+                    issues.append("ignoring [bridge] candidate_mixing_mode=\(value) (expected non-negative integer)")
+                    return
+                }
+                runtime.candidateMixingMode = parsed
+            case "trace_raw_candidates":
+                switch value.lowercased() {
+                case "on", "true", "1", "yes":
+                    runtime.traceRawCandidates = true
+                case "off", "false", "0", "no":
+                    runtime.traceRawCandidates = false
+                default:
+                    issues.append("ignoring [bridge] trace_raw_candidates=\(value) (expected on|off)")
+                }
+            default:
+                issues.append("ignoring [bridge] \(key)=\(value) (unknown key)")
+            }
+        }
+        return (runtime, issues)
     }
 
     private static let defaultChord = "Cmd+Semicolon"

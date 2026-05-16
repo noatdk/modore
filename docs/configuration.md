@@ -16,6 +16,14 @@ that does so.
 hotkey = Ctrl+Shift+grave
 
 # Available: macOS
+# Bridge-owned knobs. These values are read once before the Mozc bridge is
+# initialized, so edits take effect on the next restart.
+[bridge]
+mozc_backend = google_ime
+candidate_mixing_mode = 0
+trace_raw_candidates = off
+
+# Available: macOS
 # Knobs for the clipboard fallback path. Omit for defaults.
 [clipboard]
 pre_copy_delay_ms = 20
@@ -81,6 +89,29 @@ The clipboard-fallback path (apps that don't expose Accessibility text)
 honors the katakana modifier too; the only divergence between the AX
 fast-path and the clipboard fallback is *how* the replacement is
 written back, not what Mozc returns.
+
+## `[bridge]`
+
+**Available**: macOS
+
+Launch-time knobs that the host maps to bridge env vars before
+`mozc_bridge_init()`.
+
+| Key                    | Type    | Effect                                                                 |
+| ---------------------- | ------- | ---------------------------------------------------------------------- |
+| `mozc_backend`         | string  | Picks the bridge backend: `oss` or `google_ime`.                      |
+| `candidate_mixing_mode` | integer | Sets `MODORE_MOZC_CANDIDATE_MIXING_MODE` for the Google IME bridge.   |
+| `trace_raw_candidates`  | bool    | Sets `MODORE_BRIDGE_TRACE_RAW_CANDIDATES` for debug candidate tracing. |
+
+**Default**: deterministic values from config defaults are applied at
+startup (`candidate_mixing_mode = 0`, `trace_raw_candidates = off`,
+`mozc_backend = oss`). The running bridge session does not hot-swap
+these values; restart modore after editing them.
+
+`mozc_backend` accepts `oss`, `google_ime`, `google-ime`, or `googleime`.
+**Validation**: `candidate_mixing_mode` must be a non-negative integer.
+`trace_raw_candidates` accepts `on|off|true|false|1|0|yes|no`. Unknown
+values log a `[config]` warning and are ignored.
 
 ## `[conversion] katakana_modifier_behavior`
 
@@ -314,8 +345,9 @@ labels every line for humans.
 Edits to `modore.conf` are picked up live — no restart needed. The
 watcher applies a 300 ms quiet-window debounce, so multi-event saves
 (atomic-rename editors like Vim, VSCode, JetBrains) land as a single
-reload. Both `[conversion]` and `[clipboard]` reload together; sections
-are independent and only the changed one logs.
+reload. Most `[conversion]` and `[clipboard]` keys reload immediately;
+bridge launch-time knobs are re-parsed for logging but only take effect
+on the next bridge init.
 
 | Edit                                    | Behavior                                                                  |
 | --------------------------------------- | ------------------------------------------------------------------------- |
@@ -333,6 +365,7 @@ are independent and only the changed one logs.
 | `katakana_modifier_behavior` malformed   | Keep previous value. Logs `ignoring [conversion] katakana_modifier_behavior=…`. |
 | `undo_window_ms` changed                | Swap window for the next Esc check. Logs `undo window: Nms` (or `disabled`). |
 | `undo_window_ms` malformed / out-of-range | Keep previous value. Logs `ignoring [conversion] undo_window_ms=…`.       |
+| `[bridge]` value changed                | Log the new value and note that restart is required for the bridge.      |
 
 If the config file doesn't exist at startup, the watcher polls for it
 once a second and arms as soon as it appears. There's no need to restart

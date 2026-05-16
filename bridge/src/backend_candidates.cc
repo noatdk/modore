@@ -106,9 +106,11 @@ CandidateEntry MakeEntry(const mozc::commands::CandidateWindow &window,
 
 void FlattenCandidateWindowInto(const mozc::commands::CandidateWindow &window,
                                 std::vector<CandidateEntry> *out) {
+  const bool has_focused_index = window.has_focused_index() &&
+                                 window.focused_index() <
+                                     static_cast<uint32_t>(window.candidate_size());
   const bool skip_focused_placeholder =
-      window.has_sub_candidate_window() && window.has_focused_index() &&
-      window.focused_index() < static_cast<uint32_t>(window.candidate_size()) &&
+      window.has_sub_candidate_window() && has_focused_index &&
       window.candidate(window.focused_index()).value() ==
           kTransliterationCascadeLabel;
 
