@@ -3,12 +3,36 @@
 // Sections:
 //   [conversion] hotkey=...             — global trigger chord (same format as Linux)
 //   [conversion] katakana_modifier=...  — extra modifier that forces katakana (macOS only)
+//   [conversion] mozc_backend=...       — oss in-process vs system Google IME (macOS only)
 //   [clipboard]  *_ms=<integer>         — fallback-path timings (macOS only)
 
 import Carbon
 import Foundation
 
 enum ModoreConfig {
+
+    /// Which bridge backend the macOS host should request at startup.
+    /// `.oss` keeps the existing in-process Mozc path. `.googleIme`
+    /// targets the system-installed Google Japanese Input service via the
+    /// bridge's macOS-only backend.
+    enum MozcBackend: Equatable {
+        case oss
+        case googleIme
+
+        var envValue: String {
+            switch self {
+            case .oss:       return "oss"
+            case .googleIme: return "google-ime"
+            }
+        }
+
+        var displayName: String {
+            switch self {
+            case .oss:       return "oss"
+            case .googleIme: return "google_ime"
+            }
+        }
+    }
 
     struct ConversionHotkey: Equatable {
         var keyCode: CGKeyCode
@@ -210,6 +234,35 @@ enum ModoreConfig {
             }
         }
         return (enabled, issues)
+    }
+
+    /// Parse `[conversion] mozc_backend`. Wrapper that logs issues.
+    /// Default `.oss` preserves the long-standing in-process behavior.
+    static func loadMozcBackend() -> MozcBackend {
+        let (v, issues) = parseMozcBackend()
+        for issue in issues { Log.config(issue) }
+        return v
+    }
+
+    /// Same parse as `loadMozcBackend()` but returns issues separately.
+    /// Missing key yields `.oss`; malformed values yield `.oss` with one
+    /// issue string.
+    static func parseMozcBackend() -> (MozcBackend, [String]) {
+        var backend: MozcBackend = .oss
+        var issues: [String] = []
+        let url = configFileURL()
+        _ = forEachKeyValue(url) { section, key, value in
+            guard section == "conversion" && key == "mozc_backend" else { return }
+            switch value.lowercased() {
+            case "oss", "":
+                backend = .oss
+            case "google_ime", "google-ime", "googleime":
+                backend = .googleIme
+            default:
+                issues.append("ignoring [conversion] mozc_backend=\(value) (expected oss|google_ime)")
+            }
+        }
+        return (backend, issues)
     }
 
     private static let defaultChord = "Cmd+Semicolon"

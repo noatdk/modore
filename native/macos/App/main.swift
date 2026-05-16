@@ -35,6 +35,11 @@ let MOZC_PROFILE_DIR: String = {
     return "\(home)/Library/Application Support/modore"
 }()
 
+/// Bridge backend selected from config at boot. Immutable for process
+/// lifetime; changing it on disk requires a restart because the bridge is
+/// initialized once and the backend owns long-lived engine/session state.
+let MOZC_BACKEND: ModoreConfig.MozcBackend = ModoreConfig.loadMozcBackend()
+
 /// Menu-bar item showing "running" state + current hotkey. Created late in
 /// boot so its initial refresh sees the post-Carbon-registration values.
 /// `applyConversionHotkeyChord` calls `refresh` on every chord update.
@@ -100,6 +105,7 @@ if CommandLine.arguments.contains("--print-config-path") {
 if CommandLine.arguments.contains("--print-paths") {
     print("config:        \(ModoreConfig.configFileURL().path)")
     print("mozc profile:  \(MOZC_PROFILE_DIR)")
+    print("mozc backend:  \(MOZC_BACKEND.displayName)")
     print("bundle:        \(Bundle.main.bundlePath)")
     print("executable:    \(Bundle.main.executablePath ?? "?")")
     exit(0)
@@ -152,6 +158,8 @@ gCandidatePanelDurationMs = ModoreConfig.loadCandidatePanelDurationMs()
 Log.config(gCandidatePanelDurationMs == 0
     ? "candidate panel duration: no auto-hide (sticks for session)"
     : "candidate panel duration: \(gCandidatePanelDurationMs)ms")
+
+Log.config("mozc backend: \(MOZC_BACKEND.displayName)")
 
 gClipboardTimings = ModoreConfig.loadClipboardTimings()
 Log.config("clipboard timings: pre_copy=\(gClipboardTimings.preCopyDelayMs)ms"
@@ -237,8 +245,9 @@ gConfigWatcher.start()
 var gScriptsWatcher: ConfigWatcher? = nil
 
 do {
+    setenv("MODORE_MOZC_BACKEND", MOZC_BACKEND.envValue, 1)
     try MozcBridge.initialize(userProfileDir: MOZC_PROFILE_DIR)
-    Log.mozc("bridge initialized (profile=\(MOZC_PROFILE_DIR))")
+    Log.mozc("bridge initialized (backend=\(MOZC_BACKEND.displayName), profile=\(MOZC_PROFILE_DIR))")
 } catch {
     Log.mozc("bridge init FAILED: \(String(describing: error))")
     exit(1)

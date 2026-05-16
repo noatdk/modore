@@ -133,6 +133,15 @@ func runConfigCheck() -> Never {
         exit_code = 2
     }
 
+    let (mozcBackend, mozcBackendIssues) = ModoreConfig.parseMozcBackend()
+    print("  [conversion]  mozc_backend=\(mozcBackend.displayName)")
+    for issue in mozcBackendIssues {
+        print("                \(issue)")
+    }
+    if !mozcBackendIssues.isEmpty && exit_code == 0 {
+        exit_code = 2
+    }
+
     let (timings, issues) = ModoreConfig.parseClipboardTimings()
     print("  [clipboard]   pre_copy=\(timings.preCopyDelayMs)ms"
         + " read_timeout=\(timings.readTimeoutMs)ms"

@@ -55,11 +55,17 @@ INI形式。今のところ `[conversion]` セクションのみ：
 ```ini
 [conversion]
 hotkey = Ctrl+Shift+grave
+# mozc_backend = oss
 ```
 
 デフォルトはmacOSが `Cmd+Semicolon`、Linuxが `Super+Semicolon`。ホットキー
 の文法、修飾キーのエイリアス、キー名一覧は
 [docs/configuration.md](docs/configuration.md) を参照。
+
+`[conversion] mozc_backend` で変換バックエンドを
+選べる。`oss`（デフォルト、同梱のOSS Mozcをプロセス内で使用）または
+`google_ime`（システムに入っている Google 日本語入力サービス）を指定する。
+この変更はアプリ再起動後に反映される。
 
 ## 構成
 

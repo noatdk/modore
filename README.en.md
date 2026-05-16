@@ -55,11 +55,17 @@ INI-style, only `[conversion]` is defined today:
 ```ini
 [conversion]
 hotkey = Ctrl+Shift+grave
+# macOS only:
+# mozc_backend = oss
 ```
 
 Default is `Cmd+Semicolon` on macOS and `Super+Semicolon` on Linux. Full
 hotkey grammar, modifier aliases, and key names in
 [docs/configuration.md](docs/configuration.md).
+
+On macOS, `[conversion] mozc_backend` selects the bridge backend:
+`oss` (default, in-process OSS Mozc) or `google_ime` (system-installed
+Google Japanese Input service). Backend changes require restarting the app.
 
 ## Layout
 

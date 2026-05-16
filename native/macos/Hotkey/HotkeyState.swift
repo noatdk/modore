@@ -387,6 +387,7 @@ func applyCandidatePanelDurationReload() {
 /// Single entry point for the config watcher — reloads every section.
 func applyConfigReload() {
     applyConversionHotkeyReload()
+    applyMozcBackendReloadNotice()
     applyKatakanaModifierReload()
     applyCycleModifierReload()
     applyCycleFromUndoneReload()
@@ -395,6 +396,17 @@ func applyConfigReload() {
     applyCandidatePanelReload()
     applyCandidatePanelDurationReload()
     applyClassifierReload()
+}
+
+/// Reload notice for `[conversion] mozc_backend`. The bridge is initialized
+/// once at boot and owns backend-specific engine/session state, so live
+/// swapping is intentionally unsupported. We still parse the key on reload
+/// so the user gets immediate feedback that a restart is required.
+func applyMozcBackendReloadNotice() {
+    let next = ModoreConfig.loadMozcBackend()
+    if next != MOZC_BACKEND {
+        Log.config("mozc backend changed to \(next.displayName) — restart modore to apply")
+    }
 }
 
 private func applyClassifierReload() {

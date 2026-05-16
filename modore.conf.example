@@ -14,6 +14,14 @@
 hotkey = Ctrl+Shift+grave
 
 # Available: macOS
+# Which Mozc backend the macOS host should use.
+#   oss         = bundled in-process OSS Mozc engine (default)
+#   google_ime  = preinstalled Google Japanese Input service
+# Note: google_ime currently depends on app-bundle launch context; if bridge
+# init fails, switch back to `oss`.
+# mozc_backend = oss
+
+# Available: macOS
 # Extra modifier on top of `hotkey` that forces a katakana commit
 # instead of the usual top-kanji candidate. Useful for loanwords Mozc
 # keeps writing as kanji ("シドッチ" vs "史奉行"). One of: none, shift.

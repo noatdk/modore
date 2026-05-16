@@ -100,9 +100,18 @@ add_subdirectory(${FCITX5_MOZC_DIR} ${CMAKE_BINARY_DIR}/fcitx5-mozc EXCLUDE_FROM
 # (Swift host, future Windows/Linux frontend, etc.) only has to link
 # `-lmozc_bridge` and pick up our flat C ABI.
 add_library(mozc_bridge SHARED
+    src/backend_candidates.cc
+    src/backend_flow.cc
+    src/backend_oss.cc
     src/mozc_bridge.cc
     src/direct_client.cc
 )
+
+if(APPLE)
+    target_sources(mozc_bridge PRIVATE
+        src/backend_google_ime_mac.cc
+    )
+endif()
 
 # On macOS, embed an @rpath-relative install name. The Swift host adds
 # `-rpath @executable_path/../Frameworks` and copies the dylib into the
