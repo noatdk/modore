@@ -2,11 +2,11 @@
 //
 // One engine instance is created at boot via `ModoreScript.boot(scriptDir:)`
 // and lives for the process lifetime. Hosts call the typed wrappers
-// (`routeFor`, `pickup`, `replacement`, `candidates`) which translate Swift
-// values to/from the C ABI and return `nil` whenever a script wants the
-// host to use its own default — undefined hook, nil return, or thrown error
-// inside Lua are all surfaced as nil here. The caller never has to know
-// which case fired.
+// (`routeFor`, `pickup`, `replacement`, `candidates`)
+// which translate Swift values to/from the C ABI and return `nil` whenever
+// a script wants the host to use its own default — undefined hook, nil
+// return, or thrown error inside Lua are all surfaced as nil here. The
+// caller never has to know which case fired.
 //
 // String marshaling: the engine ABI speaks UTF-8 byte offsets. AX speaks
 // UTF-16 code units. Conversions live in this file so call sites stay in
@@ -53,8 +53,9 @@ enum ModoreScript {
         return FileManager.default.fileExists(atPath: path)
     }
 
-    /// Wire the four imperative primitives Lua scripts can compose inside
-    /// `modore.on_acquire`. Each trampoline is a `@convention(c)` function
+    /// Wire the imperative primitives Lua scripts can compose inside the
+    /// stage hooks. Each trampoline is a
+    /// `@convention(c)` function
     /// pointer with no Swift captures, so it's emitted as a stable linker-
     /// level symbol; the stack-local `ops` carries only the four pointer
     /// values, and `mdr_set_host_ops` copies them into engine storage. The
@@ -143,6 +144,38 @@ enum ModoreScript {
             })
     }
 
+    private static func withPickupContext<R>(
+        appId: String?,
+        fullText: String?,
+        caretUTF16: Int,
+        fieldRole: String?,
+        fieldDescription: String?,
+        katakana: Bool,
+        _ body: (mdr_pickup_ctx_t) -> R
+    ) -> R {
+        let text = fullText ?? ""
+        let utf8 = Array(text.utf8)
+        let caretByte = text.utf8ByteOffset(forUTF16Offset: caretUTF16)
+        return withOptionalCString(appId) { appPtr in
+            withOptionalCString(fieldRole) { rolePtr in
+                withOptionalCString(fieldDescription) { descPtr in
+                    utf8.withUnsafeBufferPointer { buf in
+                        let cptr = buf.baseAddress.map { UnsafeRawPointer($0).assumingMemoryBound(to: CChar.self) }
+                        let ctx = mdr_pickup_ctx_t(
+                            full_text: cptr,
+                            full_text_len: buf.count,
+                            caret_byte: caretByte,
+                            app_id: appPtr,
+                            field_role: rolePtr,
+                            field_description: descPtr,
+                            flags: katakana ? 1 : 0)
+                        return body(ctx)
+                    }
+                }
+            }
+        }
+    }
+
     static func shutdown() {
         guard let h = engine else { return }
         mdr_shutdown(h)
@@ -163,18 +196,34 @@ enum ModoreScript {
 
     // MARK: - Hooks
 
-    /// Run the script's `on_acquire` hook for `appId`. The script composes
-    /// its own pickup routine via `modore.host.*` and returns the picked
-    /// text (which should leave the focused-app selection ACTIVE so the
-    /// host can inject the replacement on top of it). Nil = use host
-    /// default acquisition.
-    static func acquire(appId: String?) -> String? {
+    /// Run the script's `on_acquire` hook for the current pickup context.
+    /// The script composes its own pickup routine via `modore.host.*` and
+    /// returns the picked text (which should leave the focused-app
+    /// selection ACTIVE so the host can inject the replacement on top of
+    /// it). Nil = use host default acquisition.
+    static func acquire(
+        appId: String?,
+        fullText: String? = nil,
+        caretUTF16: Int = 0,
+        fieldRole: String? = nil,
+        fieldDescription: String? = nil,
+        katakana: Bool = false
+    ) -> String? {
         guard let h = engine else { return nil }
         var outBuf = [CChar](repeating: 0, count: 4096)
         var outLen: size_t = 0
-        let rc = withOptionalCString(appId) { p in
-            outBuf.withUnsafeMutableBufferPointer { buf in
-                mdr_acquire(h, p, buf.baseAddress, buf.count, &outLen)
+        let rc = withPickupContext(
+            appId: appId,
+            fullText: fullText,
+            caretUTF16: caretUTF16,
+            fieldRole: fieldRole,
+            fieldDescription: fieldDescription,
+            katakana: katakana
+        ) { ctx in
+            outBuf.withUnsafeMutableBufferPointer { outPtr in
+                withUnsafePointer(to: ctx) { ctxPtr in
+                    mdr_acquire(h, ctxPtr, outPtr.baseAddress, outPtr.count, &outLen)
+                }
             }
         }
         guard rc == 1, outLen > 0 else { return nil }
@@ -184,13 +233,29 @@ enum ModoreScript {
         }
     }
 
-    /// Ask scripts to choose a delivery route for `appId`. Returns nil if
-    /// no script weighed in.
-    static func routeFor(appId: String?) -> Route? {
+    /// Ask scripts to choose a delivery route for the current pickup
+    /// context. Returns nil if no script weighed in.
+    static func routeFor(
+        appId: String?,
+        fullText: String? = nil,
+        caretUTF16: Int = 0,
+        fieldRole: String? = nil,
+        fieldDescription: String? = nil,
+        katakana: Bool = false
+    ) -> Route? {
         guard let h = engine else { return nil }
         var out: mdr_route_t = MDR_ROUTE_DEFAULT
-        let rc = withOptionalCString(appId) { p in
-            mdr_route(h, p, &out)
+        let rc = withPickupContext(
+            appId: appId,
+            fullText: fullText,
+            caretUTF16: caretUTF16,
+            fieldRole: fieldRole,
+            fieldDescription: fieldDescription,
+            katakana: katakana
+        ) { ctx in
+            withUnsafePointer(to: ctx) { ctxPtr in
+                mdr_route(h, ctxPtr, &out)
+            }
         }
         guard rc == 1 else { return nil }
         return Route(out)
@@ -214,6 +279,8 @@ enum ModoreScript {
                         full_text_len: buf.count,
                         caret_byte: caretByte,
                         app_id: appPtr,
+                        field_role: nil,
+                        field_description: nil,
                         flags: katakana ? 1 : 0)
                     return mdr_pickup(h, &ctx, &span)
                 }
@@ -289,12 +356,14 @@ enum ModoreScript {
 
     enum Route {
         case ax
+        case selectionSync
         case keystroke
         case clipboard
 
         init?(_ r: mdr_route_t) {
             switch r {
             case MDR_ROUTE_AX:        self = .ax
+            case MDR_ROUTE_SELECTION_SYNC: self = .selectionSync
             case MDR_ROUTE_KEYSTROKE: self = .keystroke
             case MDR_ROUTE_CLIPBOARD: self = .clipboard
             default:                  return nil
@@ -324,6 +393,7 @@ fileprivate func hostSendChord(_ chord: String) {
         Log.tagged("scripting", "send_chord: unparseable '\(chord)'")
         return
     }
+    Log.tagged("scripting", "hostSendChord: \(chord)")
     if gAxTraceEnabled {
         axSelectionSnapshot(label: "pre-chord '\(chord)'")
     }

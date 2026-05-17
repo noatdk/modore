@@ -9,7 +9,7 @@ import Foundation
 /// and exit. Exit code: 0 on a healthy load (including "no config, defaults
 /// will be used"), 1 if the file contains a `[conversion] hotkey` that
 /// doesn't parse, 2 if any `[clipboard]`, `katakana_modifier`, or
-/// `katakana_modifier_behavior` value is rejected.
+/// `katakana_modifier_behavior` / `[logging] disabled` value is rejected.
 func runConfigCheck() -> Never {
     let url = ModoreConfig.configFileURL()
     print("config path: \(url.path)")
@@ -58,6 +58,15 @@ func runConfigCheck() -> Never {
         print("                \(issue)")
     }
     if !katBehaviorIssues.isEmpty && exit_code == 0 {
+        exit_code = 2
+    }
+
+    let (loggingMask, loggingIssues) = ModoreConfig.parseDisabledLoggingNamespaces()
+    print("  [logging]     disabled=\(loggingMask.displayName)")
+    for issue in loggingIssues {
+        print("                \(issue)")
+    }
+    if !loggingIssues.isEmpty && exit_code == 0 {
         exit_code = 2
     }
 

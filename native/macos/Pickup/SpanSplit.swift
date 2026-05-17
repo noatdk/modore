@@ -20,6 +20,11 @@ private let kChromiumClipboardProbeBundleIDs: Set<String> = [
     "org.chromium.Chromium",
 ]
 
+func isChromiumClipboardProbeBundleID(_ bundleID: String?) -> Bool {
+    guard let bundleID else { return false }
+    return kChromiumClipboardProbeBundleIDs.contains(bundleID)
+}
+
 extension String {
     /// UTF-8 byte offset corresponding to a UTF-16 code-unit offset.
     /// Out-of-range inputs clamp to bounds. O(n) — the only callers run
@@ -137,9 +142,10 @@ func isLowerASCIIHyphenRun(_ s: String) -> Bool {
 ///
 /// Chromium text fields split on hyphens more aggressively than the other
 /// fallback targets we care about, so a plain lowercase word like
-/// `thingu` can actually be the tail of `mi-thingu`. In those apps we
-/// allow one extra probe even when the initial pick does not already
-/// contain a hyphen.
+/// `thingu` can actually be the tail of `mi-thingu`. To keep the common
+/// Chrome/Obsidian romaji path fast, we only spend extra probing effort
+/// on short tails where a hyphen split is plausible, or when the original
+/// selection already contains a hyphen.
 func shouldProbeForcedHyphenatedSelectionExpansion(
     original: String,
     appBundleID: String?
@@ -150,8 +156,10 @@ func shouldProbeForcedHyphenatedSelectionExpansion(
     if original.utf8.contains(0x2D) || original.utf16.count <= 3 {
         return true
     }
-    guard let appBundleID else { return false }
-    return kChromiumClipboardProbeBundleIDs.contains(appBundleID)
+    guard isChromiumClipboardProbeBundleID(appBundleID) else {
+        return false
+    }
+    return original.utf16.count <= 6
 }
 
 /// True for the ASCII punctuation that the pickup pipeline can normalize

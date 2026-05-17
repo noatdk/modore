@@ -6,6 +6,7 @@
 //   [conversion] katakana_modifier_behavior=...  — katakana vs cycle_backwards (macOS only)
 //   [bridge]     mozc_backend=...       — built-in Mozc vs system Google IME (macOS only)
 //   [bridge]     ...                    — launch-time knobs for bridge/env-gated backend tweaks
+//   [logging]    disabled=...           — comma-separated namespaces to suppress
 //   [clipboard]  *_ms=<integer>         — fallback-path timings (macOS only)
 
 import Carbon
@@ -14,7 +15,7 @@ import Foundation
 enum ModoreConfig {
 
     /// Which bridge backend the macOS host should request at startup.
-    /// `.oss` keeps the existing built-in Mozc path. `.googleIme`
+    /// `built-in` keeps the existing bundled Mozc path. `.googleIme`
     /// targets the system-installed Google Japanese Input service via the
     /// bridge's macOS-only backend.
     enum MozcBackend: Equatable {
@@ -42,6 +43,74 @@ enum ModoreConfig {
     struct BridgeRuntime: Equatable {
         var candidateMixingMode: Int = 0
         var traceRawCandidates: Bool = false
+    }
+
+    /// Compact runtime mask for logging namespaces. Stored as a bitset so
+    /// disabled-tag checks stay allocation-free in the hot path.
+    struct LoggingNamespaceMask: OptionSet, Equatable {
+        let rawValue: UInt64
+
+        static let boot        = LoggingNamespaceMask(rawValue: 1 << 0)
+        static let config      = LoggingNamespaceMask(rawValue: 1 << 1)
+        static let ax          = LoggingNamespaceMask(rawValue: 1 << 2)
+        static let hotkey      = LoggingNamespaceMask(rawValue: 1 << 3)
+        static let pickup      = LoggingNamespaceMask(rawValue: 1 << 4)
+        static let clipboard   = LoggingNamespaceMask(rawValue: 1 << 5)
+        static let mozc        = LoggingNamespaceMask(rawValue: 1 << 6)
+        static let secureInput = LoggingNamespaceMask(rawValue: 1 << 7)
+        static let undo        = LoggingNamespaceMask(rawValue: 1 << 8)
+        static let cycle       = LoggingNamespaceMask(rawValue: 1 << 9)
+        static let panel       = LoggingNamespaceMask(rawValue: 1 << 10)
+        static let unicode     = LoggingNamespaceMask(rawValue: 1 << 11)
+        static let scripting   = LoggingNamespaceMask(rawValue: 1 << 12)
+
+        static let allKnown: LoggingNamespaceMask = [
+            .boot, .config, .ax, .hotkey, .pickup, .clipboard,
+            .mozc, .secureInput, .undo, .cycle, .panel, .unicode, .scripting,
+        ]
+
+        init(rawValue: UInt64) {
+            self.rawValue = rawValue
+        }
+
+        init?(namespace token: String) {
+            switch token {
+            case "boot": self = .boot
+            case "config": self = .config
+            case "ax": self = .ax
+            case "hotkey": self = .hotkey
+            case "pickup": self = .pickup
+            case "clipboard": self = .clipboard
+            case "mozc": self = .mozc
+            case "secure-input", "secure_input": self = .secureInput
+            case "undo": self = .undo
+            case "cycle": self = .cycle
+            case "panel": self = .panel
+            case "unicode": self = .unicode
+            case "scripting": self = .scripting
+            default: return nil
+            }
+        }
+
+        var displayName: String {
+            if self == [] { return "none" }
+            if self == .allKnown { return "all" }
+            var parts: [String] = []
+            if contains(.boot)        { parts.append("boot") }
+            if contains(.config)      { parts.append("config") }
+            if contains(.ax)          { parts.append("ax") }
+            if contains(.hotkey)      { parts.append("hotkey") }
+            if contains(.pickup)      { parts.append("pickup") }
+            if contains(.clipboard)   { parts.append("clipboard") }
+            if contains(.mozc)        { parts.append("mozc") }
+            if contains(.secureInput) { parts.append("secure-input") }
+            if contains(.undo)        { parts.append("undo") }
+            if contains(.cycle)       { parts.append("cycle") }
+            if contains(.panel)       { parts.append("panel") }
+            if contains(.unicode)     { parts.append("unicode") }
+            if contains(.scripting)   { parts.append("scripting") }
+            return parts.joined(separator: ",")
+        }
     }
 
     struct ConversionHotkey: Equatable {
@@ -265,7 +334,7 @@ enum ModoreConfig {
 
     /// Parse `[bridge] mozc_backend` with `[conversion]` as a compatibility
     /// fallback. Wrapper that logs issues.
-    /// Default `.oss` preserves the long-standing built-in behavior.
+    /// Default bundled Mozc preserves the long-standing built-in behavior.
     static func loadMozcBackend() -> MozcBackend {
         let (v, issues) = parseMozcBackend()
         for issue in issues { Log.config(issue) }
@@ -273,7 +342,7 @@ enum ModoreConfig {
     }
 
     /// Same parse as `loadMozcBackend()` but returns issues separately.
-    /// Missing key yields `.oss`; malformed values yield `.oss` with one
+    /// Missing key yields bundled Mozc; malformed values yield bundled Mozc with one
     /// issue string. `[bridge] mozc_backend` wins over the legacy
     /// `[conversion]` location if both are set.
     static func parseMozcBackend() -> (MozcBackend, [String]) {
@@ -332,6 +401,50 @@ enum ModoreConfig {
             }
         }
         return (runtime, issues)
+    }
+
+    /// Parse `[logging] disabled=...` into a compact runtime namespace mask.
+    /// The host applies this before any other startup logs so disabled
+    /// namespaces cost only a bitmask test in the hot path.
+    static func loadDisabledLoggingNamespaces() -> LoggingNamespaceMask {
+        let (mask, issues) = parseDisabledLoggingNamespaces()
+        for issue in issues { Log.config(issue) }
+        return mask
+    }
+
+    /// Same parse as `loadDisabledLoggingNamespaces()` but returns issues
+    /// separately. Values are comma-separated namespace roots. `all`
+    /// disables every built-in namespace; `none` is a no-op.
+    static func parseDisabledLoggingNamespaces() -> (LoggingNamespaceMask, [String]) {
+        var mask = LoggingNamespaceMask()
+        var issues: [String] = []
+        let url = configFileURL()
+        _ = forEachKeyValue(url) { section, key, value in
+            guard section == "logging" else { return }
+            guard key == "disabled" || key == "disable" else { return }
+            for rawToken in value.split(separator: ",", omittingEmptySubsequences: true) {
+                let token = normalizeLoggingNamespaceToken(String(rawToken))
+                if token.isEmpty || token == "none" {
+                    continue
+                }
+                if token == "all" {
+                    mask.formUnion(.allKnown)
+                    continue
+                }
+                guard let ns = LoggingNamespaceMask(namespace: token) else {
+                    issues.append("ignoring [logging] \(key)=\(value) (unknown namespace \(token))")
+                    continue
+                }
+                mask.insert(ns)
+            }
+        }
+        return (mask, issues)
+    }
+
+    private static func normalizeLoggingNamespaceToken(_ token: String) -> String {
+        let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard let colon = trimmed.firstIndex(of: ":") else { return trimmed }
+        return String(trimmed[..<colon])
     }
 
     private static let defaultChord = "Cmd+Semicolon"
@@ -675,21 +788,23 @@ enum ModoreConfig {
     static func parseChord(_ s: String) -> ConversionHotkey? {
         let segments = s.split(separator: "+").map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
-        guard segments.count >= 2 else { return nil }
+        guard !segments.isEmpty else { return nil }
 
         var flags: CGEventFlags = []
-        for i in 0..<(segments.count - 1) {
-            switch segments[i].lowercased() {
-            case "ctrl", "control":
-                flags.insert(.maskControl)
-            case "shift":
-                flags.insert(.maskShift)
-            case "alt", "option", "meta":
-                flags.insert(.maskAlternate)
-            case "super", "win", "command", "cmd":
-                flags.insert(.maskCommand)
-            default:
-                return nil
+        if segments.count >= 2 {
+            for i in 0..<(segments.count - 1) {
+                switch segments[i].lowercased() {
+                case "ctrl", "control":
+                    flags.insert(.maskControl)
+                case "shift":
+                    flags.insert(.maskShift)
+                case "alt", "option", "meta":
+                    flags.insert(.maskAlternate)
+                case "super", "win", "command", "cmd":
+                    flags.insert(.maskCommand)
+                default:
+                    return nil
+                }
             }
         }
 
@@ -703,9 +818,34 @@ enum ModoreConfig {
         let lower = t.lowercased()
 
         if lower.count == 1, let ch = lower.first {
-            if ch >= "a" && ch <= "z" {
-                let o = Int(ch.asciiValue! - UInt8(ascii: "a"))
-                return CGKeyCode(kVK_ANSI_A + o)
+            switch ch {
+            case "a": return CGKeyCode(kVK_ANSI_A)
+            case "b": return CGKeyCode(kVK_ANSI_B)
+            case "c": return CGKeyCode(kVK_ANSI_C)
+            case "d": return CGKeyCode(kVK_ANSI_D)
+            case "e": return CGKeyCode(kVK_ANSI_E)
+            case "f": return CGKeyCode(kVK_ANSI_F)
+            case "g": return CGKeyCode(kVK_ANSI_G)
+            case "h": return CGKeyCode(kVK_ANSI_H)
+            case "i": return CGKeyCode(kVK_ANSI_I)
+            case "j": return CGKeyCode(kVK_ANSI_J)
+            case "k": return CGKeyCode(kVK_ANSI_K)
+            case "l": return CGKeyCode(kVK_ANSI_L)
+            case "m": return CGKeyCode(kVK_ANSI_M)
+            case "n": return CGKeyCode(kVK_ANSI_N)
+            case "o": return CGKeyCode(kVK_ANSI_O)
+            case "p": return CGKeyCode(kVK_ANSI_P)
+            case "q": return CGKeyCode(kVK_ANSI_Q)
+            case "r": return CGKeyCode(kVK_ANSI_R)
+            case "s": return CGKeyCode(kVK_ANSI_S)
+            case "t": return CGKeyCode(kVK_ANSI_T)
+            case "u": return CGKeyCode(kVK_ANSI_U)
+            case "v": return CGKeyCode(kVK_ANSI_V)
+            case "w": return CGKeyCode(kVK_ANSI_W)
+            case "x": return CGKeyCode(kVK_ANSI_X)
+            case "y": return CGKeyCode(kVK_ANSI_Y)
+            case "z": return CGKeyCode(kVK_ANSI_Z)
+            default: break
             }
         }
 

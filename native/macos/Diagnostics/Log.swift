@@ -20,22 +20,32 @@ import os
 enum Log {
     static let subsystem = "com.modore.host"
 
-    static func boot(_ message: String)      { write("boot",      message) }
-    static func config(_ message: String)    { write("config",    message) }
-    static func ax(_ message: String)        { write("ax",        message) }
-    static func hotkey(_ message: String)    { write("hotkey",    message) }
-    static func pickup(_ message: String)    { write("pickup",    message) }
-    static func clipboard(_ message: String) { write("clipboard", message) }
-    static func mozc(_ message: String)      { write("mozc",      message) }
-    static func secureInput(_ message: String) { write("secure-input", message) }
-    static func undo(_ message: String)        { write("undo",         message) }
-    static func cycle(_ message: String)       { write("cycle",        message) }
-    static func panel(_ message: String)        { write("panel",        message) }
+    static func configureDisabledNamespaces(_ namespaces: ModoreConfig.LoggingNamespaceMask) {
+        disabledNamespacesLock.lock()
+        disabledNamespaces = namespaces
+        disabledNamespacesLock.unlock()
+    }
 
-    static func tagged(_ tag: String, _ message: String) { write(tag, message) }
+    static func boot(_ message: @autoclosure () -> String)        { write("boot",        message) }
+    static func config(_ message: @autoclosure () -> String)      { write("config",      message) }
+    static func ax(_ message: @autoclosure () -> String)          { write("ax",          message) }
+    static func hotkey(_ message: @autoclosure () -> String)      { write("hotkey",      message) }
+    static func pickup(_ message: @autoclosure () -> String)      { write("pickup",      message) }
+    static func clipboard(_ message: @autoclosure () -> String)   { write("clipboard",   message) }
+    static func mozc(_ message: @autoclosure () -> String)        { write("mozc",        message) }
+    static func secureInput(_ message: @autoclosure () -> String) { write("secure-input", message) }
+    static func undo(_ message: @autoclosure () -> String)        { write("undo",        message) }
+    static func cycle(_ message: @autoclosure () -> String)       { write("cycle",       message) }
+    static func panel(_ message: @autoclosure () -> String)       { write("panel",       message) }
+
+    static func tagged(_ tag: String, _ message: @autoclosure () -> String) {
+        write(tag, message)
+    }
 
     private static let loggersLock = NSLock()
     private static var loggers: [String: Logger] = [:]
+    private static let disabledNamespacesLock = NSLock()
+    private static var disabledNamespaces: ModoreConfig.LoggingNamespaceMask = []
 
     private static func logger(for tag: String) -> Logger {
         loggersLock.lock(); defer { loggersLock.unlock() }
@@ -45,9 +55,44 @@ enum Log {
         return made
     }
 
-    private static func write(_ tag: String, _ message: String) {
+    private static func write(_ tag: String, _ message: () -> String) {
+        guard isEnabled(tag: tag) else { return }
         // %{public}@ keeps the message readable in `log show`; without it the
         // unified-logging redactor would replace dynamic strings with <private>.
-        logger(for: tag).log("\(message, privacy: .public)")
+        let rendered = message()
+        logger(for: tag).log("\(rendered, privacy: .public)")
+    }
+
+    private static func isEnabled(tag: String) -> Bool {
+        guard let ns = namespaceMask(for: tag) else { return true }
+        disabledNamespacesLock.lock()
+        let disabled = disabledNamespaces
+        disabledNamespacesLock.unlock()
+        return !disabled.contains(ns)
+    }
+
+    private static func namespaceMask(for tag: String) -> ModoreConfig.LoggingNamespaceMask? {
+        let root: Substring
+        if let colon = tag.firstIndex(of: ":") {
+            root = tag[..<colon]
+        } else {
+            root = Substring(tag)
+        }
+        switch root {
+        case "boot": return .boot
+        case "config": return .config
+        case "ax": return .ax
+        case "hotkey": return .hotkey
+        case "pickup": return .pickup
+        case "clipboard": return .clipboard
+        case "mozc": return .mozc
+        case "secure-input": return .secureInput
+        case "undo": return .undo
+        case "cycle": return .cycle
+        case "panel": return .panel
+        case "unicode": return .unicode
+        case "scripting": return .scripting
+        default: return nil
+        }
     }
 }

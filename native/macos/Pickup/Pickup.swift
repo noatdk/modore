@@ -328,6 +328,27 @@ private func trailingUsefulHyphenatedRun(_ s: String) -> String? {
     return isUsefulHyphenatedPickup(tail) ? tail : nil
 }
 
+/// Chromium clipboard fallback can copy more than the target token when the
+/// renderer does not preserve the exact selection. Keep any left-side text
+/// intact and only convert the trailing word-sized target.
+private func splitTrailingClipboardTarget(
+    _ text: String,
+    appBundleID: String?
+) -> (prefix: String, target: String) {
+    guard isChromiumClipboardProbeBundleID(appBundleID) else {
+        return ("", text)
+    }
+    let caret = text.utf16.count
+    let (start, end) = wordBounds(text, caret: caret)
+    guard start > 0, end == caret,
+          let prefix = sliceUTF16(text, start: 0, end: start),
+          let target = sliceUTF16(text, start: start, end: end),
+          !target.isEmpty else {
+        return ("", text)
+    }
+    return (prefix, target)
+}
+
 private func maybeExpandForcedHyphenatedSelectionWindow(
     _ original: String,
     pasteboard pb: NSPasteboard,
@@ -367,7 +388,10 @@ private func maybeExpandForcedHyphenatedSelectionByWord(
     var best: (text: String, selectionLen: Int, expandedWords: Int)?
     var current = original
 
-    for _ in 0..<4 {
+    // Keep this intentionally shallow: if the first word-left probe does
+    // not reveal a useful hyphenated tail, the wider window scan below can
+    // still recover the rare Chrome cases that need it.
+    for _ in 0..<2 {
         postKey(kVK_LeftArrow, flags: [.maskShift, .maskAlternate])
         expandedWords += 1
         Thread.sleep(forTimeInterval: 0.02)
@@ -421,7 +445,7 @@ private func maybeExpandForcedHyphenatedSelection(
     }
     let expansionTimeoutMs = min(timings.readTimeoutMs, 120)
 
-    if let expanded = maybeExpandForcedHyphenatedSelectionWindow(
+    if let expanded = maybeExpandForcedHyphenatedSelectionByWord(
         original,
         pasteboard: pb,
         timeoutMs: expansionTimeoutMs
@@ -429,7 +453,7 @@ private func maybeExpandForcedHyphenatedSelection(
         return expanded
     }
 
-    if let expanded = maybeExpandForcedHyphenatedSelectionByWord(
+    if let expanded = maybeExpandForcedHyphenatedSelectionWindow(
         original,
         pasteboard: pb,
         timeoutMs: expansionTimeoutMs
@@ -656,6 +680,121 @@ private func replaceChromiumOmnibox(
     return true
 }
 
+private func applyFieldReplacement(
+    route: ModoreScript.Route,
+    field: FocusedField,
+    appId: String?,
+    start: Int,
+    end: Int,
+    originalReading: String,
+    replacement: String,
+    sessionSeed: (candidates: [MozcBridge.Candidate], currentIndex: Int)
+) -> Bool {
+    switch route {
+    case .selectionSync:
+        if postUnicodeOverAXSelection(
+            in: field.element,
+            start: start,
+            end: end,
+            replacement: replacement) {
+            let session = ConversionSession(
+                backing: .ax(element: field.element, spanStart: start),
+                originalReading: originalReading,
+                candidates: sessionSeed.candidates,
+                candidateIndex: sessionSeed.currentIndex,
+                timestamp: Date())
+            ConversionSessionStore.set(session)
+            if gCandidatePanelMode == .onConvert {
+                CandidatePanel.shared.show(session: session)
+            }
+            return true
+        }
+        Log.pickup("selection-sync route failed; falling back to keystroke-retype")
+        keystrokeReplaceSpan(
+            caret: (start: start, end: end),
+            spanEnd: end,
+            spanLen: end - start,
+            replacement: replacement)
+        let frontmost = FrontmostApp.describe()
+        let session = ConversionSession(
+            backing: .clipboard(
+                frontmostBundleId: frontmost?.bundleID,
+                frontmostPid: frontmost?.pid ?? 0),
+            originalReading: originalReading,
+            candidates: sessionSeed.candidates,
+            candidateIndex: sessionSeed.currentIndex,
+            timestamp: Date())
+        ConversionSessionStore.set(session)
+        if gCandidatePanelMode == .onConvert {
+            CandidatePanel.shared.show(session: session)
+        }
+        return true
+    case .keystroke, .clipboard:
+        keystrokeReplaceSpan(
+            caret: (start: start, end: end),
+            spanEnd: end,
+            spanLen: end - start,
+            replacement: replacement)
+        let frontmost = FrontmostApp.describe()
+        let session = ConversionSession(
+            backing: .clipboard(
+                frontmostBundleId: frontmost?.bundleID,
+                frontmostPid: frontmost?.pid ?? 0),
+            originalReading: originalReading,
+            candidates: sessionSeed.candidates,
+            candidateIndex: sessionSeed.currentIndex,
+            timestamp: Date())
+        ConversionSessionStore.set(session)
+        if gCandidatePanelMode == .onConvert {
+            CandidatePanel.shared.show(session: session)
+        }
+        return true
+    case .ax:
+        if isChromiumOmnibox(field: field, appId: appId) {
+            return replaceChromiumOmnibox(
+                field: field,
+                start: start,
+                end: end,
+                originalReading: originalReading,
+                replacement: replacement,
+                sessionSeed: sessionSeed)
+        }
+        if replaceRange(in: field.element, start: start, end: end, replacement: replacement) {
+            let session = ConversionSession(
+                backing: .ax(element: field.element, spanStart: start),
+                originalReading: originalReading,
+                candidates: sessionSeed.candidates,
+                candidateIndex: sessionSeed.currentIndex,
+                timestamp: Date())
+            ConversionSessionStore.set(session)
+            if gCandidatePanelMode == .onConvert {
+                CandidatePanel.shared.show(session: session)
+            }
+            return true
+        }
+        Log.pickup("AX write rejected; using backspace-retype for [\(start)..\(end)] \(originalReading)\(FrontmostApp.logSuffix())")
+        keystrokeReplaceSpan(
+            caret: (start: start, end: end),
+            spanEnd: end,
+            spanLen: end - start,
+            replacement: replacement)
+        let frontmost = FrontmostApp.describe()
+        let session = ConversionSession(
+            backing: .clipboard(
+                frontmostBundleId: frontmost?.bundleID,
+                frontmostPid: frontmost?.pid ?? 0),
+            originalReading: originalReading,
+            candidates: sessionSeed.candidates,
+            candidateIndex: sessionSeed.currentIndex,
+            timestamp: Date())
+        ConversionSessionStore.set(session)
+        if gCandidatePanelMode == .onConvert {
+            CandidatePanel.shared.show(session: session)
+        }
+        return true
+    }
+}
+
 /// Bundle IDs where the Cmd+C-peek heuristic in step 1 below is unreliable
 /// because the app line-copies the caret's current line *without* a
 /// trailing newline (so `looksLikeLineCopy` misses it). Chrome's DevTools
@@ -764,12 +903,23 @@ func doClipboardPickup(_ request: PickupRequest = .init()) {
             postKey(kVK_RightArrow)
         }
         return
-    }
+}
 
     if pickedText.hasSuffix("\n") { pickedText.removeLast() }
     if pickedText.hasSuffix("\r") { pickedText.removeLast() }
 
+    let clipboardSelection = pickedText
+    let (clipboardPrefix, clipboardTarget) = splitTrailingClipboardTarget(
+        pickedText,
+        appBundleID: frontmostBundleID
+    )
+    pickedText = clipboardTarget
+
     Log.clipboard("pick: \(pickedText)")
+    let deleteBeforeInsertCount = (deletePickedBeforeInsert ||
+        (didForceSelect && (frontmostBundleID.map(kPeekExistingSelectionBlocklist.contains) ?? false)))
+        ? pickedText.utf16.count
+        : 0
 
     // Mirror the AX path's script-boundary split for the clipboard path:
     // Shift+Opt+Left in Discord/Sublime grabs the whole word including any
@@ -781,8 +931,8 @@ func doClipboardPickup(_ request: PickupRequest = .init()) {
     let (romajiCore, romajiSuffix) = splitTrailingASCIIPunctuation(romajiTail)
     let convertedSuffix = convertTrailingASCIISuffix(romajiSuffix, request: request)
     guard !romajiCore.isEmpty else {
-        let replacement = asciiPrefix + convertedSuffix
-        guard replacement != pickedText else {
+        let replacement = clipboardPrefix + asciiPrefix + convertedSuffix
+        guard replacement != clipboardSelection else {
             Log.clipboard("nothing to convert (no trailing romaji in \(pickedText))")
             if didForceSelect {
                 postKey(kVK_RightArrow)
@@ -792,7 +942,7 @@ func doClipboardPickup(_ request: PickupRequest = .init()) {
         Log.clipboard("punctuation-only pickup -> \(replacement)")
         postClipboardReplacement(
             replacement,
-            deleteBeforeInsert: deletePickedBeforeInsert ? pickedText.utf16.count : 0)
+            deleteBeforeInsert: deleteBeforeInsertCount)
         if didForceSelect {
             postKey(kVK_RightArrow)
         }
@@ -803,8 +953,8 @@ func doClipboardPickup(_ request: PickupRequest = .init()) {
     let (acronymHead, mozcInput) = splitAcronymHead(romajiBody)
     let frozenPrefix = asciiPrefix + leadingJunk + acronymHead
     if mozcInput.first?.isLowercase != true {
-        let replacement = frozenPrefix + mozcInput + convertedSuffix
-        guard replacement != pickedText else {
+        let replacement = clipboardPrefix + frozenPrefix + mozcInput + convertedSuffix
+        guard replacement != clipboardSelection else {
             Log.clipboard("skipping: no romaji tail after acronym split (\(mozcInput))")
             if didForceSelect {
                 postKey(kVK_RightArrow)
@@ -827,13 +977,13 @@ func doClipboardPickup(_ request: PickupRequest = .init()) {
             candidates: snapshotCandidates)
         postClipboardReplacement(
             finalReplacement,
-            deleteBeforeInsert: deletePickedBeforeInsert ? pickedText.utf16.count : 0)
+            deleteBeforeInsert: deleteBeforeInsertCount)
         let frontmost = FrontmostApp.describe()
         let session = ConversionSession(
             backing: .clipboard(
                 frontmostBundleId: frontmost?.bundleID,
                 frontmostPid: frontmost?.pid ?? 0),
-            originalReading: pickedText,
+            originalReading: clipboardSelection,
             candidates: sessionSeed.candidates,
             candidateIndex: sessionSeed.currentIndex,
             timestamp: Date())
@@ -848,9 +998,9 @@ func doClipboardPickup(_ request: PickupRequest = .init()) {
     let baseCandidates: [MozcBridge.Candidate]
     if gClassifierEnabled,
        let segResult = classifierSegmentedConvert(mozcInput, request: request) {
-        baseReplacement = frozenPrefix + segResult.replacement + convertedSuffix
+        baseReplacement = clipboardPrefix + frozenPrefix + segResult.replacement + convertedSuffix
         baseCandidates = mapCandidateValues(segResult.candidates) {
-            frozenPrefix + $0.value + convertedSuffix
+            clipboardPrefix + frozenPrefix + $0.value + convertedSuffix
         }
     } else {
         // Fallback: heuristic acronym split.
@@ -861,11 +1011,11 @@ func doClipboardPickup(_ request: PickupRequest = .init()) {
             }
             return
         }
-        baseReplacement = frozenPrefix + result.replacement + convertedSuffix
+        baseReplacement = clipboardPrefix + frozenPrefix + result.replacement + convertedSuffix
         baseCandidates = result.candidates.isEmpty
-            ? [candidateFromValue(frozenPrefix + result.replacement + convertedSuffix)]
+            ? [candidateFromValue(clipboardPrefix + frozenPrefix + result.replacement + convertedSuffix)]
             : mapCandidateValues(result.candidates) {
-                frozenPrefix + $0.value + convertedSuffix
+                clipboardPrefix + frozenPrefix + $0.value + convertedSuffix
             }
     }
     // Script overrides — no AX span on the clipboard path, so span byte
@@ -873,8 +1023,8 @@ func doClipboardPickup(_ request: PickupRequest = .init()) {
     // on app_id instead.
     let scriptSpan = mdr_span_t(span_start_byte: 0, span_end_byte: 0,
                                 romaji: nil, romaji_len: 0)
-    let replacement = ModoreScript.replacement(
-        appId: frontmostBundleID, span: scriptSpan, candidates: candidateValues(baseCandidates)) ?? baseReplacement
+        let replacement = ModoreScript.replacement(
+            appId: frontmostBundleID, span: scriptSpan, candidates: candidateValues(baseCandidates)) ?? baseReplacement
     let snapshotCandidateValues = ModoreScript.candidates(
         appId: frontmostBundleID, list: candidateValues(baseCandidates), currentIndex: 0)
         ?? candidateValues(baseCandidates)
@@ -890,20 +1040,20 @@ func doClipboardPickup(_ request: PickupRequest = .init()) {
     // path → no flicker, no race with the user's clipboard contents.
     postClipboardReplacement(
         replacement,
-        deleteBeforeInsert: deletePickedBeforeInsert ? pickedText.utf16.count : 0)
+        deleteBeforeInsert: deleteBeforeInsertCount)
 
     // Open a clipboard-backed session for follow-up gestures. The frontmost
     // app's pid + bundle ID are the identity check Esc-undo / cycle use to
     // refuse to act on the wrong window.
     let frontmost = FrontmostApp.describe()
-    let session = ConversionSession(
-        backing: .clipboard(
-            frontmostBundleId: frontmost?.bundleID,
-            frontmostPid: frontmost?.pid ?? 0),
-        originalReading: pickedText,
-        candidates: sessionSeed.candidates,
-        candidateIndex: sessionSeed.currentIndex,
-        timestamp: Date())
+        let session = ConversionSession(
+            backing: .clipboard(
+                frontmostBundleId: frontmost?.bundleID,
+                frontmostPid: frontmost?.pid ?? 0),
+            originalReading: clipboardSelection,
+            candidates: sessionSeed.candidates,
+            candidateIndex: sessionSeed.currentIndex,
+            timestamp: Date())
     ConversionSessionStore.set(session)
     if gCandidatePanelMode == .onConvert {
         CandidatePanel.shared.show(session: session)
@@ -929,7 +1079,11 @@ func doClipboardPickup(_ request: PickupRequest = .init()) {
 // backward through preceding blank lines. Reverted. Scripts that need
 // pixel-perfect line replacement in CodeMirror should fall back to a
 // clipboard-paste recipe driven from on_acquire itself.
-func runConversionOnAcquiredText(_ raw: String, request: PickupRequest, appId: String?) {
+func runConversionOnAcquiredText(
+    _ raw: String,
+    request: PickupRequest,
+    appId: String?
+) {
     var pickedText = raw
     if pickedText.hasSuffix("\n") { pickedText.removeLast() }
     if pickedText.hasSuffix("\r") { pickedText.removeLast() }
@@ -942,8 +1096,39 @@ func runConversionOnAcquiredText(_ raw: String, request: PickupRequest, appId: S
     let (asciiPrefix, romajiTail) = splitTrailingASCII(pickedText)
     let (romajiCore, romajiSuffix) = splitTrailingASCIIPunctuation(romajiTail)
     let convertedSuffix = convertTrailingASCIISuffix(romajiSuffix, request: request)
-    guard !romajiCore.isEmpty else {
-        Log.pickup("scripted acquire: no trailing romaji in \(pickedText)")
+    if romajiCore.isEmpty {
+        let replacement = asciiPrefix + convertedSuffix
+        guard replacement != pickedText else {
+            Log.pickup("scripted acquire: no trailing romaji in \(pickedText)")
+            return
+        }
+        let baseCandidates = [candidateFromValue(replacement, group: .input)]
+        let scriptSpan = mdr_span_t(span_start_byte: 0, span_end_byte: 0,
+                                    romaji: nil, romaji_len: 0)
+        let finalReplacement = ModoreScript.replacement(
+            appId: appId, span: scriptSpan, candidates: candidateValues(baseCandidates)) ?? replacement
+        let snapshotCandidateValues = ModoreScript.candidates(
+            appId: appId, list: candidateValues(baseCandidates), currentIndex: 0)
+            ?? candidateValues(baseCandidates)
+        let snapshotCandidates = applyScriptCandidateValues(
+            snapshotCandidateValues, onto: baseCandidates)
+        Log.pickup("scripted acquire punctuation-only pickup -> \(finalReplacement) (alts=\(snapshotCandidates.count))")
+        let sessionSeed = normalizeCommittedCandidateState(
+            replacement: finalReplacement,
+            candidates: snapshotCandidates)
+        postUnicode(finalReplacement)
+        let session = ConversionSession(
+            backing: .clipboard(
+                frontmostBundleId: appId,
+                frontmostPid: FrontmostApp.currentPid() ?? 0),
+            originalReading: pickedText,
+            candidates: sessionSeed.candidates,
+            candidateIndex: sessionSeed.currentIndex,
+            timestamp: Date())
+        ConversionSessionStore.set(session)
+        if gCandidatePanelMode == .onConvert {
+            CandidatePanel.shared.show(session: session)
+        }
         return
     }
     let (leadingJunk, romajiBody) = splitLeadingASCIIJunkBeforeLowercase(romajiCore)
@@ -1039,24 +1224,6 @@ func doPickup(_ request: PickupRequest = .init()) {
     // Frontmost-app capture once, threaded through script hooks below.
     let appId = FrontmostApp.describe()?.bundleID
 
-    if let picked = ModoreScript.acquire(appId: appId) {
-        Log.pickup("scripted acquire → \(picked.count) chars\(FrontmostApp.logSuffix())")
-        runConversionOnAcquiredText(picked, request: request, appId: appId)
-        return
-    }
-
-    // Per-app routing override. A script returning "clipboard" skips the
-    // AX read entirely and goes straight to the Cmd+C fallback path —
-    // useful for apps (Obsidian, Discord, …) where AX writes are unreliable
-    // but the user wants the same hotkey to Just Work. "ax" and "keystroke"
-    // are no-ops here today: the existing flow already tries AX first and
-    // falls back to keystroke-replace on rejection.
-    if let route = ModoreScript.routeFor(appId: appId), route == .clipboard {
-        Log.pickup("scripted route → clipboard\(FrontmostApp.logSuffix())")
-        doClipboardPickup(request)
-        return
-    }
-
     // First AX attempt. If it fails — typically because the frontmost app
     // is Electron and hasn't been opted into accessibility — flip the
     // documented `AXManualAccessibility` switch on that app's pid and try
@@ -1066,29 +1233,67 @@ func doPickup(_ request: PickupRequest = .init()) {
         enableElectronAXIfNeeded()
         focusedField = readFocusedField()
     }
-    if let field = focusedField {
-        let (start, end): (Int, Int)
-        if field.selStart != field.selEnd {
-            (start, end) = (field.selStart, field.selEnd)
-        } else if let scripted = ModoreScript.pickup(
-            fullText: field.value,
-            caretUTF16: field.selStart,
-            appId: appId,
-            katakana: request.target == .katakana) {
-            (start, end) = scripted
-            Log.pickup("scripted pickup span [\(start)..\(end)]")
-        } else {
-            (start, end) = wordBounds(field.value, caret: field.selStart)
-        }
-        guard start >= 0, end <= field.value.utf16.count, start < end else {
-            Log.pickup("empty span; nothing to convert")
-            return
-        }
 
-        guard let spanText = sliceUTF16(field.value, start: start, end: end) else {
-            Log.pickup("empty span; nothing to convert")
+    if let picked = ModoreScript.acquire(
+        appId: appId,
+        fullText: focusedField?.value,
+        caretUTF16: focusedField?.selStart ?? 0,
+        fieldRole: focusedField?.role,
+        fieldDescription: focusedField?.description,
+        katakana: request.target == .katakana) {
+        Log.pickup("scripted acquire → \(picked.count) chars\(FrontmostApp.logSuffix())")
+        runConversionOnAcquiredText(picked, request: request, appId: appId)
+        return
+    }
+
+    let hasScript = appId.map(ModoreScript.hasScript(forAppId:)) ?? false
+    let route = ModoreScript.routeFor(
+        appId: appId,
+        fullText: focusedField?.value,
+        caretUTF16: focusedField?.selStart ?? 0,
+        fieldRole: focusedField?.role,
+        fieldDescription: focusedField?.description,
+        katakana: request.target == .katakana)
+        ?? (hasScript ? .ax : (focusedField == nil ? .clipboard : .ax))
+
+    // A script returning "clipboard" skips the AX write path entirely and
+    // goes straight to the Cmd+C fallback path.
+    if route == .clipboard {
+        Log.pickup("scripted route → clipboard\(FrontmostApp.logSuffix())")
+        doClipboardPickup(request)
+        return
+    }
+    guard let field = focusedField else {
+        if hasScript {
+            Log.pickup("scripted app has no AX field; skipping host clipboard fallback\(FrontmostApp.logSuffix())")
             return
         }
+        doClipboardPickup(request)
+        return
+    }
+
+    let (start, end): (Int, Int)
+    if field.selStart != field.selEnd {
+        (start, end) = (field.selStart, field.selEnd)
+    } else if let scripted = ModoreScript.pickup(
+        fullText: field.value,
+        caretUTF16: field.selStart,
+        appId: appId,
+        katakana: request.target == .katakana) {
+        (start, end) = scripted
+        Log.pickup("scripted pickup span [\(start)..\(end)]")
+    } else {
+        (start, end) = wordBounds(field.value, caret: field.selStart)
+    }
+    guard start >= 0, end <= field.value.utf16.count, start < end else {
+        Log.pickup("empty span; nothing to convert")
+        return
+    }
+
+    guard let spanText = sliceUTF16(field.value, start: start, end: end) else {
+        Log.pickup("empty span; nothing to convert")
+        return
+    }
         Log.pickup("pick [\(start)..\(end)] \(spanText)")
 
         // Strip any non-ASCII prefix before handing off to Mozc — same
@@ -1125,48 +1330,15 @@ func doPickup(_ request: PickupRequest = .init()) {
             let sessionSeed = normalizeCommittedCandidateState(
                 replacement: finalReplacement,
                 candidates: snapshotCandidates)
-            if isChromiumOmnibox(field: field, appId: appId) {
-                _ = replaceChromiumOmnibox(
-                    field: field,
-                    start: start,
-                    end: end,
-                    originalReading: spanText,
-                    replacement: finalReplacement,
-                    sessionSeed: sessionSeed)
-                return
-            }
-            if replaceRange(in: field.element, start: start, end: end, replacement: finalReplacement) {
-                let session = ConversionSession(
-                    backing: .ax(element: field.element, spanStart: start),
-                    originalReading: spanText,
-                    candidates: sessionSeed.candidates,
-                    candidateIndex: sessionSeed.currentIndex,
-                    timestamp: Date())
-                ConversionSessionStore.set(session)
-                if gCandidatePanelMode == .onConvert {
-                    CandidatePanel.shared.show(session: session)
-                }
-                return
-            }
-            Log.pickup("AX write rejected after punctuation-only pickup; using backspace-retype for [\(start)..\(end)] \(spanText)\(FrontmostApp.logSuffix())")
-            keystrokeReplaceSpan(
-                caret: (start: start, end: end),
-                spanEnd: end,
-                spanLen: end - start,
-                replacement: finalReplacement)
-            let frontmost = FrontmostApp.describe()
-            let session = ConversionSession(
-                backing: .clipboard(
-                    frontmostBundleId: frontmost?.bundleID,
-                    frontmostPid: frontmost?.pid ?? 0),
+            _ = applyFieldReplacement(
+                route: route,
+                field: field,
+                appId: appId,
+                start: start,
+                end: end,
                 originalReading: spanText,
-                candidates: sessionSeed.candidates,
-                candidateIndex: sessionSeed.currentIndex,
-                timestamp: Date())
-            ConversionSessionStore.set(session)
-            if gCandidatePanelMode == .onConvert {
-                CandidatePanel.shared.show(session: session)
-            }
+                replacement: finalReplacement,
+                sessionSeed: sessionSeed)
             return
         }
 
@@ -1194,53 +1366,15 @@ func doPickup(_ request: PickupRequest = .init()) {
             let sessionSeed = normalizeCommittedCandidateState(
                 replacement: replacement,
                 candidates: snapshotCandidates)
-
-            if isChromiumOmnibox(field: field, appId: appId) {
-                _ = replaceChromiumOmnibox(
-                    field: field,
-                    start: start,
-                    end: end,
-                    originalReading: spanText,
-                    replacement: replacement,
-                    sessionSeed: sessionSeed)
-                return
-            }
-            if replaceRange(in: field.element, start: start, end: end, replacement: replacement) {
-                let session = ConversionSession(
-                    backing: .ax(element: field.element, spanStart: start),
-                    originalReading: spanText,
-                    candidates: sessionSeed.candidates,
-                    candidateIndex: sessionSeed.currentIndex,
-                    timestamp: Date())
-                ConversionSessionStore.set(session)
-                if gCandidatePanelMode == .onConvert {
-                    CandidatePanel.shared.show(session: session)
-                }
-                return
-            }
-            // AX write rejected — fall through to keystroke path below.
-            // replaceValue set selection to [start, end] which may persist
-            // even though the text write failed; pass that range so the
-            // keystroke path collapses it before backspacing.
-            Log.pickup("AX write rejected after classifier; using backspace-retype")
-            keystrokeReplaceSpan(
-                caret: (start: start, end: end),
-                spanEnd: end,
-                spanLen: end - start,
-                replacement: replacement)
-            let frontmost = FrontmostApp.describe()
-            let session = ConversionSession(
-                backing: .clipboard(
-                    frontmostBundleId: frontmost?.bundleID,
-                    frontmostPid: frontmost?.pid ?? 0),
+            _ = applyFieldReplacement(
+                route: route,
+                field: field,
+                appId: appId,
+                start: start,
+                end: end,
                 originalReading: spanText,
-                candidates: sessionSeed.candidates,
-                candidateIndex: sessionSeed.currentIndex,
-                timestamp: Date())
-            ConversionSessionStore.set(session)
-            if gCandidatePanelMode == .onConvert {
-                CandidatePanel.shared.show(session: session)
-            }
+                replacement: replacement,
+                sessionSeed: sessionSeed)
             return
         }
 
@@ -1292,85 +1426,14 @@ func doPickup(_ request: PickupRequest = .init()) {
             replacement: replacement,
             candidates: snapshotCandidates)
 
-        if isChromiumOmnibox(field: field, appId: appId) {
-            _ = replaceChromiumOmnibox(
-                field: field,
-                start: start,
-                end: end,
-                originalReading: spanText,
-                replacement: replacement,
-                sessionSeed: sessionSeed)
-            return
-        }
-        if replaceRange(in: field.element, start: start, end: end, replacement: replacement) {
-            // Open a session so Esc-undo and the cycle gesture have
-            // something to act on. Candidates already include the
-            // frozenPrefix from the base computation above, so cycling
-            // lines up byte-for-byte.
-            let session = ConversionSession(
-                backing: .ax(element: field.element, spanStart: start),
-                originalReading: spanText,
-                candidates: sessionSeed.candidates,
-                candidateIndex: sessionSeed.currentIndex,
-                timestamp: Date())
-            ConversionSessionStore.set(session)
-            if gCandidatePanelMode == .onConvert {
-                CandidatePanel.shared.show(session: session)
-            }
-            return
-        }
-
-        // AX read worked but the value write was silently rejected
-        // (Discord, Obsidian CodeMirror, Cursor/VSCode Monaco). These
-        // apps lie about AX success codes — value writes, range
-        // writes, and Shift+Left selection extension all return
-        // .success while doing nothing visible. The clipboard
-        // fallback is wrong here too: its Shift+Opt+Left force-select
-        // treats `&` / `-` / `.` as word boundaries, so `R&Diraisho`
-        // arrives at the bridge as `Diraisho` — losing the acronym
-        // head Phase 1 is supposed to freeze. Re-run the same span
-        // edit through synthesized keystrokes via the sibling helper
-        // in `SyntheticEvents.swift`.
-        //
-        // KNOWN LIMITATION: when the user has a *hidden* visual
-        // selection that AX doesn't report (Cursor/Monaco reports
-        // `[N,N]` even when text is visibly selected), the first
-        // Backspace consumes the hidden selection and the rest
-        // delete surrounding text. Discord/Obsidian don't hit this
-        // because their AX selection reports are accurate. Tracked
-        // as a follow-up — needs a per-app strategy table or a
-        // selection probe that isn't ambiguous with Cmd+C line-copy.
-        // replaceValue set selection to [start, end] which may persist
-        // even though the text write failed; pass that range so the
-        // keystroke path collapses it before backspacing.
-        Log.pickup("AX write rejected; using backspace-retype for [\(start)..\(end)] \(spanText)\(FrontmostApp.logSuffix())")
-        keystrokeReplaceSpan(
-            caret: (start: start, end: end),
-            spanEnd: end,
-            spanLen: end - start,
-            replacement: replacement)
-        Log.pickup("keystroke replace -> \(replacement) (alts=\(result.candidates.count))")
-
-        // Cycle/Undo via the clipboard-backed session: those use
-        // backspace+retype, which works even when AX writes don't.
-        // snapshotCandidates was already computed above with any script
-        // overrides applied; reuse here for consistency.
-        let frontmost = FrontmostApp.describe()
-        let session = ConversionSession(
-            backing: .clipboard(
-                frontmostBundleId: frontmost?.bundleID,
-                frontmostPid: frontmost?.pid ?? 0),
+        _ = applyFieldReplacement(
+            route: route,
+            field: field,
+            appId: appId,
+            start: start,
+            end: end,
             originalReading: spanText,
-            candidates: sessionSeed.candidates,
-            candidateIndex: sessionSeed.currentIndex,
-            timestamp: Date())
-        ConversionSessionStore.set(session)
-        if gCandidatePanelMode == .onConvert {
-            CandidatePanel.shared.show(session: session)
-        }
+            replacement: replacement,
+            sessionSeed: sessionSeed)
         return
-    }
-
-    Log.pickup("using clipboard fallback (app does not expose AX text)\(FrontmostApp.logSuffix())")
-    doClipboardPickup(request)
 }

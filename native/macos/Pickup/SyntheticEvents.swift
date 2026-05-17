@@ -57,15 +57,18 @@ private func makeSyntheticSource() -> CGEventSource? {
 }
 
 func postKey(_ keyCode: CGKeyCode, flags: CGEventFlags = []) {
+    Log.tagged("scripting", "postKey: keyCode=\(keyCode) flags=\(flags.rawValue)")
     let src = makeSyntheticSource()
     if let down = CGEvent(keyboardEventSource: src, virtualKey: keyCode, keyDown: true) {
         down.flags = flags
         markSynthetic(down)
+        Log.tagged("scripting", "postKey: keyDown posted")
         down.post(tap: kPostTap)
     }
     if let up = CGEvent(keyboardEventSource: src, virtualKey: keyCode, keyDown: false) {
         up.flags = flags
         markSynthetic(up)
+        Log.tagged("scripting", "postKey: keyUp posted")
         up.post(tap: kPostTap)
     }
 }
@@ -79,6 +82,7 @@ func postKey(_ keyCode: CGKeyCode, flags: CGEventFlags = []) {
 let kUnicodeChunkMax = 20
 
 func postUnicode(_ s: String) {
+    Log.tagged("unicode", "postUnicode: \(s.count) chars")
     let src = makeSyntheticSource()
     let utf16 = Array(s.utf16)
     guard !utf16.isEmpty else { return }
@@ -91,12 +95,14 @@ func postUnicode(_ s: String) {
             down.flags = []
             down.keyboardSetUnicodeString(stringLength: chunk.count, unicodeString: chunk)
             markSynthetic(down)
+            Log.tagged("unicode", "postUnicode: keyDown chunk=\(chunk.count) utf16")
             down.post(tap: kPostTap)
         }
         if let up = CGEvent(keyboardEventSource: src, virtualKey: 0, keyDown: false) {
             up.flags = []
             up.keyboardSetUnicodeString(stringLength: chunk.count, unicodeString: chunk)
             markSynthetic(up)
+            Log.tagged("unicode", "postUnicode: keyUp chunk=\(chunk.count) utf16")
             up.post(tap: kPostTap)
         }
         i = end

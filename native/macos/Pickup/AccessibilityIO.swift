@@ -11,6 +11,8 @@ struct FocusedField {
     let value: String
     let selStart: Int
     let selEnd: Int
+    let role: String
+    let description: String
 }
 
 /// Electron's AX tree is gated behind a private attribute that assistive
@@ -125,8 +127,17 @@ func readFocusedField() -> FocusedField? {
     } else {
         Log.ax("selection range unavailable on role=\(role) (using end-of-buffer caret)")
     }
+    var descRef: CFTypeRef?
+    _ = AXUIElementCopyAttributeValue(element, kAXDescriptionAttribute as CFString, &descRef)
+    let desc = (descRef as? String) ?? ""
     Log.ax("focused role=\(role) valueLen=\(s.utf16.count) sel=[\(selStart),\(selEnd)]")
-    return FocusedField(element: element, value: s, selStart: selStart, selEnd: selEnd)
+    return FocusedField(
+        element: element,
+        value: s,
+        selStart: selStart,
+        selEnd: selEnd,
+        role: role,
+        description: desc)
 }
 
 func replaceRange(in element: AXUIElement, start: Int, end: Int, replacement: String) -> Bool {

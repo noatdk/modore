@@ -110,6 +110,10 @@ var gClassifierEnabled: Bool = false
 /// already-running session. Defaults are applied deterministically at boot.
 var gBridgeRuntime = ModoreConfig.BridgeRuntime()
 
+/// Current `[logging] disabled` mask. Applied at startup and on config reload
+/// before any other reload logs so the filter takes effect immediately.
+var gDisabledLogNamespaces = ModoreConfig.LoggingNamespaceMask()
+
 // MARK: - Secondary chord (katakana modifier)
 
 /// Build the katakana-variant chord by layering the configured modifier on top
@@ -407,6 +411,7 @@ func applyCandidatePanelDurationReload() {
 
 /// Single entry point for the config watcher — reloads every section.
 func applyConfigReload() {
+    applyLoggingReload()
     applyConversionHotkeyReload()
     applyBridgeRuntimeReloadNotice()
     applyMozcBackendReloadNotice()
@@ -419,6 +424,18 @@ func applyConfigReload() {
     applyCandidatePanelReload()
     applyCandidatePanelDurationReload()
     applyClassifierReload()
+}
+
+/// Reload `[logging] disabled` before any other section so subsequent reload
+/// notices honor the new suppression mask immediately.
+func applyLoggingReload() {
+    let next = ModoreConfig.loadDisabledLoggingNamespaces()
+    if next == gDisabledLogNamespaces {
+        return
+    }
+    gDisabledLogNamespaces = next
+    Log.configureDisabledNamespaces(next)
+    Log.config("logging disabled namespaces: \(next.displayName)")
 }
 
 /// Reload notice for `[bridge] mozc_backend`. The bridge is initialized

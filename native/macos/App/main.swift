@@ -195,6 +195,9 @@ if let probeArg = CommandLine.arguments.first(where: { $0.hasPrefix("--probe-wor
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory)
 
+gDisabledLogNamespaces = ModoreConfig.loadDisabledLoggingNamespaces()
+Log.configureDisabledNamespaces(gDisabledLogNamespaces)
+
 describeSelf()
 BootGuards.enforce()
 
