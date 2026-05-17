@@ -170,8 +170,59 @@ int mozc_bridge_convert_with_candidate_details_ex(
     int *out_candidate_count,
     unsigned int flags);
 
+// Convert a shell-editing line in place: identify the current token around
+// `caret_byte`, convert that token with Mozc, and splice the result back into
+// the original line. Shell frontends can call this from zsh/bash/fish widgets
+// and let the shell itself rewrite its current buffer.
+//
+// Returns the same contract as the other convert helpers: 0 on success,
+// -1 on error, positive > out_cap if the output buffer was too small.
+int mozc_bridge_convert_line(const char *text,
+                             size_t text_len,
+                             size_t caret_byte,
+                             char *out_buf,
+                             size_t out_cap,
+                             size_t *out_len,
+                             unsigned int flags);
+
+// Shell-native live-host transport.
+//
+// `mozc_bridge_shell_server_start` starts the resident socket listener used by
+// shell bindings to reach the already-running modore host.
+int mozc_bridge_shell_server_start(const char *socket_path);
+void mozc_bridge_shell_server_stop(void);
+
+// Client-side request helper for the shell binding. Sends the current line and
+// caret position to the live host server above and returns the converted line.
+int mozc_bridge_shell_convert_remote(const char *socket_path,
+                                     const char *session_id_in,
+                                     const char *mode_in,
+                                     const char *text,
+                                     size_t text_len,
+                                     size_t caret_byte,
+                                     char *out_buf,
+                                     size_t out_cap,
+                                     size_t *out_len);
+
+// Print a shell bootstrap script for the current interactive shell.
+// `hotkey_display_name` is the human-readable chord from modore.conf
+// (for example "Ctrl+Shift+grave"). `host_executable_path` should point to
+// the current modore-host binary (usually Bundle.main.executablePath on macOS).
+// The bridge detects bash/zsh/fish from the process environment and emits a
+// matching sourced snippet that binds the configured shell shortcut to that
+// executable's `--shell-convert` subcommand.
+int mozc_bridge_shell_bootstrap(const char *hotkey_display_name,
+                                const char *host_executable_path,
+                                char *out_buf,
+                                size_t out_cap,
+                                size_t *out_len);
+
 // Releases the engine. Optional — process exit is fine too.
 void mozc_bridge_shutdown(void);
+
+// Internal bridge error helpers used by transport adapters.
+void mozc_bridge_set_error(const char *msg);
+void mozc_bridge_clear_error(void);
 
 // Thread-local last error string. NULL if no error has occurred on this
 // thread since the last successful call. Lifetime: valid until the next

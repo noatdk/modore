@@ -47,6 +47,9 @@ state, so the menu surfaces which app to release.
 For Wayland compositors, Hyprland binds, the `--trigger` socket, Chromium/
 Electron quirks, and the systemd user unit, see [docs/linux.md](docs/linux.md).
 
+For shell-native conversion in `zsh`, `bash`, and `fish`, see
+[docs/shell-integration.md](docs/shell-integration.md).
+
 ## Configuration
 
 `~/.config/modore/modore.conf` (or `$XDG_CONFIG_HOME/modore/modore.conf`),

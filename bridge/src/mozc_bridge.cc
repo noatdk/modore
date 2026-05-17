@@ -32,19 +32,24 @@ namespace {
 thread_local std::string g_last_error;
 
 std::mutex g_init_mutex;
+std::mutex g_convert_mutex;
 bool g_initialized = false;
 std::unique_ptr<modore::mozc_bridge::Backend> g_backend;
 
-void set_error(const char *msg) { g_last_error.assign(msg ? msg : ""); }
-void set_error(const std::string &msg) { g_last_error = msg; }
-void clear_error() { g_last_error.clear(); }
+extern "C" void mozc_bridge_set_error(const char *msg) {
+    g_last_error.assign(msg ? msg : "");
+}
+
+extern "C" void mozc_bridge_clear_error(void) {
+    g_last_error.clear();
+}
 
 }  // namespace
 
 extern "C" int mozc_bridge_init(const char *user_profile_dir) {
     std::lock_guard<std::mutex> lock(g_init_mutex);
     if (g_initialized) {
-        clear_error();
+        mozc_bridge_clear_error();
         return 0;
     }
 
@@ -53,12 +58,12 @@ extern "C" int mozc_bridge_init(const char *user_profile_dir) {
     g_backend = modore::mozc_bridge::CreateBackend(
         requested_backend, user_profile_dir, &error);
     if (!g_backend) {
-        set_error(error);
+        mozc_bridge_set_error(error.c_str());
         return -1;
     }
 
     g_initialized = true;
-    clear_error();
+    mozc_bridge_clear_error();
     return 0;
 }
 
@@ -100,10 +105,11 @@ extern "C" int mozc_bridge_convert_with_candidates_ex(
     int *out_candidate_count,
     unsigned int flags) {
     if (!g_initialized || !g_backend) {
-        set_error("mozc_bridge_init has not been called");
+        mozc_bridge_set_error("mozc_bridge_init has not been called");
         return -1;
     }
     std::string error;
+    std::lock_guard<std::mutex> lock(g_convert_mutex);
     const int rc = g_backend->ConvertWithCandidatesEx(
         romaji, romaji_len,
         commit_buf, commit_cap, commit_len,
@@ -114,9 +120,9 @@ extern "C" int mozc_bridge_convert_with_candidates_ex(
         flags,
         &error);
     if (rc == 0 || rc > 0) {
-        clear_error();
+        mozc_bridge_clear_error();
     } else {
-        set_error(error);
+        mozc_bridge_set_error(error.c_str());
     }
     return rc;
 }
@@ -136,10 +142,11 @@ extern "C" int mozc_bridge_convert_with_candidate_details_ex(
     int *out_candidate_count,
     unsigned int flags) {
     if (!g_initialized || !g_backend) {
-        set_error("mozc_bridge_init has not been called");
+        mozc_bridge_set_error("mozc_bridge_init has not been called");
         return -1;
     }
     std::string error;
+    std::lock_guard<std::mutex> lock(g_convert_mutex);
     const int rc = g_backend->ConvertWithCandidateDetailsEx(
         romaji, romaji_len,
         commit_buf, commit_cap, commit_len,
@@ -151,9 +158,9 @@ extern "C" int mozc_bridge_convert_with_candidate_details_ex(
         flags,
         &error);
     if (rc == 0 || rc > 0) {
-        clear_error();
+        mozc_bridge_clear_error();
     } else {
-        set_error(error);
+        mozc_bridge_set_error(error.c_str());
     }
     return rc;
 }
@@ -162,7 +169,7 @@ extern "C" void mozc_bridge_shutdown(void) {
     std::lock_guard<std::mutex> lock(g_init_mutex);
     g_backend.reset();
     g_initialized = false;
-    clear_error();
+    mozc_bridge_clear_error();
 }
 
 extern "C" const char *mozc_bridge_last_error(void) {

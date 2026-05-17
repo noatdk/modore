@@ -47,6 +47,9 @@ OSがその間キー注入をブロックするため、どのアプリが原因
 Chromium / Electron周りの癖、systemdユーザーユニットは
 [docs/linux.md](docs/linux.md) を参照。
 
+`zsh`、`bash`、`fish` の 対応 は
+[docs/shell-integration.md](docs/shell-integration.md) を参照。
+
 ## 設定
 
 `~/.config/modore/modore.conf`（または `$XDG_CONFIG_HOME/modore/modore.conf`）、

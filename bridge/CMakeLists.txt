@@ -104,6 +104,7 @@ add_library(mozc_bridge SHARED
     src/backend_flow.cc
     src/backend_oss.cc
     src/mozc_bridge.cc
+    src/shell_convert.cc
     src/direct_client.cc
 )
 

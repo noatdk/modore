@@ -63,10 +63,12 @@ enum ModoreConfig {
         static let panel       = LoggingNamespaceMask(rawValue: 1 << 10)
         static let unicode     = LoggingNamespaceMask(rawValue: 1 << 11)
         static let scripting   = LoggingNamespaceMask(rawValue: 1 << 12)
+        static let shell       = LoggingNamespaceMask(rawValue: 1 << 13)
 
         static let allKnown: LoggingNamespaceMask = [
             .boot, .config, .ax, .hotkey, .pickup, .clipboard,
             .mozc, .secureInput, .undo, .cycle, .panel, .unicode, .scripting,
+            .shell,
         ]
 
         init(rawValue: UInt64) {
@@ -88,6 +90,7 @@ enum ModoreConfig {
             case "panel": self = .panel
             case "unicode": self = .unicode
             case "scripting": self = .scripting
+            case "shell": self = .shell
             default: return nil
             }
         }
@@ -109,6 +112,7 @@ enum ModoreConfig {
             if contains(.panel)       { parts.append("panel") }
             if contains(.unicode)     { parts.append("unicode") }
             if contains(.scripting)   { parts.append("scripting") }
+            if contains(.shell)       { parts.append("shell") }
             return parts.joined(separator: ",")
         }
     }

@@ -37,6 +37,7 @@ enum Log {
     static func undo(_ message: @autoclosure () -> String)        { write("undo",        message) }
     static func cycle(_ message: @autoclosure () -> String)       { write("cycle",       message) }
     static func panel(_ message: @autoclosure () -> String)       { write("panel",       message) }
+    static func shell(_ message: @autoclosure () -> String)       { write("shell",       message) }
 
     static func tagged(_ tag: String, _ message: @autoclosure () -> String) {
         write(tag, message)
@@ -90,6 +91,7 @@ enum Log {
         case "undo": return .undo
         case "cycle": return .cycle
         case "panel": return .panel
+        case "shell": return .shell
         case "unicode": return .unicode
         case "scripting": return .scripting
         default: return nil

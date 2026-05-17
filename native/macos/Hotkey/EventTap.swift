@@ -69,31 +69,29 @@ let tapCallback: CGEventTapCallBack = { _, type, event, _ in
     // at the bottom of this callback would wipe the live session before
     // Carbon ever gets to cycle it — that was the "stuck on first
     // candidate" bug.
-    if keyCode == gConversionKeyCode {
-        if coreFlags == gConversionCoreFlags {
+        if keyCode == gConversionKeyCode {
+            if coreFlags == gConversionCoreFlags {
             if !gUsingCarbonHotkey {
-                kHotkeyTapQueue.async { doPickup() }
+                kHotkeyTapQueue.async { handlePrimaryHotkeyTrigger() }
                 return nil // swallow — host app must not see the "/"
             }
-            // Carbon will dispatch; we just don't clear.
-            return Unmanaged.passUnretained(event)
-        }
-        if let secondary = gKatakanaChordFlags, coreFlags == secondary {
-            if !gUsingCarbonHotkey {
-                kHotkeyTapQueue.async {
-                    doPickup(PickupRequest(target: .katakana))
+                // Carbon will dispatch; we just don't clear.
+                return Unmanaged.passUnretained(event)
+            }
+            if let secondary = gKatakanaChordFlags, coreFlags == secondary {
+                if !gUsingCarbonHotkey {
+                    kHotkeyTapQueue.async { handleKatakanaHotkeyTrigger() }
+                    return nil
                 }
-                return nil
+                return Unmanaged.passUnretained(event)
             }
-            return Unmanaged.passUnretained(event)
-        }
-        if let cycle = gCycleChordFlags, coreFlags == cycle {
-            if !gUsingCarbonHotkey {
-                kHotkeyTapQueue.async { performCycleNext() }
-                return nil
+            if let cycle = gCycleChordFlags, coreFlags == cycle {
+                if !gUsingCarbonHotkey {
+                    kHotkeyTapQueue.async { handleCycleHotkeyTrigger() }
+                    return nil
+                }
+                return Unmanaged.passUnretained(event)
             }
-            return Unmanaged.passUnretained(event)
-        }
     }
 
     // Any other keyDown that reaches this point — letters being typed,

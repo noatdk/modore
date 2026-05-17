@@ -84,6 +84,12 @@ func wordBounds(_ text: String, caret: Int) -> (Int, Int) {
     return (start, end)
 }
 
+/// Compatibility overload for tests that still feed UTF-16 arrays directly.
+func wordBounds(_ text: [UInt16], caret: Int) -> (Int, Int) {
+    let s = String(decoding: text, as: UTF16.self)
+    return wordBounds(s, caret: caret)
+}
+
 /// Split a string at the boundary between any non-ASCII prefix and its
 /// trailing run of ASCII UTF-16 code units. `"対人sen"` → `("対人", "sen")`,
 /// `"祇園精舎のkaneno"` → `("祇園精舎の", "kaneno")`, `"sen"` → `("", "sen")`,

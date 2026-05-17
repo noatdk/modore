@@ -8,6 +8,10 @@ enum MozcBridgeError: Error {
     case stringEncoding
 }
 
+func shellConvertSocketPath() -> String {
+    "\(MOZC_PROFILE_DIR)/shell-convert.sock"
+}
+
 enum MozcBridge {
     struct Candidate: Equatable {
         enum Group: Int {
@@ -233,6 +237,171 @@ enum MozcBridge {
                 ))
             }
             return out
+        }
+    }
+
+    static func convertLine(
+        _ text: String,
+        caretUTF16: Int,
+        target: ConvertTarget = .kanji
+    ) throws -> String {
+        guard let utf8 = text.cString(using: .utf8) else {
+            throw MozcBridgeError.stringEncoding
+        }
+        let utf8Bytes = utf8.dropLast()
+        let inputLen = utf8Bytes.count
+        let caretByte = text.utf8ByteOffset(forUTF16Offset: caretUTF16)
+
+        var cap = max(inputLen * 4 + 64, 256)
+        while true {
+            var outLen: size_t = 0
+            var buf = [CChar](repeating: 0, count: cap)
+            let rc: Int32 = utf8.withUnsafeBufferPointer { inPtr -> Int32 in
+                buf.withUnsafeMutableBufferPointer { outPtr -> Int32 in
+                    Int32(mozc_bridge_convert_line(
+                        inPtr.baseAddress,
+                        inputLen,
+                        caretByte,
+                        outPtr.baseAddress,
+                        cap,
+                        &outLen,
+                        target.bridgeFlags))
+                }
+            }
+            if rc == 0 {
+                let committedData = Data(bytes: buf, count: outLen)
+                guard let committed = String(data: committedData, encoding: .utf8) else {
+                    throw MozcBridgeError.stringEncoding
+                }
+                return committed
+            }
+            if rc > 0 {
+                cap = Int(rc)
+                continue
+            }
+            throw MozcBridgeError.conversionFailed(lastError() ?? "shell convert failed")
+        }
+    }
+
+    static func shellConvertViaLiveHost(_ text: String, caretUTF16: Int) throws -> String {
+        try shellConvertViaLiveHost(text, caretUTF16: caretUTF16, target: .kanji)
+    }
+
+    static func shellConvertViaLiveHost(
+        _ text: String,
+        caretUTF16: Int,
+        target: ConvertTarget
+    ) throws -> String {
+        guard let utf8 = text.cString(using: .utf8) else {
+            throw MozcBridgeError.stringEncoding
+        }
+        let utf8Bytes = utf8.dropLast()
+        let inputLen = utf8Bytes.count
+        let caretByte = text.utf8ByteOffset(forUTF16Offset: caretUTF16)
+        let socketPath = shellConvertSocketPath()
+        let sessionID = ProcessInfo.processInfo.environment["MODORE_SHELL_SESSION"] ?? ""
+        let sessionCString = sessionID.cString(using: .utf8)
+        let sessionLabel = sessionID.isEmpty ? "<none>" : sessionID
+        let modeLabel = target == .katakana ? "katakana" : "primary"
+        Log.shell("client convert request session=\(sessionLabel) mode=\(modeLabel) caret=\(caretUTF16) caretByte=\(caretByte) bytes=\(inputLen) socket=\(socketPath)")
+        let modeCString = (target == .katakana ? "katakana" : "primary").cString(using: .utf8)
+
+        var cap = max(inputLen * 4 + 64, 256)
+        while true {
+            var outLen: size_t = 0
+            var buf = [CChar](repeating: 0, count: cap)
+            let rc: Int32 = utf8.withUnsafeBufferPointer { inPtr -> Int32 in
+                buf.withUnsafeMutableBufferPointer { outPtr -> Int32 in
+                    sessionCString.withUnsafeBufferPointerOrNil { sessionPtr in
+                        modeCString.withUnsafeBufferPointerOrNil { modePtr in
+                            Int32(mozc_bridge_shell_convert_remote(
+                                socketPath,
+                                sessionPtr,
+                                modePtr,
+                                inPtr.baseAddress,
+                                inputLen,
+                                caretByte,
+                                outPtr.baseAddress,
+                                cap,
+                                &outLen))
+                        }
+                    }
+                }
+            }
+            if rc == 0 {
+                let data = Data(bytes: buf, count: outLen)
+                guard let converted = String(data: data, encoding: .utf8) else {
+                    Log.shell("client convert decode failed bytes=\(outLen)")
+                    throw MozcBridgeError.stringEncoding
+                }
+                Log.shell("client convert ok bytes=\(converted.utf8.count)")
+                return converted
+            }
+            if rc > 0 {
+                Log.shell("client convert resize needed=\(rc)")
+                cap = Int(rc)
+                continue
+            }
+            Log.shell("client convert failed err=\(lastError() ?? "unknown")")
+            throw MozcBridgeError.conversionFailed(lastError() ?? "shell convert failed")
+        }
+    }
+
+    static func startShellConvertServer(socketPath: String = shellConvertSocketPath()) throws {
+        Log.shell("start server path=\(socketPath)")
+        let rc = mozc_bridge_shell_server_start(socketPath)
+        if rc != 0 {
+            Log.shell("start server failed err=\(lastError() ?? "unknown")")
+            throw MozcBridgeError.conversionFailed(lastError() ?? "shell server start failed")
+        }
+        Log.shell("start server ok")
+    }
+
+    static func stopShellConvertServer() {
+        Log.shell("stop server")
+        mozc_bridge_shell_server_stop()
+    }
+
+    static func shellBootstrap(
+        hotkeyDisplayName: String,
+        hostExecutablePath: String? = nil
+    ) throws -> String {
+        guard let utf8 = hotkeyDisplayName.cString(using: .utf8) else {
+            throw MozcBridgeError.stringEncoding
+        }
+        let hostPathCString = hostExecutablePath.flatMap { $0.cString(using: .utf8) }
+
+        var cap = 1024
+        while true {
+            var outLen: size_t = 0
+            var buf = [CChar](repeating: 0, count: cap)
+            let rc: Int32 = utf8.withUnsafeBufferPointer { inPtr -> Int32 in
+                hostPathCString.withUnsafeBufferPointerOrNil { hostPtr in
+                    buf.withUnsafeMutableBufferPointer { outPtr -> Int32 in
+                        Int32(mozc_bridge_shell_bootstrap(
+                            inPtr.baseAddress,
+                            hostPtr,
+                            outPtr.baseAddress,
+                            cap,
+                            &outLen))
+                    }
+                }
+            }
+            if rc == 0 {
+                let data = Data(bytes: buf, count: outLen)
+                guard let bootstrap = String(data: data, encoding: .utf8) else {
+                    throw MozcBridgeError.stringEncoding
+                }
+                Log.shell("bootstrap ok bytes=\(bootstrap.utf8.count)")
+                return bootstrap
+            }
+            if rc > 0 {
+                Log.shell("bootstrap resize needed=\(rc)")
+                cap = Int(rc)
+                continue
+            }
+            Log.shell("bootstrap failed err=\(lastError() ?? "unknown")")
+            throw MozcBridgeError.conversionFailed(lastError() ?? "shell bootstrap failed")
         }
     }
 }

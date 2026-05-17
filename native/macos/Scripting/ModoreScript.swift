@@ -408,6 +408,19 @@ fileprivate func hostSendChord(_ chord: String) {
     }
 }
 
+/// Send the shell-native conversion shortcut sequence into the frontmost app.
+/// This mirrors the binding emitted by the shell bootstrap and is used when
+/// the host hotkey is pressed inside a shell-native terminal.
+func sendShellNativeConversionChord() {
+    hostSendChord("Ctrl+X")
+    hostSendChord("Ctrl+J")
+}
+
+func sendShellNativeKatakanaChord() {
+    hostSendChord("Ctrl+X")
+    hostSendChord("Ctrl+K")
+}
+
 // MARK: - Log trampoline
 
 /// Fires from C → routes into Log.write via a tag-dispatch. Bind as

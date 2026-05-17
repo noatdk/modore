@@ -158,9 +158,7 @@ func applyKatakanaSecondaryChord(
         gKatakanaChordFlags = secondary.coreFlags
         if let ck = gCarbonHotkey {
             let ok = ck.register(role: "katakana", chord: secondary) {
-                kHotkeyTapQueue.async {
-                    doPickup(PickupRequest(target: .katakana))
-                }
+                kHotkeyTapQueue.async { handleKatakanaHotkeyTrigger() }
             }
             if !ok {
                 Log.hotkey("RegisterEventHotKey failed for katakana chord \(secondary.displayName) — tap fallback will still match if the primary tap path is in use")
@@ -225,7 +223,7 @@ func applyCycleChord(
         gCycleChordFlags = chord.coreFlags
         if let ck = gCarbonHotkey {
             let ok = ck.register(role: "cycle", chord: chord) {
-                kHotkeyTapQueue.async { performCycleNext() }
+                kHotkeyTapQueue.async { handleCycleHotkeyTrigger() }
             }
             if !ok {
                 Log.hotkey("RegisterEventHotKey failed for cycle chord \(chord.displayName)")
@@ -251,7 +249,7 @@ func applyConversionHotkeyChord(_ chord: ModoreConfig.ConversionHotkey) {
     gConversionCoreFlags = chord.coreFlags
     if let ck = gCarbonHotkey {
         let ok = ck.register(role: "primary", chord: chord) {
-            kHotkeyTapQueue.async { doPickup() }
+            kHotkeyTapQueue.async { handlePrimaryHotkeyTrigger() }
         }
         gUsingCarbonHotkey = ok
         if !ok {

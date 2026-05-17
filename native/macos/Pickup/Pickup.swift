@@ -79,6 +79,59 @@ func callBackend(
     }
 }
 
+private func frontmostIsShellNativeTerminal() -> Bool {
+    FrontmostApp.isShellNativeTerminal(bundleID: FrontmostApp.describe()?.bundleID)
+}
+
+private func frontmostShellNativeTerminalLooksLikeEditor() -> Bool {
+    FrontmostApp.focusedWindowLooksLikeEditor(pid: FrontmostApp.describe()?.pid)
+}
+
+/// Route the primary conversion hotkey into shell-native editing when the
+/// frontmost app is one of the supported terminal emulators. The shell
+/// binding inside the terminal will take over from there.
+func handlePrimaryHotkeyTrigger() {
+    if frontmostIsShellNativeTerminal() {
+        if frontmostShellNativeTerminalLooksLikeEditor() {
+            Log.hotkey("shell-native terminal looks like editor; falling back to pickup\(FrontmostApp.logSuffix())")
+            doPickup()
+            return
+        }
+        Log.hotkey("shell-native terminal detected; injecting shell binding\(FrontmostApp.logSuffix())")
+        sendShellNativeConversionChord()
+        return
+    }
+    doPickup()
+}
+
+func handleKatakanaHotkeyTrigger() {
+    if frontmostIsShellNativeTerminal() {
+        if frontmostShellNativeTerminalLooksLikeEditor() {
+            Log.hotkey("shell-native terminal looks like editor; falling back to katakana pickup\(FrontmostApp.logSuffix())")
+            doPickup(PickupRequest(target: .katakana))
+            return
+        }
+        Log.hotkey("shell-native terminal detected; injecting katakana shell binding\(FrontmostApp.logSuffix())")
+        sendShellNativeKatakanaChord()
+        return
+    }
+    doPickup(PickupRequest(target: .katakana))
+}
+
+func handleCycleHotkeyTrigger() {
+    if frontmostIsShellNativeTerminal() {
+        if frontmostShellNativeTerminalLooksLikeEditor() {
+            Log.hotkey("shell-native terminal looks like editor; falling back to cycle\(FrontmostApp.logSuffix())")
+            performCycleNext()
+            return
+        }
+        Log.hotkey("shell-native terminal detected; injecting shell binding for cycle\(FrontmostApp.logSuffix())")
+        sendShellNativeConversionChord()
+        return
+    }
+    performCycleNext()
+}
+
 private func convertTrailingASCIISuffix(
     _ suffix: String,
     request: PickupRequest

@@ -124,6 +124,69 @@ if CommandLine.arguments.contains("--print-paths") {
     exit(0)
 }
 
+if CommandLine.arguments.contains("--print-shell-bootstrap") {
+    do {
+        let hotkey = ModoreConfig.loadConversionHotkey().displayName
+        let hostPath = Bundle.main.executablePath
+        Log.shell("printing bootstrap hotkey=\(hotkey) host=\(hostPath ?? "?")")
+        let bootstrap = try MozcBridge.shellBootstrap(
+            hotkeyDisplayName: hotkey,
+            hostExecutablePath: hostPath)
+        Log.shell("bootstrap script:\n\(bootstrap)")
+        Log.shell("bootstrap bytes=\(bootstrap.utf8.count)")
+        print(bootstrap, terminator: "")
+        exit(0)
+    } catch {
+        let msg = "shell bootstrap failed: \(error)\n"
+        FileHandle.standardError.write(msg.data(using: .utf8) ?? Data())
+        exit(1)
+    }
+}
+
+if CommandLine.arguments.contains("--shell-convert") {
+    let caretArg: String? = {
+        if let caretEq = CommandLine.arguments.first(where: { $0.hasPrefix("--caret=") }) {
+            return String(caretEq.dropFirst("--caret=".count))
+        }
+        if let caretIdx = CommandLine.arguments.firstIndex(of: "--caret"),
+           caretIdx + 1 < CommandLine.arguments.count {
+            return CommandLine.arguments[caretIdx + 1]
+        }
+        return nil
+    }()
+    let caretUTF16: Int
+    let target: MozcBridge.ConvertTarget = CommandLine.arguments.contains("--katakana")
+        ? .katakana
+        : .kanji
+    let stdinData = FileHandle.standardInput.readDataToEndOfFile()
+    let input = String(data: stdinData, encoding: .utf8) ?? ""
+    if let caretArg, let caret = Int(caretArg) {
+        caretUTF16 = caret
+    } else {
+        caretUTF16 = input.utf16.count
+    }
+    do {
+        let sessionEnv = ProcessInfo.processInfo.environment["MODORE_SHELL_SESSION"] ?? ""
+        let sessionLabel = sessionEnv.isEmpty ? "<none>" : sessionEnv
+        let targetLabel = target == .katakana ? "katakana" : "primary"
+        Log.shell("cli entry session=\(sessionLabel) mode=\(targetLabel) caret=\(caretUTF16) bytes=\(input.utf8.count)")
+        let response = try MozcBridge.shellConvertViaLiveHost(input, caretUTF16: caretUTF16, target: target)
+        if let split = response.firstIndex(of: "\n") {
+            let session = String(response[..<split])
+            let converted = String(response[response.index(after: split)...])
+            Log.shell("cli exit session=\(session) bytes=\(converted.utf8.count)")
+        } else {
+            Log.shell("cli exit malformed bytes=\(response.utf8.count)")
+        }
+        print(response, terminator: "")
+        exit(0)
+    } catch {
+        let msg = "shell convert failed: \(error)\n"
+        FileHandle.standardError.write(msg.data(using: .utf8) ?? Data())
+        exit(1)
+    }
+}
+
 if let probeArg = CommandLine.arguments.first(where: { $0.hasPrefix("--probe-words=") }) {
     let probeWords = String(probeArg.dropFirst("--probe-words=".count))
     let probeBackend = CommandLine.arguments.first(where: { $0.hasPrefix("--probe-backend=") })
@@ -264,7 +327,7 @@ if !installEventTap() {
 // to the tap's existing behavior with no functional change for the user.
 gCarbonHotkey = CarbonHotkey()
 if gCarbonHotkey?.register(role: "primary", chord: modoreHotkey, onFire: {
-    kHotkeyTapQueue.async { doPickup() }
+    kHotkeyTapQueue.async { handlePrimaryHotkeyTrigger() }
 }) == true {
     gUsingCarbonHotkey = true
     Log.hotkey("Carbon hotkey registered — using RegisterEventHotKey for delivery")
@@ -325,6 +388,12 @@ do {
 } catch {
     Log.mozc("bridge init FAILED: \(String(describing: error))")
     exit(1)
+}
+do {
+    Log.shell("starting convert server path=\(shellConvertSocketPath())")
+    try MozcBridge.startShellConvertServer()
+} catch {
+    Log.shell("convert server disabled: \(String(describing: error))")
 }
 
 // ML classifier for romaji/ASCII segmentation. Opt-in via

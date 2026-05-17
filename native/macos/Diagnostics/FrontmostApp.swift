@@ -19,8 +19,15 @@
 // pull every event from a single app.
 
 import Cocoa
+import ApplicationServices
 
 enum FrontmostApp {
+    private static let shellNativeTerminalBundleIDs: Set<String> = [
+        "net.kovidgoyal.kitty",
+        "com.mitchellh.ghostty",
+        "com.github.wez.wezterm",
+        "io.alacritty",
+    ]
 
     /// Returns `(localizedName, bundleIdentifier, pid)` of the current
     /// frontmost app, or `nil` if AppKit reports no frontmost (e.g.
@@ -67,5 +74,47 @@ enum FrontmostApp {
     /// that only need the pid for identity comparison.
     static func currentPid() -> pid_t? {
         return NSWorkspace.shared.frontmostApplication?.processIdentifier
+    }
+
+    /// True when the frontmost app is one of the terminal emulators that we
+    /// intentionally route through the shell-native binding path.
+    static func isShellNativeTerminal(bundleID: String?) -> Bool {
+        guard let bundleID else { return false }
+        return shellNativeTerminalBundleIDs.contains(bundleID)
+    }
+
+    /// Best-effort title for the frontmost app's focused window. Used only
+    /// as a heuristic to avoid shell-native terminal chords when the user is
+    /// clearly inside a terminal editor rather than a shell prompt.
+    static func focusedWindowTitle(pid: pid_t?) -> String? {
+        guard let pid else { return nil }
+        let app = AXUIElementCreateApplication(pid)
+        var windowRef: CFTypeRef?
+        let windowRc = AXUIElementCopyAttributeValue(
+            app,
+            kAXFocusedWindowAttribute as CFString,
+            &windowRef
+        )
+        guard windowRc == .success, let windowRef else { return nil }
+        let window = windowRef as! AXUIElement
+        var titleRef: CFTypeRef?
+        let titleRc = AXUIElementCopyAttributeValue(
+            window,
+            kAXTitleAttribute as CFString,
+            &titleRef
+        )
+        guard titleRc == .success else { return nil }
+        return titleRef as? String
+    }
+
+    /// Heuristic: if the focused terminal window title looks like vim/nvim,
+    /// don't inject the shell binding chord. Those programs own the buffer
+    /// and the shell binding is not the right target there.
+    static func focusedWindowLooksLikeEditor(pid: pid_t?) -> Bool {
+        guard let title = focusedWindowTitle(pid: pid)?.lowercased(),
+              !title.isEmpty else { return false }
+        return title.contains("nvim")
+            || title.contains("neovim")
+            || title.contains("vim")
     }
 }
