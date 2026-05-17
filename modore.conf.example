@@ -40,6 +40,12 @@ hotkey = Ctrl+Shift+grave
 # katakana_modifier_behavior = cycle_backwards
 
 # Available: macOS
+# Disable noisy log namespaces without turning logging off globally.
+# Comma-separated roots; "all" suppresses every built-in namespace.
+# [logging]
+# disabled = ax,pickup,unicode,scripting
+
+# Available: macOS
 # How long after a conversion Esc still reverts it back to the original
 # reading. Default 5000 (5 s). Set to 0 to disable Esc-undo entirely;
 # max 30000.

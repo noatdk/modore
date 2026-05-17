@@ -29,6 +29,12 @@ trace_raw_candidates = off
 pre_copy_delay_ms = 20
 read_timeout_ms = 250
 restore_clipboard_delay_ms = 50
+
+# Available: macOS
+# Disable one or more logging namespaces without disabling logging globally.
+# Comma-separated roots; "all" suppresses every built-in namespace.
+[logging]
+disabled = ax,pickup,scripting
 ```
 
 A copy-pasteable starter ships at [`modore.conf.example`](../modore.conf.example).
@@ -113,6 +119,39 @@ these values; restart modore after editing them.
 **Validation**: `candidate_mixing_mode` must be a non-negative integer.
 `trace_raw_candidates` accepts `on|off|true|false|1|0|yes|no`. Unknown
 values log a `[config]` warning and are ignored.
+
+## `[logging] disabled`
+
+**Available**: macOS
+
+Comma-separated list of logging namespace roots to suppress. The runtime
+stores the disabled set as a compact bitmask, so the hot path checks a
+single mask before formatting the message.
+
+Recognized roots:
+
+- `boot`
+- `config`
+- `ax`
+- `hotkey`
+- `pickup`
+- `clipboard`
+- `mozc`
+- `secure-input`
+- `undo`
+- `cycle`
+- `panel`
+- `unicode`
+- `scripting`
+
+`all` disables every built-in namespace. `none` is a no-op. Unknown roots
+are ignored with a `[config]` warning.
+
+Examples:
+
+- `disabled = ax,pickup`
+- `disabled = scripting`
+- `disabled = all`
 
 ## `[conversion] katakana_modifier_behavior`
 
