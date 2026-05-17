@@ -101,9 +101,9 @@ int mdr_replacement(mdr_engine_t* eng,
     return 0;
 }
 
-int mdr_route(mdr_engine_t* eng, const char* app_id, mdr_route_t* out_route) {
+int mdr_route(mdr_engine_t* eng, const mdr_pickup_ctx_t* ctx, mdr_route_t* out_route) {
     (void)eng;
-    (void)app_id;
+    (void)ctx;
     (void)out_route;
     return 0;
 }
@@ -125,10 +125,10 @@ int mdr_candidates(mdr_engine_t* eng,
 }
 
 int mdr_acquire(mdr_engine_t* eng,
-                const char* app_id,
+                const mdr_pickup_ctx_t* ctx,
                 char* out_buf, size_t out_cap, size_t* out_len) {
     (void)eng;
-    (void)app_id;
+    (void)ctx;
     (void)out_buf;
     (void)out_cap;
     (void)out_len;

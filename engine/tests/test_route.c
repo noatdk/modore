@@ -13,7 +13,8 @@ static void run_state(const char* label, const char* lua_body,
 
     mdr_route_t r = MDR_ROUTE_DEFAULT;
     test_reset_log();
-    int rc = mdr_route(eng, "com.example", &r);
+    mdr_pickup_ctx_t ctx = { .app_id = "com.example" };
+    int rc = mdr_route(eng, &ctx, &r);
 
     char msg[128];
     snprintf(msg, sizeof(msg), "%s: rc", label);
@@ -39,6 +40,9 @@ int main(void) {
     run_state("value-keystroke",
               "modore.route_for_app = function(a) return 'keystroke' end\n",
               1, MDR_ROUTE_KEYSTROKE);
+    run_state("value-selection-sync",
+              "modore.route_for_app = function(a) return 'selection_sync' end\n",
+              1, MDR_ROUTE_SELECTION_SYNC);
     run_state("nil",
               "modore.route_for_app = function(a) return nil end\n",
               0, MDR_ROUTE_DEFAULT);
@@ -62,10 +66,12 @@ int main(void) {
         mdr_engine_t* eng = mdr_init();
         mdr_load_dir(eng, dir);
         mdr_route_t r = MDR_ROUTE_DEFAULT;
-        CHECK(mdr_route(eng, "md.obsidian", &r) == 1, "per-app: rc==1");
+        mdr_pickup_ctx_t obsidian = { .app_id = "md.obsidian" };
+        CHECK(mdr_route(eng, &obsidian, &r) == 1, "per-app: rc==1");
         CHECK(r == MDR_ROUTE_CLIPBOARD,                "per-app: clipboard");
         r = MDR_ROUTE_DEFAULT;
-        CHECK(mdr_route(eng, "com.other", &r) == 1,   "default-fallback: rc==1");
+        mdr_pickup_ctx_t other = { .app_id = "com.other" };
+        CHECK(mdr_route(eng, &other, &r) == 1,   "default-fallback: rc==1");
         CHECK(r == MDR_ROUTE_AX,                      "default-fallback: ax");
         mdr_shutdown(eng);
         test_cleanup_dir(dir);

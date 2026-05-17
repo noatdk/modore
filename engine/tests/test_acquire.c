@@ -96,16 +96,13 @@ int main(void) {
     reset_stubs();
     snprintf(g_fake_clip, sizeof(g_fake_clip), "%s", "hello-from-clipboard");
     run_state("value",
-              "modore.on_acquire = function(ctx)\n"
-              "  modore.host.send_chord('shift+end')\n"
-              "  modore.host.sleep_ms(20)\n"
-              "  modore.host.send_chord('cmd+c')\n"
-              "  return modore.host.clipboard_read()\n"
+              "modore.on_acquire = function(ctx, api)\n"
+              "  return api.default.acquire(ctx)\n"
               "end\n",
               1, "hello-from-clipboard");
     CHECK(g_send_chord_calls == 2,                  "send_chord called twice");
     CHECK(strcmp(g_send_chord_last, "cmd+c") == 0,  "last chord was cmd+c");
-    CHECK(g_sleep_last_ms == 20,                    "sleep saw 20ms");
+    CHECK(g_sleep_last_ms == 30,                    "sleep saw 30ms");
 
     /* (c) returns nil */
     run_state("nil",

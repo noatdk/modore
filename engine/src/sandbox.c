@@ -142,16 +142,81 @@ static int default_replacement(lua_State* L) {
 static int default_route(lua_State* L) {
     mdr_engine_t* eng = get_engine(L);
     if (!eng || !eng->def_route) { lua_pushnil(L); return 1; }
-    const char* app_id = luaL_optstring(L, 1, NULL);
+    const char* app_id = NULL;
+    if (lua_istable(L, 1)) {
+        lua_getfield(L, 1, "app_id");
+        if (lua_type(L, -1) == LUA_TSTRING) app_id = lua_tostring(L, -1);
+        lua_pop(L, 1);
+    } else {
+        app_id = luaL_optstring(L, 1, NULL);
+    }
     mdr_route_t r = MDR_ROUTE_DEFAULT;
     int rc = eng->def_route(eng->host_ud, app_id, &r);
     if (rc != 1) { lua_pushnil(L); return 1; }
     switch (r) {
         case MDR_ROUTE_AX:        lua_pushliteral(L, "ax");        break;
+        case MDR_ROUTE_SELECTION_SYNC: lua_pushliteral(L, "selection_sync"); break;
         case MDR_ROUTE_KEYSTROKE: lua_pushliteral(L, "keystroke"); break;
         case MDR_ROUTE_CLIPBOARD: lua_pushliteral(L, "clipboard"); break;
         default:                     lua_pushliteral(L, "default");   break;
     }
+    return 1;
+}
+
+static int default_candidates(lua_State* L) {
+    if (!lua_istable(L, 1)) { lua_pushnil(L); return 1; }
+    lua_pushvalue(L, 1);
+    return 1;
+}
+
+static int default_acquire(lua_State* L) {
+    mdr_engine_t* eng = get_engine(L);
+    if (!eng) { lua_pushnil(L); return 1; }
+
+    if (eng->host_ops.read_selection) {
+        char sel[4096];
+        size_t sel_len = 0;
+        if (eng->host_ops.read_selection(eng->host_ops_ud, sel, sizeof(sel), &sel_len) == 1 &&
+            sel_len > 0) {
+            lua_pushlstring(L, sel, sel_len);
+            return 1;
+        }
+    }
+
+    if (!eng->host_ops.send_chord ||
+        !eng->host_ops.sleep_ms ||
+        !eng->host_ops.clipboard_read ||
+        !eng->host_ops.clipboard_write) {
+        lua_pushnil(L);
+        return 1;
+    }
+
+    char saved[4096];
+    size_t saved_len = 0;
+    int have_saved = eng->host_ops.clipboard_read(eng->host_ops_ud, saved, sizeof(saved), &saved_len) == 1;
+    if (have_saved && saved_len >= sizeof(saved)) saved_len = sizeof(saved) - 1;
+    if (have_saved) saved[saved_len] = '\0';
+
+    eng->host_ops.send_chord(eng->host_ops_ud, "shift+alt+left");
+    eng->host_ops.sleep_ms(eng->host_ops_ud, 20);
+    eng->host_ops.send_chord(eng->host_ops_ud, "cmd+c");
+    eng->host_ops.sleep_ms(eng->host_ops_ud, 30);
+
+    char picked[4096];
+    size_t picked_len = 0;
+    int rc = eng->host_ops.clipboard_read(eng->host_ops_ud, picked, sizeof(picked), &picked_len);
+
+    if (have_saved) {
+        eng->host_ops.clipboard_write(eng->host_ops_ud, saved, saved_len);
+    }
+
+    if (rc != 1 || picked_len == 0) {
+        lua_pushnil(L);
+        return 1;
+    }
+
+    if (picked_len >= sizeof(picked)) picked_len = sizeof(picked) - 1;
+    lua_pushlstring(L, picked, picked_len);
     return 1;
 }
 
@@ -298,13 +363,15 @@ void ms_register_modore_globals(mdr_engine_t* eng) {
     lua_setfield(L, LUA_REGISTRYINDEX, RK_MODORE_LOG);
 
     /* Shared `modore.default` table. */
-    lua_createtable(L, 0, 3);
+    lua_createtable(L, 0, 5);
     lua_pushcfunction(L, default_pickup);      lua_setfield(L, -2, "pickup");
     lua_pushcfunction(L, default_replacement); lua_setfield(L, -2, "replacement");
     lua_pushcfunction(L, default_route);       lua_setfield(L, -2, "route");
+    lua_pushcfunction(L, default_acquire);     lua_setfield(L, -2, "acquire");
+    lua_pushcfunction(L, default_candidates);  lua_setfield(L, -2, "candidates");
     lua_setfield(L, LUA_REGISTRYINDEX, RK_MODORE_DEFAULT);
 
-    /* Shared `modore.host` table — imperative primitives for on_acquire. */
+    /* Shared `modore.host` table — imperative primitives for stage callbacks. */
     lua_createtable(L, 0, 5);
     lua_pushcfunction(L, host_send_chord);      lua_setfield(L, -2, "send_chord");
     lua_pushcfunction(L, host_sleep_ms);        lua_setfield(L, -2, "sleep_ms");

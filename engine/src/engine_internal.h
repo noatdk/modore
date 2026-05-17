@@ -6,6 +6,7 @@
 
 #include <sys/types.h>
 #include <time.h>
+#include <pthread.h>
 
 #include "lua.h"
 #include "lauxlib.h"
@@ -35,6 +36,7 @@ typedef struct script_entry {
 
 struct mdr_engine {
     lua_State*  L;
+    pthread_mutex_t lock;
 
     mdr_log_cb log_cb;
     void*         log_ud;

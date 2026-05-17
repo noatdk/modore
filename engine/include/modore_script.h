@@ -18,8 +18,8 @@
  * `on_replacement`, `route_for_app`, `on_candidates`, `on_acquire`) is
  * independently optional. A script may define one, all, or none. Engine
  * behaviour for "missing hook", "hook returns nil", and "hook errors" is
- * identical: the mdr_* hook returns 0, telling the host to use its
- * built-in default.
+ * identical: the mdr_* hook returns 0, telling the host to use its built-
+ * in default.
  */
 
 #ifndef MODORE_SCRIPT_H
@@ -64,6 +64,8 @@ typedef struct {
     size_t      full_text_len;
     size_t      caret_byte;
     const char* app_id;            /* bundle id / wm-class; NULL if unknown */
+    const char* field_role;        /* AX role / UI role; NULL if unknown */
+    const char* field_description;  /* AX description; NULL if unknown */
     unsigned    flags;             /* bit 0 = katakana modifier held */
 } mdr_pickup_ctx_t;
 
@@ -84,8 +86,9 @@ typedef struct {
 typedef enum {
     MDR_ROUTE_DEFAULT   = 0,
     MDR_ROUTE_AX        = 1,
-    MDR_ROUTE_KEYSTROKE = 2,
-    MDR_ROUTE_CLIPBOARD = 3
+    MDR_ROUTE_SELECTION_SYNC = 2,
+    MDR_ROUTE_KEYSTROKE = 3,
+    MDR_ROUTE_CLIPBOARD = 4
 } mdr_route_t;
 
 /* ----- Host-default trampolines ---------------------------------------- */
@@ -156,9 +159,14 @@ MDR_EXPORT int mdr_replacement(
     const char* const* cands, size_t n_cands,
     char* out_buf, size_t out_cap, size_t* out_len);
 
+/* route_for_app(ctx, api) can return "default", "ax", "selection_sync",
+ * "keystroke", or "clipboard". The ctx table carries the same pickup
+ * metadata as on_acquire. The host passes the script's `modore` table as
+ * the explicit `api` argument so stage callbacks can invoke helpers
+ * imperatively. */
 MDR_EXPORT int mdr_route(
     mdr_engine_t*,
-    const char* app_id,
+    const mdr_pickup_ctx_t* ctx,
     mdr_route_t* out_route);
 
 /* in_cands[]: array of NUL-terminated UTF-8 candidates.
@@ -214,8 +222,9 @@ MDR_EXPORT int mdr_set_host_ops(mdr_engine_t*, const mdr_host_ops_t* ops, void* 
 /* Per-app text-acquisition hook.
  *
  * The host calls this at the top of its pickup pipeline. The script's
- * `on_acquire(ctx)` composes a routine using `modore.host.*` primitives
- * and returns either:
+ * `on_acquire(ctx, api)` composes a routine using `modore.host.*`
+ * primitives and the explicit `api` argument (the script's `modore`
+ * table) and returns either:
  *
  *   - a string: the picked text. Host treats this as the equivalent of
  *     what `Cmd+C` would have produced — host strips trailing newlines,
@@ -232,7 +241,7 @@ MDR_EXPORT int mdr_set_host_ops(mdr_engine_t*, const mdr_host_ops_t* ops, void* 
  */
 MDR_EXPORT int mdr_acquire(
     mdr_engine_t*,
-    const char* app_id,
+    const mdr_pickup_ctx_t* ctx,
     char* out_buf, size_t out_cap, size_t* out_len);
 
 /* ----- Portable pickup core --------------------------------------------

@@ -20,13 +20,17 @@ static void push_cstring_or_nil(lua_State* L, const char* s) {
 }
 
 void ms_push_pickup_ctx(lua_State* L, const mdr_pickup_ctx_t* ctx) {
-    lua_createtable(L, 0, 5);
+    lua_createtable(L, 0, 7);
     push_lstring_or_nil(L, ctx->full_text, ctx->full_text_len);
     lua_setfield(L, -2, "full_text");
     lua_pushinteger(L, (lua_Integer)ctx->caret_byte);
     lua_setfield(L, -2, "caret_byte");
     push_cstring_or_nil(L, ctx->app_id);
     lua_setfield(L, -2, "app_id");
+    push_cstring_or_nil(L, ctx->field_role);
+    lua_setfield(L, -2, "field_role");
+    push_cstring_or_nil(L, ctx->field_description);
+    lua_setfield(L, -2, "field_description");
     lua_pushboolean(L, (ctx->flags & 1u) != 0);
     lua_setfield(L, -2, "katakana");
     lua_pushinteger(L, (lua_Integer)ctx->flags);
@@ -88,6 +92,8 @@ int ms_pull_route(lua_State* L, int idx, mdr_route_t* out) {
         const char* s = lua_tostring(L, idx);
         if      (!strcmp(s, "default"))   *out = MDR_ROUTE_DEFAULT;
         else if (!strcmp(s, "ax"))        *out = MDR_ROUTE_AX;
+        else if (!strcmp(s, "selection_sync") || !strcmp(s, "selection-sync"))
+            *out = MDR_ROUTE_SELECTION_SYNC;
         else if (!strcmp(s, "keystroke")) *out = MDR_ROUTE_KEYSTROKE;
         else if (!strcmp(s, "clipboard")) *out = MDR_ROUTE_CLIPBOARD;
         else return 0;

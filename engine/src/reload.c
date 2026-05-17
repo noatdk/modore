@@ -152,6 +152,16 @@ int ms_load_script_file(mdr_engine_t* eng, script_entry_t* s) {
     cache_hooks(eng, s, lua_gettop(L));
     lua_pop(L, 1);
 
+    ms_log(eng, MDR_LOG_INFO, "engine",
+           "script loaded: %s app_id=%s hooks=%s%s%s%s%s",
+           s->path,
+           s->app_id ? s->app_id : "(default)",
+           (s->any_hook & (1u << MS_HOOK_PICKUP)) ? "pickup " : "",
+           (s->any_hook & (1u << MS_HOOK_REPLACEMENT)) ? "replacement " : "",
+           (s->any_hook & (1u << MS_HOOK_ROUTE)) ? "route " : "",
+           (s->any_hook & (1u << MS_HOOK_CANDIDATES)) ? "candidates " : "",
+           (s->any_hook & (1u << MS_HOOK_ACQUIRE)) ? "acquire " : "");
+
     return 0;
 }
 

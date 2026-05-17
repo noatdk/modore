@@ -38,7 +38,7 @@ int main(void) {
         mdr_pickup_ctx_t ctx = {0};
         mdr_span_t span;
         CHECK(mdr_pickup(eng, &ctx, &span)            == 0, "no-script pickup");
-        CHECK(mdr_route(eng, "x", &(mdr_route_t){0})  == 0, "no-script route");
+        CHECK(mdr_route(eng, &ctx, &(mdr_route_t){0})  == 0, "no-script route");
         mdr_shutdown(eng);
     }
 
@@ -47,6 +47,7 @@ int main(void) {
         char* dir = test_mkdtemp();
         mdr_engine_t* eng = mdr_init();
         mdr_set_log_callback(eng, test_log_cb, NULL);
+        mdr_set_defaults(eng, NULL, stub_def_pickup, NULL, stub_def_route);
         mdr_load_dir(eng, dir);
         mdr_pickup_ctx_t ctx = {0};
         mdr_span_t span;
@@ -68,12 +69,45 @@ int main(void) {
         mdr_pickup_ctx_t pctx = {0};
         mdr_span_t span = {0};
         CHECK(mdr_pickup(eng, &pctx, &span) == 0, "partial: pickup defaults");
-        CHECK(mdr_route(eng, "x", &(mdr_route_t){0}) == 0, "partial: route defaults");
+        CHECK(mdr_route(eng, &pctx, &(mdr_route_t){0}) == 0, "partial: route defaults");
 
         char out[16] = {0}; size_t n = 0;
         CHECK(mdr_replacement(eng, NULL, &span, NULL, 0, out, sizeof(out), &n) == 1,
               "partial: replacement fires");
         CHECK(strcmp(out, "X") == 0, "partial: replacement value");
+        mdr_shutdown(eng);
+        test_cleanup_dir(dir);
+        free(dir);
+    }
+
+    /* ---- stage callbacks receive explicit api arg ---- */
+    {
+        char* dir = test_mkdtemp();
+        test_write(dir, "default.lua",
+                   "modore.on_pickup = function(ctx, api)\n"
+                   "  local s = api.default.pickup(ctx)\n"
+                   "  if s then s.end_byte = s.end_byte + 1 end\n"
+                   "  return s\n"
+                   "end\n"
+                   "modore.route_for_app = function(ctx, api)\n"
+                   "  local r = api.default.route(ctx)\n"
+                   "  if r == 'keystroke' then return 'clipboard' end\n"
+                   "  return r\n"
+                   "end\n");
+        mdr_engine_t* eng = mdr_init();
+        mdr_set_log_callback(eng, test_log_cb, NULL);
+        mdr_set_defaults(eng, NULL, stub_def_pickup, NULL, stub_def_route);
+        mdr_load_dir(eng, dir);
+
+        mdr_pickup_ctx_t ctx = { .app_id = "x", .full_text = "abcd", .full_text_len = 4, .caret_byte = 2 };
+        mdr_span_t span = {0};
+        CHECK(mdr_pickup(eng, &ctx, &span) == 1, "pickup: rc");
+        CHECK(span.span_start_byte == 7, "pickup: default start");
+        CHECK(span.span_end_byte == 12,   "pickup: script-tweaked end");
+
+        mdr_route_t route = MDR_ROUTE_DEFAULT;
+        CHECK(mdr_route(eng, &ctx, &route) == 1, "route: rc");
+        CHECK(route == MDR_ROUTE_CLIPBOARD, "route: value");
         mdr_shutdown(eng);
         test_cleanup_dir(dir);
         free(dir);
@@ -88,7 +122,8 @@ int main(void) {
         mdr_load_dir(eng, dir);
 
         mdr_route_t r = MDR_ROUTE_DEFAULT;
-        CHECK(mdr_route(eng, "x", &r) == 0, "reload: initially undefined");
+        mdr_pickup_ctx_t ctx = { .app_id = "x" };
+        CHECK(mdr_route(eng, &ctx, &r) == 0, "reload: initially undefined");
 
         sleep(1); /* mtime granularity on macOS HFS+/APFS */
         FILE* f = fopen(path, "w");
@@ -96,7 +131,7 @@ int main(void) {
         fclose(f);
 
         r = MDR_ROUTE_DEFAULT;
-        CHECK(mdr_route(eng, "x", &r) == 1,            "reload: now defined");
+        CHECK(mdr_route(eng, &ctx, &r) == 1,            "reload: now defined");
         CHECK(r == MDR_ROUTE_CLIPBOARD,                "reload: value picked up");
 
         mdr_shutdown(eng);
@@ -177,7 +212,8 @@ int main(void) {
         mdr_load_dir(eng, dir);
 
         mdr_route_t r = MDR_ROUTE_DEFAULT;
-        CHECK(mdr_route(eng, "any", &r) == 1, "route-trampoline: rc");
+        mdr_pickup_ctx_t ctx = { .app_id = "any" };
+        CHECK(mdr_route(eng, &ctx, &r) == 1, "route-trampoline: rc");
         CHECK(stub_def_route_called == 1,      "route-trampoline: default invoked");
         CHECK(r == MDR_ROUTE_CLIPBOARD,        "route-trampoline: rewrite applied");
         mdr_shutdown(eng);

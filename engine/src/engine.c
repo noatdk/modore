@@ -32,6 +32,11 @@ mdr_engine_t* mdr_init(void) {
 
     eng->L = luaL_newstate();
     if (!eng->L) { free(eng); return NULL; }
+    if (pthread_mutex_init(&eng->lock, NULL) != 0) {
+        lua_close(eng->L);
+        free(eng);
+        return NULL;
+    }
 
     luaL_openlibs(eng->L);
     ms_register_modore_globals(eng);
@@ -40,6 +45,7 @@ mdr_engine_t* mdr_init(void) {
 
 void mdr_shutdown(mdr_engine_t* eng) {
     if (!eng) return;
+    pthread_mutex_lock(&eng->lock);
     if (eng->scripts) {
         for (size_t i = 0; i < eng->n_scripts; ++i) {
             ms_clear_script(eng, &eng->scripts[i]);
@@ -50,6 +56,8 @@ void mdr_shutdown(mdr_engine_t* eng) {
     }
     free(eng->dir_path);
     if (eng->L) lua_close(eng->L);
+    pthread_mutex_unlock(&eng->lock);
+    pthread_mutex_destroy(&eng->lock);
     free(eng);
 }
 
@@ -59,8 +67,10 @@ int mdr_abi_version(void) {
 
 int mdr_set_log_callback(mdr_engine_t* eng, mdr_log_cb cb, void* ud) {
     if (!eng) return -1;
+    pthread_mutex_lock(&eng->lock);
     eng->log_cb = cb;
     eng->log_ud = ud;
+    pthread_mutex_unlock(&eng->lock);
     return 0;
 }
 
@@ -70,18 +80,22 @@ int mdr_set_defaults(mdr_engine_t* eng,
                                mdr_default_replacement_fn replacement_fn,
                                mdr_default_route_fn route_fn) {
     if (!eng) return -1;
+    pthread_mutex_lock(&eng->lock);
     eng->host_ud         = host_ud;
     eng->def_pickup      = pickup_fn;
     eng->def_replacement = replacement_fn;
     eng->def_route       = route_fn;
+    pthread_mutex_unlock(&eng->lock);
     return 0;
 }
 
 int mdr_set_host_ops(mdr_engine_t* eng, const mdr_host_ops_t* ops, void* host_ud) {
     if (!eng) return -1;
+    pthread_mutex_lock(&eng->lock);
     if (ops) eng->host_ops = *ops;
     else     memset(&eng->host_ops, 0, sizeof(eng->host_ops));
     eng->host_ops_ud = host_ud;
+    pthread_mutex_unlock(&eng->lock);
     return 0;
 }
 
@@ -94,6 +108,7 @@ static int has_suffix(const char* s, const char* sfx) {
 
 int mdr_load_dir(mdr_engine_t* eng, const char* dir_path) {
     if (!eng || !dir_path) return -1;
+    pthread_mutex_lock(&eng->lock);
 
     /* Replace dir_path; clear existing scripts. */
     for (size_t i = 0; i < eng->n_scripts; ++i) {
@@ -109,6 +124,7 @@ int mdr_load_dir(mdr_engine_t* eng, const char* dir_path) {
     if (!d) {
         ms_log(eng, MDR_LOG_INFO, MS_TAG_ENGINE,
                "scripts dir '%s' missing — running in pass-through", dir_path);
+        pthread_mutex_unlock(&eng->lock);
         return 0;
     }
 
@@ -141,6 +157,7 @@ int mdr_load_dir(mdr_engine_t* eng, const char* dir_path) {
     for (size_t i = 0; i < eng->n_scripts; ++i) {
         ms_load_script_file(eng, &eng->scripts[i]);
     }
+    pthread_mutex_unlock(&eng->lock);
     return 0;
 }
 
@@ -178,18 +195,44 @@ static int pcall_one(mdr_engine_t* eng, int nargs) {
     return 1;
 }
 
+/* Push the script's `modore` table as the explicit api arg. The table is
+ * created once per script env and stays stable across reloads until that
+ * script is reloaded. */
+static int push_modore_api(mdr_engine_t* eng, script_entry_t* s) {
+    if (!eng || !s || s->env_ref == LUA_NOREF) return 0;
+    lua_rawgeti(eng->L, LUA_REGISTRYINDEX, s->env_ref);  /* env */
+    if (!lua_istable(eng->L, -1)) {
+        lua_pop(eng->L, 1);
+        return 0;
+    }
+    lua_getfield(eng->L, -1, "modore");
+    lua_remove(eng->L, -2);  /* drop env */
+    if (!lua_istable(eng->L, -1)) {
+        lua_pop(eng->L, 1);
+        return 0;
+    }
+    return 1;
+}
+
 int mdr_pickup(mdr_engine_t* eng,
                                 const mdr_pickup_ctx_t* ctx,
                                 mdr_span_t* out_span) {
     if (!eng || !ctx || !out_span) return -1;
+    pthread_mutex_lock(&eng->lock);
     script_entry_t* s = NULL;
-    if (!push_hook(eng, ctx->app_id, MS_HOOK_PICKUP, &s)) return 0;
+    if (!push_hook(eng, ctx->app_id, MS_HOOK_PICKUP, &s)) { pthread_mutex_unlock(&eng->lock); return 0; }
     ms_push_pickup_ctx(eng->L, ctx);
-    if (!pcall_one(eng, 1)) return 0;
+    if (!push_modore_api(eng, s)) {
+        lua_pop(eng->L, 2);
+        pthread_mutex_unlock(&eng->lock);
+        return 0;
+    }
+    if (!pcall_one(eng, 2)) { pthread_mutex_unlock(&eng->lock); return 0; }
     /* Caller's storage for romaji is the romaji field of the inbound ctx
      * if scripts want to keep it; otherwise NULL. We don't allocate. */
     int ok = ms_pull_span(eng->L, -1, out_span, NULL, 0);
     lua_pop(eng->L, 1);
+    pthread_mutex_unlock(&eng->lock);
     return ok ? 1 : 0;
 }
 
@@ -199,14 +242,21 @@ int mdr_replacement(mdr_engine_t* eng,
                                      const char* const* cands, size_t n_cands,
                                      char* out_buf, size_t out_cap, size_t* out_len) {
     if (!eng || !span || !out_buf || !out_len || out_cap == 0) return -1;
+    pthread_mutex_lock(&eng->lock);
     script_entry_t* s = NULL;
-    if (!push_hook(eng, app_id, MS_HOOK_REPLACEMENT, &s)) return 0;
+    if (!push_hook(eng, app_id, MS_HOOK_REPLACEMENT, &s)) { pthread_mutex_unlock(&eng->lock); return 0; }
     ms_push_span(eng->L, span);
     ms_push_cands(eng->L, cands, n_cands);
-    if (!pcall_one(eng, 2)) return 0;
+    if (!push_modore_api(eng, s)) {
+        lua_pop(eng->L, 3);
+        pthread_mutex_unlock(&eng->lock);
+        return 0;
+    }
+    if (!pcall_one(eng, 3)) { pthread_mutex_unlock(&eng->lock); return 0; }
     if (lua_type(eng->L, -1) != LUA_TSTRING) {
         ms_log(eng, MDR_LOG_WARN, MS_TAG_LUA, "on_replacement returned non-string");
         lua_pop(eng->L, 1);
+        pthread_mutex_unlock(&eng->lock);
         return 0;
     }
     size_t len = 0;
@@ -216,19 +266,33 @@ int mdr_replacement(mdr_engine_t* eng,
     out_buf[len] = '\0';
     *out_len = len;
     lua_pop(eng->L, 1);
+    pthread_mutex_unlock(&eng->lock);
     return 1;
 }
 
 int mdr_route(mdr_engine_t* eng,
-                                       const char* app_id,
+                                       const mdr_pickup_ctx_t* ctx,
                                        mdr_route_t* out_route) {
     if (!eng || !out_route) return -1;
+    pthread_mutex_lock(&eng->lock);
+    const char* app_id = ctx ? ctx->app_id : NULL;
     script_entry_t* s = NULL;
-    if (!push_hook(eng, app_id, MS_HOOK_ROUTE, &s)) return 0;
-    lua_pushstring(eng->L, app_id ? app_id : "");
-    if (!pcall_one(eng, 1)) return 0;
+    if (!push_hook(eng, app_id, MS_HOOK_ROUTE, &s)) { pthread_mutex_unlock(&eng->lock); return 0; }
+    if (!ctx) {
+        mdr_pickup_ctx_t empty = {0};
+        ms_push_pickup_ctx(eng->L, &empty);
+    } else {
+        ms_push_pickup_ctx(eng->L, ctx);
+    }
+    if (!push_modore_api(eng, s)) {
+        lua_pop(eng->L, 2);
+        pthread_mutex_unlock(&eng->lock);
+        return 0;
+    }
+    if (!pcall_one(eng, 2)) { pthread_mutex_unlock(&eng->lock); return 0; }
     int ok = ms_pull_route(eng->L, -1, out_route);
     lua_pop(eng->L, 1);
+    pthread_mutex_unlock(&eng->lock);
     return ok ? 1 : 0;
 }
 
@@ -238,14 +302,21 @@ int mdr_candidates(mdr_engine_t* eng,
                                     int current_idx,
                                     char* out_buf, size_t out_cap, size_t* out_count) {
     if (!eng || !out_buf || !out_count || out_cap == 0) return -1;
+    pthread_mutex_lock(&eng->lock);
     script_entry_t* s = NULL;
-    if (!push_hook(eng, app_id, MS_HOOK_CANDIDATES, &s)) return 0;
+    if (!push_hook(eng, app_id, MS_HOOK_CANDIDATES, &s)) { pthread_mutex_unlock(&eng->lock); return 0; }
     ms_push_cands(eng->L, in_cands, n_in);
     lua_pushinteger(eng->L, current_idx);
-    if (!pcall_one(eng, 2)) return 0;
+    if (!push_modore_api(eng, s)) {
+        lua_pop(eng->L, 3);
+        pthread_mutex_unlock(&eng->lock);
+        return 0;
+    }
+    if (!pcall_one(eng, 3)) { pthread_mutex_unlock(&eng->lock); return 0; }
     if (lua_type(eng->L, -1) != LUA_TTABLE) {
         ms_log(eng, MDR_LOG_WARN, MS_TAG_LUA, "on_candidates returned non-table");
         lua_pop(eng->L, 1);
+        pthread_mutex_unlock(&eng->lock);
         return 0;
     }
     size_t cnt = 0;
@@ -268,33 +339,48 @@ int mdr_candidates(mdr_engine_t* eng,
         /* Empty list = treat as "use default", per per-hook opt-in spirit:
          * a script that doesn't want to override should just not write the
          * hook or return nil. Returning {} is taken as "no opinion". */
+        pthread_mutex_unlock(&eng->lock);
         return 0;
     }
     *out_count = cnt;
+    pthread_mutex_unlock(&eng->lock);
     return 1;
 }
 
 int mdr_acquire(mdr_engine_t* eng,
-                const char* app_id,
+                const mdr_pickup_ctx_t* ctx,
                 char* out_buf, size_t out_cap, size_t* out_len) {
     if (!eng || !out_buf || !out_len || out_cap == 0) return -1;
+    pthread_mutex_lock(&eng->lock);
+    const char* app_id = ctx ? ctx->app_id : NULL;
     script_entry_t* s = NULL;
-    if (!push_hook(eng, app_id, MS_HOOK_ACQUIRE, &s)) return 0;
+    if (!push_hook(eng, app_id, MS_HOOK_ACQUIRE, &s)) { pthread_mutex_unlock(&eng->lock); return 0; }
 
-    /* Build context: same shape as pickup ctx, but with empty full_text
-     * because the host hasn't read anything yet on the imperative path. */
-    mdr_pickup_ctx_t ctx;
-    ctx.full_text     = "";
-    ctx.full_text_len = 0;
-    ctx.caret_byte    = 0;
-    ctx.app_id        = app_id;
-    ctx.flags         = 0;
-    ms_push_pickup_ctx(eng->L, &ctx);
-    if (!pcall_one(eng, 1)) return 0;
+    /* Pass through the host-provided context when available so the script
+     * can branch on field role/description. Legacy callers still get a
+     * minimal empty-text shape. */
+    mdr_pickup_ctx_t local = {0};
+    if (ctx) {
+        local = *ctx;
+    } else {
+        local.full_text = "";
+        local.full_text_len = 0;
+        local.caret_byte = 0;
+        local.app_id = app_id;
+        local.flags = 0;
+    }
+    ms_push_pickup_ctx(eng->L, &local);
+    if (!push_modore_api(eng, s)) {
+        lua_pop(eng->L, 2);
+        pthread_mutex_unlock(&eng->lock);
+        return 0;
+    }
+    if (!pcall_one(eng, 2)) { pthread_mutex_unlock(&eng->lock); return 0; }
 
     if (lua_type(eng->L, -1) != LUA_TSTRING) {
         ms_log(eng, MDR_LOG_WARN, MS_TAG_LUA, "on_acquire returned non-string");
         lua_pop(eng->L, 1);
+        pthread_mutex_unlock(&eng->lock);
         return 0;
     }
     size_t len = 0;
@@ -304,5 +390,6 @@ int mdr_acquire(mdr_engine_t* eng,
     out_buf[len] = '\0';
     *out_len = len;
     lua_pop(eng->L, 1);
+    pthread_mutex_unlock(&eng->lock);
     return 1;
 }
