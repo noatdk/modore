@@ -187,6 +187,93 @@ if CommandLine.arguments.contains("--shell-convert") {
     }
 }
 
+if CommandLine.arguments.contains("--shell-candidates") {
+    let caretArg: String? = {
+        if let caretEq = CommandLine.arguments.first(where: { $0.hasPrefix("--caret=") }) {
+            return String(caretEq.dropFirst("--caret=".count))
+        }
+        if let caretIdx = CommandLine.arguments.firstIndex(of: "--caret"),
+           caretIdx + 1 < CommandLine.arguments.count {
+            return CommandLine.arguments[caretIdx + 1]
+        }
+        return nil
+    }()
+    let caretUTF16: Int
+    let target: MozcBridge.ConvertTarget = CommandLine.arguments.contains("--katakana")
+        ? .katakana
+        : .kanji
+    let stdinData = FileHandle.standardInput.readDataToEndOfFile()
+    let input = String(data: stdinData, encoding: .utf8) ?? ""
+    if let caretArg, let caret = Int(caretArg) {
+        caretUTF16 = caret
+    } else {
+        caretUTF16 = input.utf16.count
+    }
+    do {
+        let sessionEnv = ProcessInfo.processInfo.environment["MODORE_SHELL_SESSION"] ?? ""
+        let sessionLabel = sessionEnv.isEmpty ? "<none>" : sessionEnv
+        let targetLabel = target == .katakana ? "katakana" : "primary"
+        Log.shell("cli candidates entry session=\(sessionLabel) mode=\(targetLabel) caret=\(caretUTF16) bytes=\(input.utf8.count)")
+        let response = try MozcBridge.shellCandidatesViaLiveHost(input, caretUTF16: caretUTF16, target: target)
+        Log.shell("cli candidates exit session=\(response.session) currentIndex=\(response.currentIndex) count=\(response.candidates.count)")
+        print(response.session, response.currentIndex, response.candidates.joined(separator: "\n"), separator: "\n", terminator: "")
+        exit(0)
+    } catch {
+        let msg = "shell candidates failed: \(error)\n"
+        FileHandle.standardError.write(msg.data(using: .utf8) ?? Data())
+        exit(1)
+    }
+}
+
+if CommandLine.arguments.contains("--shell-select") {
+    let caretArg: String? = {
+        if let caretEq = CommandLine.arguments.first(where: { $0.hasPrefix("--caret=") }) {
+            return String(caretEq.dropFirst("--caret=".count))
+        }
+        if let caretIdx = CommandLine.arguments.firstIndex(of: "--caret"),
+           caretIdx + 1 < CommandLine.arguments.count {
+            return CommandLine.arguments[caretIdx + 1]
+        }
+        return nil
+    }()
+    let selectedIndexArg: String? = {
+        if let idxEq = CommandLine.arguments.first(where: { $0.hasPrefix("--candidate-index=") }) {
+            return String(idxEq.dropFirst("--candidate-index=".count))
+        }
+        if let idx = CommandLine.arguments.firstIndex(of: "--candidate-index"),
+           idx + 1 < CommandLine.arguments.count {
+            return CommandLine.arguments[idx + 1]
+        }
+        return nil
+    }()
+    let selectedIndex = Int(selectedIndexArg ?? "") ?? 0
+    let caretUTF16: Int
+    let target: MozcBridge.ConvertTarget = CommandLine.arguments.contains("--katakana")
+        ? .katakana
+        : .kanji
+    let stdinData = FileHandle.standardInput.readDataToEndOfFile()
+    let input = String(data: stdinData, encoding: .utf8) ?? ""
+    if let caretArg, let caret = Int(caretArg) {
+        caretUTF16 = caret
+    } else {
+        caretUTF16 = input.utf16.count
+    }
+    do {
+        let sessionEnv = ProcessInfo.processInfo.environment["MODORE_SHELL_SESSION"] ?? ""
+        let sessionLabel = sessionEnv.isEmpty ? "<none>" : sessionEnv
+        let targetLabel = target == .katakana ? "katakana" : "primary"
+        Log.shell("cli select entry session=\(sessionLabel) mode=\(targetLabel) selectedIndex=\(selectedIndex) caret=\(caretUTF16) bytes=\(input.utf8.count)")
+        let response = try MozcBridge.shellSelectViaLiveHost(input, caretUTF16: caretUTF16, target: target, selectedIndex: selectedIndex)
+        Log.shell("cli select exit bytes=\(response.utf8.count)")
+        print(response, terminator: "")
+        exit(0)
+    } catch {
+        let msg = "shell select failed: \(error)\n"
+        FileHandle.standardError.write(msg.data(using: .utf8) ?? Data())
+        exit(1)
+    }
+}
+
 if let probeArg = CommandLine.arguments.first(where: { $0.hasPrefix("--probe-words=") }) {
     let probeWords = String(probeArg.dropFirst("--probe-words=".count))
     let probeBackend = CommandLine.arguments.first(where: { $0.hasPrefix("--probe-backend=") })

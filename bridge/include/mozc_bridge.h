@@ -204,6 +204,31 @@ int mozc_bridge_shell_convert_remote(const char *socket_path,
                                      size_t out_cap,
                                      size_t *out_len);
 
+// Return the current shell candidate list for a live session. The response is
+// `session_id\ncurrent_index\ncandidate1\ncandidate2...`.
+int mozc_bridge_shell_candidates_remote(const char *socket_path,
+                                        const char *session_id_in,
+                                        const char *mode_in,
+                                        const char *text,
+                                        size_t text_len,
+                                        size_t caret_byte,
+                                        char *out_buf,
+                                        size_t out_cap,
+                                        size_t *out_len);
+
+// Commit a shell candidate selected by index. The response is
+// `session_id\ncommitted_text`.
+int mozc_bridge_shell_select_remote(const char *socket_path,
+                                    const char *session_id_in,
+                                    const char *mode_in,
+                                    size_t selected_index,
+                                    const char *text,
+                                    size_t text_len,
+                                    size_t caret_byte,
+                                    char *out_buf,
+                                    size_t out_cap,
+                                    size_t *out_len);
+
 // Print a shell bootstrap script for the current interactive shell.
 // `hotkey_display_name` is the human-readable chord from modore.conf
 // (for example "Ctrl+Shift+grave"). `host_executable_path` should point to

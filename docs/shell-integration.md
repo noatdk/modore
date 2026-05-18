@@ -34,3 +34,4 @@ socket. `modore-host --shell-convert` is just the client shim.
 - The generated snippet uses the configured Modore hotkey when it can be
   represented cleanly in the active shell.
 - If it cannot, the bootstrap falls back to a conventional shell chord.
+- `Ctrl-X Ctrl-L` opens the shell candidate chooser. It uses `gum`.

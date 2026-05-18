@@ -347,6 +347,139 @@ enum MozcBridge {
         }
     }
 
+    static func shellCandidatesViaLiveHost(
+        _ text: String,
+        caretUTF16: Int,
+        target: ConvertTarget
+    ) throws -> (session: String, currentIndex: Int, candidates: [String]) {
+        guard let utf8 = text.cString(using: .utf8) else {
+            throw MozcBridgeError.stringEncoding
+        }
+        let utf8Bytes = utf8.dropLast()
+        let inputLen = utf8Bytes.count
+        let caretByte = text.utf8ByteOffset(forUTF16Offset: caretUTF16)
+        let socketPath = shellConvertSocketPath()
+        let sessionID = ProcessInfo.processInfo.environment["MODORE_SHELL_SESSION"] ?? ""
+        let sessionCString = sessionID.cString(using: .utf8)
+        let modeCString = (target == .katakana ? "katakana" : "primary").cString(using: .utf8)
+        let sessionLabel = sessionID.isEmpty ? "<none>" : sessionID
+        let modeLabel = target == .katakana ? "katakana" : "primary"
+        Log.shell("client candidates request session=\(sessionLabel) mode=\(modeLabel) caret=\(caretUTF16) caretByte=\(caretByte) bytes=\(inputLen) socket=\(socketPath)")
+
+        var cap = max(inputLen * 4 + 128, 512)
+        while true {
+            var outLen: size_t = 0
+            var buf = [CChar](repeating: 0, count: cap)
+            let rc: Int32 = utf8.withUnsafeBufferPointer { inPtr -> Int32 in
+                buf.withUnsafeMutableBufferPointer { outPtr -> Int32 in
+                    sessionCString.withUnsafeBufferPointerOrNil { sessionPtr in
+                        modeCString.withUnsafeBufferPointerOrNil { modePtr in
+                            Int32(mozc_bridge_shell_candidates_remote(
+                                socketPath,
+                                sessionPtr,
+                                modePtr,
+                                inPtr.baseAddress,
+                                inputLen,
+                                caretByte,
+                                outPtr.baseAddress,
+                                cap,
+                                &outLen))
+                        }
+                    }
+                }
+            }
+            if rc == 0 {
+                let data = Data(bytes: buf, count: outLen)
+                guard let response = String(data: data, encoding: .utf8) else {
+                    throw MozcBridgeError.stringEncoding
+                }
+                let parts = response.split(separator: "\n", omittingEmptySubsequences: false)
+                guard parts.count >= 2, let currentIndex = Int(parts[1]) else {
+                    Log.shell("client candidates malformed bytes=\(response.utf8.count)")
+                    throw MozcBridgeError.conversionFailed("malformed shell candidates response")
+                }
+                let session = String(parts[0])
+                let candidates = parts.dropFirst(2).map(String.init)
+                Log.shell("client candidates ok session=\(session) currentIndex=\(currentIndex) count=\(candidates.count)")
+                return (session, currentIndex, candidates)
+            }
+            if rc > 0 {
+                Log.shell("client candidates resize needed=\(rc)")
+                cap = Int(rc)
+                continue
+            }
+            Log.shell("client candidates failed err=\(lastError() ?? "unknown")")
+            throw MozcBridgeError.conversionFailed(lastError() ?? "shell candidates failed")
+        }
+    }
+
+    static func shellSelectViaLiveHost(
+        _ text: String,
+        caretUTF16: Int,
+        target: ConvertTarget,
+        selectedIndex: Int
+    ) throws -> String {
+        guard let utf8 = text.cString(using: .utf8) else {
+            throw MozcBridgeError.stringEncoding
+        }
+        let utf8Bytes = utf8.dropLast()
+        let inputLen = utf8Bytes.count
+        let caretByte = text.utf8ByteOffset(forUTF16Offset: caretUTF16)
+        let socketPath = shellConvertSocketPath()
+        let sessionID = ProcessInfo.processInfo.environment["MODORE_SHELL_SESSION"] ?? ""
+        let sessionCString = sessionID.cString(using: .utf8)
+        let modeCString = (target == .katakana ? "katakana" : "primary").cString(using: .utf8)
+        let sessionLabel = sessionID.isEmpty ? "<none>" : sessionID
+        let modeLabel = target == .katakana ? "katakana" : "primary"
+        Log.shell("client select request session=\(sessionLabel) mode=\(modeLabel) selectedIndex=\(selectedIndex) caret=\(caretUTF16) caretByte=\(caretByte) bytes=\(inputLen) socket=\(socketPath)")
+
+        var cap = max(inputLen * 4 + 128, 512)
+        while true {
+            var outLen: size_t = 0
+            var buf = [CChar](repeating: 0, count: cap)
+            let rc: Int32 = utf8.withUnsafeBufferPointer { inPtr -> Int32 in
+                buf.withUnsafeMutableBufferPointer { outPtr -> Int32 in
+                    sessionCString.withUnsafeBufferPointerOrNil { sessionPtr in
+                        modeCString.withUnsafeBufferPointerOrNil { modePtr in
+                            Int32(mozc_bridge_shell_select_remote(
+                                socketPath,
+                                sessionPtr,
+                                modePtr,
+                                size_t(selectedIndex),
+                                inPtr.baseAddress,
+                                inputLen,
+                                caretByte,
+                                outPtr.baseAddress,
+                                cap,
+                                &outLen))
+                        }
+                    }
+                }
+            }
+            if rc == 0 {
+                let data = Data(bytes: buf, count: outLen)
+                guard let response = String(data: data, encoding: .utf8) else {
+                    throw MozcBridgeError.stringEncoding
+                }
+                guard let split = response.firstIndex(of: "\n") else {
+                    Log.shell("client select malformed bytes=\(response.utf8.count)")
+                    throw MozcBridgeError.conversionFailed("malformed shell select response")
+                }
+                let session = String(response[..<split])
+                let converted = String(response[response.index(after: split)...])
+                Log.shell("client select ok session=\(session) bytes=\(converted.utf8.count)")
+                return converted
+            }
+            if rc > 0 {
+                Log.shell("client select resize needed=\(rc)")
+                cap = Int(rc)
+                continue
+            }
+            Log.shell("client select failed err=\(lastError() ?? "unknown")")
+            throw MozcBridgeError.conversionFailed(lastError() ?? "shell select failed")
+        }
+    }
+
     static func startShellConvertServer(socketPath: String = shellConvertSocketPath()) throws {
         Log.shell("start server path=\(socketPath)")
         let rc = mozc_bridge_shell_server_start(socketPath)
