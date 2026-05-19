@@ -60,6 +60,19 @@ path instead. You can still grant the capability manually in the same
 spirit as espanso's Linux install notes (`setcap 'cap_dac_override+p'
 ~/.local/lib/modore/modore-host` is the shape they document).
 
+Rollback note:
+if you want the pre-`100ms fix` timing back, restore the earlier
+clipboard pacing in `native/linux/main.cpp` by raising these constants to
+their previous conservative values:
+
+- `kSelectSettleMs`
+- `kPrePasteDelayMs`
+- `kInjectPasteWaitMs`
+- `kRestoreClipboardDelayMs`
+
+That brings back the slower but more forgiving clipboard cadence without
+changing the rest of the pickup flow.
+
 Hyprland example:
 
 ```ini

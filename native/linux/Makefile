@@ -18,6 +18,7 @@ BRIDGE_SO := $(BUILD)/libmozc_bridge.so
 ENGINE_SO := $(BUILD)/libmodore_script.so
 
 CXX ?= g++
+CLANG_FORMAT ?= clang-format
 
 export PATH := $(REPO_ROOT)/bridge/build-tools:$(PATH)
 
@@ -31,6 +32,8 @@ LDFLAGS := -pthread -Wl,-rpath,\$$ORIGIN
 PKG_GOBJECT := $(shell pkg-config --libs gobject-2.0)
 
 SRC := main.cpp config.cpp evdev_hotkey.cpp ipc.cpp log.cpp scripting.cpp
+HDR := config.hpp evdev_hotkey.hpp ipc.hpp log.hpp scripting.hpp
+FORMAT_FILES := $(SRC) $(HDR)
 
 PREFIX := $(HOME)/.local
 INSTALL_LIB_DIR := $(PREFIX)/lib/modore
@@ -39,9 +42,12 @@ INSTALL_BIN := $(PREFIX)/bin/modore-host
 SYSTEMD_USER_DIR := $(HOME)/.config/systemd/user
 SYSTEMD_UNIT := $(CURDIR)/systemd/user/modore-host.service
 
-.PHONY: all run run-local clean install-user-bin bootstrap-evdev-access install-systemd-user reload-user-service
+.PHONY: all run run-local clean format install-user-bin bootstrap-evdev-access install-systemd-user reload-user-service
 
 all: $(OUT)
+
+format:
+	$(CLANG_FORMAT) -i $(FORMAT_FILES)
 
 # Top-level orchestrator builds the shared bridge (CMake + Mozc).
 $(BRIDGE_LIB):
@@ -58,7 +64,7 @@ $(ENGINE_LIB):
 		-DCMAKE_BUILD_TYPE=Release $(SCRIPTING_CMAKE_FLAG)
 	cmake --build "$(ENGINE_BUILD)" -j --target modore_script
 
-$(OUT): $(SRC) $(BRIDGE_LIB) $(ENGINE_LIB) Makefile
+$(OUT): format $(SRC) $(BRIDGE_LIB) $(ENGINE_LIB) Makefile
 	mkdir -p "$(BUILD)"
 	cp -f "$(BRIDGE_LIB)" "$(BRIDGE_SO)"
 	cp -f "$(ENGINE_LIB)" "$(ENGINE_SO)"

@@ -22,7 +22,7 @@ struct X11HotkeySpec {
   // Bitmask of ShiftMask | ControlMask | Mod1Mask | Mod4Mask | Mod5Mask.
   unsigned int modifier_mask{Mod4Mask};
   // Logical keysym (e.g. XK_semicolon); keycodes are resolved per Display.
-  std::uint64_t keysym{0x003b};  // XK_semicolon
+  std::uint64_t keysym{0x003b}; // XK_semicolon
 };
 
 struct ModoreConfig {
@@ -33,4 +33,5 @@ struct ModoreConfig {
 
 // Populates defaults when the file is missing or keys are absent.
 // Returns false only on a present-but-invalid hotkey (see *error_message).
-[[nodiscard]] bool load_modore_config(ModoreConfig* out, std::string* error_message);
+[[nodiscard]] bool load_modore_config(ModoreConfig *out,
+                                      std::string *error_message);

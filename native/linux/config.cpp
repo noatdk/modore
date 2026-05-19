@@ -22,13 +22,14 @@ std::string trim(std::string s) {
 }
 
 std::string to_lower(std::string s) {
-  for (char& c : s) {
+  for (char &c : s) {
     c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
   }
   return s;
 }
 
-bool parse_key_value(std::string_view line, std::string* key_out, std::string* val_out) {
+bool parse_key_value(std::string_view line, std::string *key_out,
+                     std::string *val_out) {
   const auto eq = line.find('=');
   if (eq == std::string::npos) {
     return false;
@@ -39,18 +40,18 @@ bool parse_key_value(std::string_view line, std::string* key_out, std::string* v
 }
 
 std::string default_config_dir() {
-  const char* xdg = std::getenv("XDG_CONFIG_HOME");
+  const char *xdg = std::getenv("XDG_CONFIG_HOME");
   if (xdg && *xdg) {
     return std::string(xdg) + "/modore";
   }
-  const char* home = std::getenv("HOME");
+  const char *home = std::getenv("HOME");
   if (home && *home) {
     return std::string(home) + "/.config/modore";
   }
   return std::string("/.config/modore");
 }
 
-KeySym resolve_keysym_token(const std::string& key_token) {
+KeySym resolve_keysym_token(const std::string &key_token) {
   const std::string k = to_lower(trim(key_token));
 
   if (k.size() == 1) {
@@ -77,7 +78,7 @@ KeySym resolve_keysym_token(const std::string& key_token) {
   }
 
   static const struct {
-    const char* name;
+    const char *name;
     KeySym sym;
   } k_map[] = {
       {"slash", XK_slash},
@@ -111,7 +112,7 @@ KeySym resolve_keysym_token(const std::string& key_token) {
       {"bracketright", XK_bracketright},
       {"backslash", XK_backslash},
   };
-  for (const auto& e : k_map) {
+  for (const auto &e : k_map) {
     if (k == e.name) {
       return e.sym;
     }
@@ -124,7 +125,8 @@ KeySym resolve_keysym_token(const std::string& key_token) {
   return XStringToKeysym(k.c_str());
 }
 
-bool parse_hotkey_chord(const std::string& chord, X11HotkeySpec* out, std::string* err) {
+bool parse_hotkey_chord(const std::string &chord, X11HotkeySpec *out,
+                        std::string *err) {
   if (chord.empty()) {
     *err = "empty hotkey";
     return false;
@@ -140,7 +142,8 @@ bool parse_hotkey_chord(const std::string& chord, X11HotkeySpec* out, std::strin
     }
   }
   if (parts.size() < 2) {
-    *err = "hotkey must include at least one modifier and a key (e.g. Ctrl+Semicolon)";
+    *err = "hotkey must include at least one modifier and a key (e.g. "
+           "Ctrl+Semicolon)";
     return false;
   }
 
@@ -172,19 +175,19 @@ bool parse_hotkey_chord(const std::string& chord, X11HotkeySpec* out, std::strin
   return true;
 }
 
-void apply_default_hotkey(X11HotkeySpec* h) {
+void apply_default_hotkey(X11HotkeySpec *h) {
   h->modifier_mask = ControlMask;
   h->keysym = static_cast<std::uint64_t>(XK_semicolon);
 }
 
-void apply_conversion_defaults(ModoreConfig* out) {
+void apply_conversion_defaults(ModoreConfig *out) {
   apply_default_hotkey(&out->conversion_hotkey);
   out->conversion_hotkey_description = "Ctrl+Semicolon (default)";
 }
 
-}  // namespace
+} // namespace
 
-bool load_modore_config(ModoreConfig* out, std::string* error_message) {
+bool load_modore_config(ModoreConfig *out, std::string *error_message) {
   error_message->clear();
   apply_conversion_defaults(out);
 
