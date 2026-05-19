@@ -11,6 +11,7 @@
 #include <mozc_bridge.h>
 
 #include "config.hpp"
+#include "evdev_hotkey.hpp"
 #include "ipc.hpp"
 #include "log.hpp"
 #include "scripting.hpp"
@@ -23,6 +24,8 @@
 #include <cstring>
 #include <errno.h>
 #include <fcntl.h>
+#include <fstream>
+#include <functional>
 #include <mutex>
 #include <poll.h>
 #include <string>
@@ -34,7 +37,110 @@
 
 namespace {
 
-#define logf modore_logf
+thread_local const char* g_log_scope_tag = "host";
+
+struct HyprWindowSnapshot {
+  std::string klass;
+  std::string initial_class;
+  std::string initial_title;
+  std::string app_id;
+  std::string title;
+  bool xwayland = false;
+};
+
+thread_local HyprWindowSnapshot g_hypr_window_snapshot{};
+
+struct CachedAtspiFocus {
+  std::mutex mu;
+  AtspiAccessible* focus = nullptr;
+
+  ~CachedAtspiFocus() {
+    if (focus) {
+      g_object_unref(focus);
+      focus = nullptr;
+    }
+  }
+
+  void update(AtspiAccessible* next) {
+    std::lock_guard<std::mutex> lock(mu);
+    if (focus) {
+      g_object_unref(focus);
+      focus = nullptr;
+    }
+    if (next) {
+      focus = ATSPI_ACCESSIBLE(g_object_ref(next));
+    }
+  }
+
+  AtspiAccessible* take_ref() {
+    std::lock_guard<std::mutex> lock(mu);
+    if (!focus) {
+      return nullptr;
+    }
+    return ATSPI_ACCESSIBLE(g_object_ref(focus));
+  }
+};
+
+CachedAtspiFocus g_cached_atspi_focus{};
+
+class ScopedLogTag {
+ public:
+  explicit ScopedLogTag(const char* tag) : prev_(g_log_scope_tag) {
+    g_log_scope_tag = tag ? tag : "host";
+  }
+  ~ScopedLogTag() { g_log_scope_tag = prev_; }
+
+  ScopedLogTag(const ScopedLogTag&) = delete;
+  ScopedLogTag& operator=(const ScopedLogTag&) = delete;
+
+ private:
+  const char* prev_;
+};
+
+#define logf(...) modore_log(g_log_scope_tag, __VA_ARGS__)
+
+static std::string utf8_preview(const std::string& text, size_t max_chars = 96) {
+  if (text.empty()) {
+    return "(empty)";
+  }
+  if (!g_utf8_validate(text.c_str(), static_cast<gssize>(text.size()), nullptr)) {
+    std::string hex;
+    constexpr size_t kMaxBytes = 24;
+    for (size_t i = 0; i < text.size() && i < kMaxBytes; ++i) {
+      if (!hex.empty()) {
+        hex.push_back(' ');
+      }
+      char buf[4];
+      std::snprintf(buf, sizeof(buf), "%02x", static_cast<unsigned char>(text[i]));
+      hex += buf;
+    }
+    if (text.size() > kMaxBytes) {
+      hex += " ...";
+    }
+    return std::string("<invalid-utf8 bytes=") + std::to_string(text.size()) + " hex=" + hex + ">";
+  }
+
+  const char* begin = text.c_str();
+  const char* cur = begin;
+  size_t chars = 0;
+  while (*cur && chars < max_chars) {
+    cur = g_utf8_next_char(cur);
+    ++chars;
+  }
+  std::string preview(begin, static_cast<size_t>(cur - begin));
+  gchar* escaped = g_strescape(preview.c_str(), nullptr);
+  std::string out = escaped ? escaped : preview;
+  g_free(escaped);
+  if (*cur) {
+    out += "...";
+  }
+  return out;
+}
+
+static void log_text_preview(const char* label, const std::string& text) {
+  modore_log(g_log_scope_tag, "%s bytes=%zu utf8=\"%s\"", label ? label : "text",
+             text.size(), utf8_preview(text).c_str());
+}
 
 // Synthetic keys are dispatched asynchronously in the focused client. `hyprctl dispatch` is
 // synchronous for *our* process (waitpid), not for the app. Multi-ms sleeps are usually wasted on
@@ -132,6 +238,27 @@ void main_thread_run_pickup_after_wake() {
   for (int t = 0; t < n_triggers; ++t) {
     modore_log("pickup", "via IPC socket (--trigger)%s", t > 0 ? " (batched)" : "");
     run_ipc_pickup();
+  }
+}
+
+void main_thread_run_pipe_only_loop() {
+  if (g_pickup_pipe[0] < 0) {
+    return;
+  }
+  for (;;) {
+    struct pollfd pfd{};
+    pfd.fd = g_pickup_pipe[0];
+    pfd.events = POLLIN;
+    if (poll(&pfd, 1, -1) < 0) {
+      if (errno == EINTR) {
+        continue;
+      }
+      logf("poll failed: %s", std::strerror(errno));
+      return;
+    }
+    if (pfd.revents & (POLLIN | POLLHUP | POLLERR)) {
+      main_thread_run_pickup_after_wake();
+    }
   }
 }
 
@@ -340,6 +467,305 @@ static bool fork_hyprctl_version_ok(const char* hc_path) {
   return WIFEXITED(st) && WEXITSTATUS(st) == 0;
 }
 
+static bool hyprctl_ipc_alive_for_wayland_keys();
+
+static bool hyprctl_query_activewindow_json(std::string* json) {
+  json->clear();
+  if (!hyprctl_ipc_alive_for_wayland_keys()) {
+    return false;
+  }
+  const char* hc = resolve_hyprctl_executable();
+  if (!hc) {
+    return false;
+  }
+  int link[2];
+  if (::pipe(link) != 0) {
+    return false;
+  }
+  pid_t pid = ::fork();
+  if (pid < 0) {
+    ::close(link[0]);
+    ::close(link[1]);
+    return false;
+  }
+  if (pid == 0) {
+    (void)::dup2(link[1], STDOUT_FILENO);
+    ::close(link[0]);
+    ::close(link[1]);
+    int nerr = ::open("/dev/null", O_WRONLY);
+    if (nerr >= 0) {
+      (void)::dup2(nerr, STDERR_FILENO);
+      ::close(nerr);
+    }
+    ::execl(hc, "hyprctl", "activewindow", "-j", nullptr);
+    ::_exit(127);
+  }
+  ::close(link[1]);
+  char buf[4096];
+  for (;;) {
+    ssize_t n = ::read(link[0], buf, sizeof(buf));
+    if (n <= 0) {
+      break;
+    }
+    json->append(buf, static_cast<size_t>(n));
+  }
+  ::close(link[0]);
+  int st = 0;
+  (void)::waitpid(pid, &st, 0);
+  return WIFEXITED(st) && WEXITSTATUS(st) == 0 && !json->empty();
+}
+
+static bool json_string_field(const std::string& json, const char* key, std::string* out) {
+  out->clear();
+  if (!key || !key[0]) {
+    return false;
+  }
+  const std::string needle = std::string("\"") + key + "\"";
+  const size_t k = json.find(needle);
+  if (k == std::string::npos) {
+    return false;
+  }
+  size_t p = json.find(':', k + needle.size());
+  if (p == std::string::npos) {
+    return false;
+  }
+  while (++p < json.size() &&
+         std::isspace(static_cast<unsigned char>(json[p]))) {
+  }
+  if (p >= json.size() || json[p] != '"') {
+    return false;
+  }
+  ++p;
+  std::string value;
+  for (; p < json.size(); ++p) {
+    const char c = json[p];
+    if (c == '\\' && p + 1 < json.size()) {
+      value.push_back(json[++p]);
+      continue;
+    }
+    if (c == '"') {
+      *out = std::move(value);
+      return true;
+    }
+    value.push_back(c);
+  }
+  return false;
+}
+
+static bool json_bool_field(const std::string& json, const char* key, bool* out) {
+  if (!key || !key[0]) {
+    return false;
+  }
+  const std::string needle = std::string("\"") + key + "\"";
+  const size_t k = json.find(needle);
+  if (k == std::string::npos) {
+    return false;
+  }
+  size_t p = json.find(':', k + needle.size());
+  if (p == std::string::npos) {
+    return false;
+  }
+  while (++p < json.size() &&
+         std::isspace(static_cast<unsigned char>(json[p]))) {
+  }
+  if (p + 3 < json.size() && json.compare(p, 4, "true") == 0) {
+    *out = true;
+    return true;
+  }
+  if (p + 4 < json.size() && json.compare(p, 5, "false") == 0) {
+    *out = false;
+    return true;
+  }
+  return false;
+}
+
+static bool hyprctl_query_activewindow_snapshot(HyprWindowSnapshot* snapshot) {
+  if (!snapshot) {
+    return false;
+  }
+  snapshot->klass.clear();
+  snapshot->initial_class.clear();
+  snapshot->initial_title.clear();
+  snapshot->app_id.clear();
+  snapshot->title.clear();
+  snapshot->xwayland = false;
+  std::string json;
+  if (!hyprctl_query_activewindow_json(&json)) {
+    return false;
+  }
+  std::string klass;
+  std::string initial_class;
+  std::string title;
+  std::string initial_title;
+  bool xwayland = false;
+  (void)json_string_field(json, "class", &klass);
+  (void)json_string_field(json, "initialClass", &initial_class);
+  (void)json_string_field(json, "title", &title);
+  (void)json_string_field(json, "initialTitle", &initial_title);
+  (void)json_bool_field(json, "xwayland", &xwayland);
+  snapshot->klass = klass;
+  snapshot->initial_class = initial_class;
+  snapshot->initial_title = initial_title;
+  snapshot->app_id = !klass.empty() ? klass : initial_class;
+  snapshot->title = !title.empty() ? title : initial_title;
+  snapshot->xwayland = xwayland;
+  return true;
+}
+
+static void log_hyprland_activewindow_snapshot(const char* context) {
+  if (!hyprctl_ipc_alive_for_wayland_keys()) {
+    return;
+  }
+  HyprWindowSnapshot snapshot{};
+  if (!hyprctl_query_activewindow_snapshot(&snapshot)) {
+    modore_log("ipc", "%s focus: Hypr activewindow unavailable", context ? context : "pickup");
+    return;
+  }
+  g_hypr_window_snapshot = snapshot;
+  modore_log("ipc",
+             "%s focus: class=%s initialClass=%s title=%s initialTitle=%s xwayland=%s",
+             context ? context : "pickup",
+             snapshot.klass.empty() ? "(unset)" : snapshot.klass.c_str(),
+             snapshot.initial_class.empty() ? "(unset)" : snapshot.initial_class.c_str(),
+             snapshot.title.empty() ? "(unset)" : snapshot.title.c_str(),
+             snapshot.initial_title.empty() ? "(unset)" : snapshot.initial_title.c_str(),
+             snapshot.xwayland ? "yes" : "no");
+}
+
+static const char* current_focused_app_id() {
+  return g_hypr_window_snapshot.app_id.empty() ? nullptr : g_hypr_window_snapshot.app_id.c_str();
+}
+
+static bool hypr_focus_snapshots_match(const HyprWindowSnapshot& a, const HyprWindowSnapshot& b) {
+  return a.klass == b.klass && a.initial_class == b.initial_class && a.app_id == b.app_id &&
+         a.xwayland == b.xwayland;
+}
+
+struct PickupFocusWatch {
+  bool armed = false;
+  const char* scope = "pickup";
+  HyprWindowSnapshot start{};
+
+  void arm(const char* scope_name) {
+    scope = scope_name ? scope_name : "pickup";
+    armed = false;
+    if (!hyprctl_ipc_alive_for_wayland_keys()) {
+      return;
+    }
+    if (!hyprctl_query_activewindow_snapshot(&start)) {
+      modore_log("ipc", "%s focus watch could not snapshot Hypr activewindow", scope);
+      return;
+    }
+    g_hypr_window_snapshot = start;
+    armed = true;
+    modore_log("ipc",
+               "%s focus watch armed: class=%s initialClass=%s title=%s initialTitle=%s xwayland=%s",
+               scope, start.klass.empty() ? "(unset)" : start.klass.c_str(),
+               start.initial_class.empty() ? "(unset)" : start.initial_class.c_str(),
+               start.title.empty() ? "(unset)" : start.title.c_str(),
+               start.initial_title.empty() ? "(unset)" : start.initial_title.c_str(),
+               start.xwayland ? "yes" : "no");
+  }
+
+  bool still_current(const char* phase) {
+    if (!armed) {
+      return true;
+    }
+    HyprWindowSnapshot now{};
+    if (!hyprctl_query_activewindow_snapshot(&now)) {
+      modore_log("pickup", "%s canceled during %s: Hypr activewindow unavailable", scope,
+                 phase ? phase : "step");
+      armed = false;
+      return false;
+    }
+    if (!hypr_focus_snapshots_match(start, now)) {
+      modore_log(
+          "pickup",
+          "%s canceled during %s: focus changed from class=%s initialClass=%s title=%s "
+          "initialTitle=%s xwayland=%s to class=%s initialClass=%s title=%s initialTitle=%s "
+          "xwayland=%s",
+          scope, phase ? phase : "step", start.klass.empty() ? "(unset)" : start.klass.c_str(),
+          start.initial_class.empty() ? "(unset)" : start.initial_class.c_str(),
+          start.title.empty() ? "(unset)" : start.title.c_str(),
+          start.initial_title.empty() ? "(unset)" : start.initial_title.c_str(),
+          start.xwayland ? "yes" : "no", now.klass.empty() ? "(unset)" : now.klass.c_str(),
+          now.initial_class.empty() ? "(unset)" : now.initial_class.c_str(),
+          now.title.empty() ? "(unset)" : now.title.c_str(),
+          now.initial_title.empty() ? "(unset)" : now.initial_title.c_str(),
+          now.xwayland ? "yes" : "no");
+      g_hypr_window_snapshot = now;
+      armed = false;
+      return false;
+    }
+    g_hypr_window_snapshot = now;
+    return true;
+  }
+};
+
+thread_local PickupFocusWatch g_pickup_focus_watch{};
+
+static bool pickup_focus_still_current(const char* phase);
+
+struct PickupActionQueue {
+  struct Entry {
+    std::string label;
+    std::function<bool()> run;
+  };
+
+  std::vector<Entry> entries;
+
+  void push(std::string label, std::function<bool()> run) {
+    entries.push_back(Entry{std::move(label), std::move(run)});
+  }
+
+  bool consume(const char* scope) {
+    for (auto& entry : entries) {
+      if (!entry.run()) {
+        modore_log("pickup", "%s action failed: %s", scope ? scope : "pickup",
+                   entry.label.c_str());
+        return false;
+      }
+    }
+    return true;
+  }
+};
+
+static std::string lower_ascii_copy(std::string s) {
+  for (char& c : s) {
+    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  }
+  return s;
+}
+
+static bool focused_window_looks_like_terminal() {
+  std::string id = lower_ascii_copy(g_hypr_window_snapshot.klass);
+  std::string initial = lower_ascii_copy(g_hypr_window_snapshot.initial_class);
+  std::string title = lower_ascii_copy(g_hypr_window_snapshot.title);
+  const char* needles[] = {"kitty", "alacritty", "wezterm", "foot", "xterm", "konsole",
+                           "ghostty", "terminator", "tilix", "terminal", "st", "qterminal",
+                           "urxvt", "xfce4-terminal", "gnome-terminal", "rio"};
+  for (const char* n : needles) {
+    if ((!id.empty() && id.find(n) != std::string::npos) ||
+        (!initial.empty() && initial.find(n) != std::string::npos) ||
+        (!title.empty() && title.find(n) != std::string::npos)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+static bool focused_window_looks_like_discord() {
+  std::string id = lower_ascii_copy(g_hypr_window_snapshot.klass);
+  std::string initial = lower_ascii_copy(g_hypr_window_snapshot.initial_class);
+  std::string title = lower_ascii_copy(g_hypr_window_snapshot.title);
+  if ((!id.empty() && id.find("discord") != std::string::npos) ||
+      (!initial.empty() && initial.find("discord") != std::string::npos) ||
+      (!title.empty() && title.find("discord") != std::string::npos)) {
+    return true;
+  }
+  return false;
+}
+
 static bool hyprctl_ipc_alive_for_wayland_keys() {
   static int cached = -1;
   if (cached >= 0) {
@@ -376,49 +802,8 @@ static bool hyprctl_ipc_alive_for_wayland_keys() {
 // — so conversion can run yet nothing appears in Kitty/GTK/etc. Hypr exposes xwayland on activewindow.
 // On ambiguity (query failure / old Hypr output), assume native-Wayland and skip X11 injection.
 static bool hypr_focus_is_wayland_native() {
-  if (!hyprctl_ipc_alive_for_wayland_keys()) {
-    return false;
-  }
-  const char* hc = resolve_hyprctl_executable();
-  if (!hc) {
-    return false;
-  }
-  int link[2];
-  if (::pipe(link) != 0) {
-    return true;
-  }
-  pid_t pid = ::fork();
-  if (pid < 0) {
-    ::close(link[0]);
-    ::close(link[1]);
-    return true;
-  }
-  if (pid == 0) {
-    (void)::dup2(link[1], STDOUT_FILENO);
-    ::close(link[0]);
-    ::close(link[1]);
-    int nerr = ::open("/dev/null", O_WRONLY);
-    if (nerr >= 0) {
-      (void)::dup2(nerr, STDERR_FILENO);
-      ::close(nerr);
-    }
-    ::execl(hc, "hyprctl", "activewindow", "-j", nullptr);
-    ::_exit(127);
-  }
-  ::close(link[1]);
   std::string json;
-  char buf[4096];
-  for (;;) {
-    ssize_t n = ::read(link[0], buf, sizeof(buf));
-    if (n <= 0) {
-      break;
-    }
-    json.append(buf, static_cast<size_t>(n));
-  }
-  ::close(link[0]);
-  int st = 0;
-  (void)::waitpid(pid, &st, 0);
-  if (!WIFEXITED(st) || WEXITSTATUS(st) != 0 || json.empty()) {
+  if (!hyprctl_query_activewindow_json(&json)) {
     return true;
   }
   if (json.find("\"xwayland\": true") != std::string::npos ||
@@ -458,6 +843,161 @@ static bool hyprctl_dispatch_sendshortcut(const char* shortcut_spec, const char*
   return ok;
 }
 
+static std::string hyprland_bind_mods_for_mask(unsigned int mask) {
+  std::string mods;
+  auto append_mod = [&](const char* token) {
+    if (!mods.empty()) {
+      mods.push_back('_');
+    }
+    mods += token;
+  };
+  if (mask & ControlMask) {
+    append_mod("CTRL");
+  }
+  if (mask & ShiftMask) {
+    append_mod("SHIFT");
+  }
+  if (mask & Mod1Mask) {
+    append_mod("ALT");
+  }
+  if (mask & Mod4Mask) {
+    append_mod("SUPER");
+  }
+  return mods;
+}
+
+static std::string hyprland_bind_key_for_keysym(KeySym ks) {
+  const char* label = XKeysymToString(ks);
+  if (label && *label) {
+    return label;
+  }
+  return {};
+}
+
+static std::string hyprland_hotkey_combo(const X11HotkeySpec& hotkey) {
+  const std::string mods = hyprland_bind_mods_for_mask(hotkey.modifier_mask);
+  const std::string key = hyprland_bind_key_for_keysym(static_cast<KeySym>(hotkey.keysym));
+  if (key.empty()) {
+    return {};
+  }
+  if (mods.empty()) {
+    return "," + key;
+  }
+  return mods + "," + key;
+}
+
+static std::string hyprland_bind_state_path() {
+  return default_profile_dir() + "/hyprland-bind";
+}
+
+static std::string read_text_file_trimmed(const std::string& path) {
+  std::ifstream f(path);
+  if (!f) {
+    return {};
+  }
+  std::string line;
+  std::getline(f, line);
+  while (!line.empty() && (line.back() == '\n' || line.back() == '\r')) {
+    line.pop_back();
+  }
+  return line;
+}
+
+static bool write_text_file(const std::string& path, const std::string& text) {
+  const std::string tmp = path + ".tmp";
+  {
+    std::ofstream f(tmp, std::ios::trunc);
+    if (!f) {
+      return false;
+    }
+    f << text << '\n';
+    if (!f) {
+      return false;
+    }
+  }
+  if (::rename(tmp.c_str(), path.c_str()) != 0) {
+    ::unlink(tmp.c_str());
+    return false;
+  }
+  return true;
+}
+
+static std::string resolve_self_executable_path(const char* argv0) {
+  if (argv0 && argv0[0]) {
+    char resolved[4096];
+    if (::realpath(argv0, resolved)) {
+      return resolved;
+    }
+  }
+  char proc[4096];
+  const ssize_t n = ::readlink("/proc/self/exe", proc, sizeof(proc) - 1);
+  if (n > 0) {
+    proc[n] = '\0';
+    return proc;
+  }
+  return argv0 && argv0[0] ? argv0 : "modore-host";
+}
+
+static bool hyprctl_keyword_value(const char* keyword, const std::string& value,
+                                  const char* log_ctx) {
+  const char* hc = resolve_hyprctl_executable();
+  if (!hc) {
+    return false;
+  }
+  pid_t pid = fork();
+  if (pid < 0) {
+    return false;
+  }
+  if (pid == 0) {
+    int fd = open("/dev/null", O_WRONLY);
+    if (fd >= 0) {
+      (void)::dup2(fd, STDOUT_FILENO);
+      (void)::dup2(fd, STDERR_FILENO);
+      (void)::close(fd);
+    }
+    execl(hc, "hyprctl", "keyword", keyword, value.c_str(), nullptr);
+    _exit(127);
+  }
+  int st = 0;
+  (void)::waitpid(pid, &st, 0);
+  const bool ok = WIFEXITED(st) && WEXITSTATUS(st) == 0;
+  if (!ok) {
+    const int code = WIFEXITED(st) ? WEXITSTATUS(st) : -1;
+    modore_log("hotkey", "hyprctl keyword %s failed exit=%d (%s)", keyword, code, log_ctx);
+  }
+  return ok;
+}
+
+static bool register_hyprland_hotkey_bind(const std::string& host_path,
+                                          const X11HotkeySpec& hotkey,
+                                          const std::string& description) {
+  const std::string combo = hyprland_hotkey_combo(hotkey);
+  if (combo.empty()) {
+    modore_log("hotkey", "Hyprland bind skipped: could not map hotkey to a compositor combo");
+    return false;
+  }
+
+  const std::string exec_cmd = host_path + " --trigger";
+  const std::string bind_value = combo + ",exec," + exec_cmd;
+  const std::string state_path = hyprland_bind_state_path();
+  const std::string prev_combo = read_text_file_trimmed(state_path);
+  if (!prev_combo.empty() && prev_combo != combo) {
+    (void)hyprctl_keyword_value("unbind", prev_combo, "previous hotkey");
+  }
+
+  const std::string bind_ctx =
+      description.empty() ? std::string("modore pickup") : description + " (" + combo + ")";
+  if (!hyprctl_keyword_value("bind", bind_value, bind_ctx.c_str())) {
+    return false;
+  }
+  if (!write_text_file(state_path, combo)) {
+    modore_log("hotkey", "Hyprland bind active but state file write failed (%s)",
+               state_path.c_str());
+  }
+  modore_log("hotkey", "Hyprland bind active (%s -> %s)", combo.c_str(), exec_cmd.c_str());
+  return true;
+}
+
 static bool hyprctl_wayland_copy_selection() {
   // Omarchy SUPER+C sends Ctrl+Insert only; many apps also honor Ctrl+C. Hypr can exit 0 for a
   // chord that never reaches the focused GTK surface, so we always send both (brief pause between)
@@ -480,10 +1020,6 @@ static bool hyprctl_wayland_copy_selection() {
 
 static bool hyprctl_wayland_ctrl_shift_left() {
   return hyprctl_dispatch_sendshortcut("CTRL SHIFT,Left,", "Ctrl+Shift+Left");
-}
-
-static bool hyprctl_wayland_key_right() {
-  return hyprctl_dispatch_sendshortcut(",Right,", "Right");
 }
 
 static bool hyprctl_wayland_delete_or_backspace() {
@@ -893,15 +1429,6 @@ void fake_ctrl_shift_left(Display* d) {
   XFlush(d);
 }
 
-void fake_right_arrow(Display* d) {
-  KeyCode left = XKeysymToKeycode(d, XK_Right);
-  if (left) {
-    XTestFakeKeyEvent(d, left, True, CurrentTime);
-    XTestFakeKeyEvent(d, left, False, CurrentTime);
-    XFlush(d);
-  }
-}
-
 // --- wtype / ydotool (optional; used when Display* is null) ----------------
 
 static void child_clear_im_modules() {
@@ -1000,47 +1527,6 @@ void fake_ctrl_shift_left_best(Display* d) {
   }
   if (wtype_is_available()) {
     (void)wtype_chord_ctrl_shift_left();
-  }
-}
-
-void fake_right_arrow_best(Display* d) {
-  if (d) {
-    fake_right_arrow(d);
-    return;
-  }
-  if (hyprctl_ipc_alive_for_wayland_keys()) {
-    if (hyprctl_wayland_key_right()) {
-      return;
-    }
-  }
-  if (wtype_is_available()) {
-    (void)wtype_key_right();
-  }
-}
-
-// Remove selected text before STRING injection (many Gtk/Qt controls ignore
-// synthetic ATSPI_KEY_STRING when replacing a selection; Delete+type matches
-// physical keyboard behaviour).
-void fake_delete_selection_best(Display* d) {
-  if (d) {
-    KeyCode del = XKeysymToKeycode(d, XK_Delete);
-    if (!del) {
-      del = XKeysymToKeycode(d, XK_BackSpace);
-    }
-    if (del) {
-      XTestFakeKeyEvent(d, del, True, CurrentTime);
-      XTestFakeKeyEvent(d, del, False, CurrentTime);
-      XFlush(d);
-    }
-    return;
-  }
-  if (hyprctl_ipc_alive_for_wayland_keys()) {
-    if (hyprctl_wayland_delete_or_backspace()) {
-      return;
-    }
-  }
-  if (wtype_is_available()) {
-    (void)wtype_key_delete_or_backspace();
   }
 }
 
@@ -1328,6 +1814,59 @@ AtspiAccessible* find_text_with_focus_or_active(AtspiAccessible* obj, int depth)
   return nullptr;
 }
 
+static bool atspi_focus_event_is_gaining(const AtspiEvent* event) {
+  if (!event || !event->type) {
+    return false;
+  }
+  if (event->detail1 == 0) {
+    return false;
+  }
+  return std::strcmp(event->type, "object:state-changed:focused") == 0 ||
+         std::strcmp(event->type, "object:state-changed:active") == 0;
+}
+
+static void atspi_focus_cache_event_cb(const AtspiEvent* event) {
+  if (!atspi_focus_event_is_gaining(event) || !event->source) {
+    return;
+  }
+  AtspiAccessible* cached = nullptr;
+  if (atspi_accessible_is_text(event->source)) {
+    cached = ATSPI_ACCESSIBLE(g_object_ref(event->source));
+  } else {
+    cached = find_text_with_focus_or_active(event->source, 0);
+  }
+  if (!cached) {
+    return;
+  }
+  g_cached_atspi_focus.update(cached);
+  g_object_unref(cached);
+}
+
+static void start_atspi_focus_cache_listener() {
+  static bool started = false;
+  if (started) {
+    return;
+  }
+  started = true;
+  GError* err = nullptr;
+  if (!atspi_event_listener_register_no_data(atspi_focus_cache_event_cb, nullptr,
+                                             "object:state-changed:focused", &err)) {
+    modore_log("atspi", "focus cache listener register focused failed: %s",
+               err ? err->message : "unknown error");
+    g_clear_error(&err);
+    return;
+  }
+  if (!atspi_event_listener_register_no_data(atspi_focus_cache_event_cb, nullptr,
+                                             "object:state-changed:active", &err)) {
+    modore_log("atspi", "focus cache listener register active failed: %s",
+               err ? err->message : "unknown error");
+    g_clear_error(&err);
+    return;
+  }
+  std::thread([]() { atspi_event_main(); }).detach();
+  modore_log("atspi", "focus cache listener active");
+}
+
 // Returns true if AT-SPI produced a result: either direct editable replace
 // (*direct_done) or UTF-8 to inject with atspi_generate_keyboard_event.
 // When *pick_span_for_inject is non-null, fills it with the source romaji slice (UTF-8) on the
@@ -1335,71 +1874,116 @@ AtspiAccessible* find_text_with_focus_or_active(AtspiAccessible* obj, int depth)
 // Returns false to fall through to the clipboard/XTest path.
 bool try_pickup_atspi(bool* direct_done, std::string* inject_utf8,
                       std::string* pick_span_for_inject) {
+  ScopedLogTag log_scope("atspi");
   *direct_done = false;
   inject_utf8->clear();
   if (pick_span_for_inject) {
     pick_span_for_inject->clear();
   }
+  const auto atspi_started = std::chrono::steady_clock::now();
+  auto atspi_elapsed_ms = [&]() -> long long {
+    return static_cast<long long>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - atspi_started)
+            .count());
+  };
   MODORE_E2E_LOGF("try_pickup_atspi: start");
+  const char* app_id = current_focused_app_id();
 
   GError* err = nullptr;
-  AtspiAccessible* focus = nullptr;
-  const gint n_desk = atspi_get_desktop_count();
-  const gint n_try = n_desk > 0 ? n_desk : 1;
-  for (gint di = 0; di < n_try; ++di) {
-    AtspiAccessible* desktop = atspi_get_desktop(di);
-    if (!desktop) {
-      continue;
+  AtspiAccessible* focus = g_cached_atspi_focus.take_ref();
+  if (focus) {
+    AtspiStateSet* ss = atspi_accessible_get_state_set(focus);
+    const bool focusish =
+        ss && (atspi_state_set_contains(ss, ATSPI_STATE_FOCUSED) ||
+               atspi_state_set_contains(ss, ATSPI_STATE_ACTIVE));
+    if (ss) {
+      g_object_unref(ss);
     }
-    focus = find_focused_leaf(desktop, 0);
-    if (!focus) {
-      focus = find_text_with_focus_or_active(desktop, 0);
-      if (focus) {
-        logf("AT-SPI: desktop %d — Text widget FOCUSED/ACTIVE (no strict focus leaf)",
-             static_cast<int>(di));
+    if (!atspi_accessible_is_text(focus) || !focusish) {
+      logf("AT-SPI: cached focused accessible rejected (text=%d focusish=%d) elapsed=%lld ms",
+           atspi_accessible_is_text(focus) ? 1 : 0, focusish ? 1 : 0, atspi_elapsed_ms());
+      g_object_unref(focus);
+      focus = nullptr;
+    } else {
+      logf("AT-SPI: using cached focused accessible elapsed=%lld ms", atspi_elapsed_ms());
+    }
+  }
+  AtspiAccessible* found_focus = nullptr;
+  const gint n_desk = atspi_get_desktop_count();
+  logf("AT-SPI: desktop_count=%d elapsed=%lld ms", static_cast<int>(n_desk), atspi_elapsed_ms());
+  if (!focus) {
+    const gint n_try = n_desk > 0 ? n_desk : 1;
+    for (gint di = 0; di < n_try; ++di) {
+      AtspiAccessible* desktop = atspi_get_desktop(di);
+      if (!desktop) {
+        continue;
+      }
+      logf("AT-SPI: scanning desktop %d elapsed=%lld ms", static_cast<int>(di), atspi_elapsed_ms());
+      found_focus = find_focused_leaf(desktop, 0);
+      if (!found_focus) {
+        found_focus = find_text_with_focus_or_active(desktop, 0);
+        if (found_focus) {
+          logf("AT-SPI: desktop %d — Text widget FOCUSED/ACTIVE (no strict focus leaf)",
+               static_cast<int>(di));
+        }
+      }
+      g_object_unref(desktop);
+      if (found_focus) {
+        break;
       }
     }
-    g_object_unref(desktop);
+    focus = found_focus;
     if (focus) {
-      break;
+      g_cached_atspi_focus.update(focus);
+      logf("AT-SPI: cached focus from DFS elapsed=%lld ms", atspi_elapsed_ms());
     }
   }
   if (!focus) {
-    logf("AT-SPI: no focused accessible");
+    logf("AT-SPI: no focused accessible elapsed=%lld ms", atspi_elapsed_ms());
     return false;
   }
+  logf("AT-SPI: focus located elapsed=%lld ms", atspi_elapsed_ms());
   if (!atspi_accessible_is_text(focus)) {
-    logf("AT-SPI: focused node has no Text interface");
+    logf("AT-SPI: focused node has no Text interface elapsed=%lld ms", atspi_elapsed_ms());
     g_object_unref(focus);
     return false;
   }
   AtspiText* text = atspi_accessible_get_text_iface(focus);
   if (!text) {
+    logf("AT-SPI: get_text_iface failed elapsed=%lld ms", atspi_elapsed_ms());
     g_object_unref(focus);
     return false;
   }
+  logf("AT-SPI: text iface ready elapsed=%lld ms", atspi_elapsed_ms());
 
   gint n_chars = atspi_text_get_character_count(text, &err);
   if (err) {
     g_clear_error(&err);
+    logf("AT-SPI: character_count failed elapsed=%lld ms", atspi_elapsed_ms());
     g_object_unref(focus);
     return false;
   }
+  logf("AT-SPI: character_count=%d elapsed=%lld ms", static_cast<int>(n_chars), atspi_elapsed_ms());
 
   gchar* full = atspi_text_get_text(text, 0, n_chars, &err);
   if (err || !full) {
     g_clear_error(&err);
+    logf("AT-SPI: get_text failed elapsed=%lld ms", atspi_elapsed_ms());
     g_object_unref(focus);
     return false;
   }
+  logf("AT-SPI: get_text bytes=%zu elapsed=%lld ms", std::strlen(full), atspi_elapsed_ms());
 
   gint caret = atspi_text_get_caret_offset(text, &err);
   if (err) {
     g_clear_error(&err);
     g_free(full);
+    logf("AT-SPI: caret_offset failed elapsed=%lld ms", atspi_elapsed_ms());
     g_object_unref(focus);
     return false;
   }
+  logf("AT-SPI: caret_offset=%d elapsed=%lld ms", static_cast<int>(caret), atspi_elapsed_ms());
 
   glong span_start = 0;
   glong span_end = 0;
@@ -1417,7 +2001,8 @@ bool try_pickup_atspi(bool* direct_done, std::string* inject_utf8,
     const gsize caret_byte =
         static_cast<gsize>(g_utf8_offset_to_pointer(full, safe_caret) - full);
     auto scripted = modore_script::pickup_span(
-        std::string(full, full_bytes), caret_byte, /*app_id*/ nullptr, /*katakana*/ false);
+        std::string(full, full_bytes), caret_byte, app_id, /*katakana*/ false);
+    logf("AT-SPI: script pickup probe elapsed=%lld ms", atspi_elapsed_ms());
     if (scripted) {
       const std::size_t sb = std::min(scripted->first,  full_bytes);
       const std::size_t eb = std::min(scripted->second, full_bytes);
@@ -1434,17 +2019,23 @@ bool try_pickup_atspi(bool* direct_done, std::string* inject_utf8,
   if (!scripted_pickup) {
     gint n_sel = atspi_text_get_n_selections(text, &err);
     g_clear_error(&err);
+    logf("AT-SPI: n_selections=%d elapsed=%lld ms", static_cast<int>(n_sel), atspi_elapsed_ms());
     if (n_sel > 0) {
       AtspiRange* range = atspi_text_get_selection(text, 0, &err);
       if (!err && range) {
         span_start = range->start_offset;
         span_end = range->end_offset;
         g_free(range);
+        logf("AT-SPI: selection range [%ld..%ld] elapsed=%lld ms", static_cast<long>(span_start),
+             static_cast<long>(span_end), atspi_elapsed_ms());
       } else {
         g_clear_error(&err);
+        logf("AT-SPI: get_selection failed, falling back to word range elapsed=%lld ms",
+             atspi_elapsed_ms());
         word_range_chars(full, caret, n_chars, &span_start, &span_end);
       }
     } else {
+      logf("AT-SPI: no selection, using word range elapsed=%lld ms", atspi_elapsed_ms());
       word_range_chars(full, caret, n_chars, &span_start, &span_end);
     }
   }
@@ -1494,22 +2085,27 @@ bool try_pickup_atspi(bool* direct_done, std::string* inject_utf8,
   g_free(full);
   MODORE_E2E_LOGF("try_pickup_atspi: span_start=%ld span_end=%ld romaji_bytes=%zu", static_cast<long>(span_start),
                   static_cast<long>(span_end), romaji.size());
+  logf("pick: atspi span extracted elapsed=%lld ms", atspi_elapsed_ms());
+  log_text_preview("pick", romaji);
 
   AtspiEditableText* ed = atspi_accessible_get_editable_text_iface(focus);
   if (ed && atspi_accessible_is_editable_text(focus)) {
     std::string converted;
+    logf("AT-SPI: editable path mozc_convert start elapsed=%lld ms", atspi_elapsed_ms());
     if (!mozc_convert_utf8(romaji, &converted)) {
+      logf("AT-SPI: editable path mozc_convert failed elapsed=%lld ms", atspi_elapsed_ms());
       g_object_unref(focus);
       return false;
     }
+    logf("AT-SPI: editable path mozc_convert done elapsed=%lld ms", atspi_elapsed_ms());
+    log_text_preview("replacement", converted);
 
     // Script-driven replacement override. Mozc's top candidate is what the
     // host would write; scripts can rewrite it before the AT-SPI delete +
     // insert. nullopt → keep Mozc's choice.
     {
       const std::vector<std::string> cands = { converted };
-      auto scripted = modore_script::replacement(
-          /*app_id*/ nullptr, span_start_byte, span_end_byte, cands);
+      auto scripted = modore_script::replacement(app_id, span_start_byte, span_end_byte, cands);
       if (scripted) {
         logf("AT-SPI: script replacement override (was '%s', now '%s')",
              converted.c_str(), scripted->c_str());
@@ -1520,6 +2116,7 @@ bool try_pickup_atspi(bool* direct_done, std::string* inject_utf8,
     gboolean ok1 = atspi_editable_text_delete_text(ed, span_start, span_end, &err);
     if (!ok1) {
       g_clear_error(&err);
+      logf("AT-SPI: delete_text failed elapsed=%lld ms", atspi_elapsed_ms());
       g_object_unref(focus);
       return false;
     }
@@ -1528,6 +2125,7 @@ bool try_pickup_atspi(bool* direct_done, std::string* inject_utf8,
                                         static_cast<gint>(converted.size()), &err);
     if (!ok2) {
       g_clear_error(&err);
+      logf("AT-SPI: insert_text failed elapsed=%lld ms", atspi_elapsed_ms());
       g_object_unref(focus);
       return false;
     }
@@ -1546,15 +2144,19 @@ bool try_pickup_atspi(bool* direct_done, std::string* inject_utf8,
       g_clear_error(&err);
     }
     *direct_done = true;
+    logf("AT-SPI: editable path complete elapsed=%lld ms", atspi_elapsed_ms());
     g_object_unref(focus);
     return true;
   }
 
+  logf("AT-SPI: non-editable path mozc_convert start elapsed=%lld ms", atspi_elapsed_ms());
   if (!mozc_convert_utf8(romaji, inject_utf8)) {
-    logf("AT-SPI: convert failed (non-editable field)");
+    logf("AT-SPI: convert failed (non-editable field) elapsed=%lld ms", atspi_elapsed_ms());
     g_object_unref(focus);
     return false;
   }
+  logf("AT-SPI: non-editable path mozc_convert done elapsed=%lld ms", atspi_elapsed_ms());
+  log_text_preview("replacement", *inject_utf8);
   // On Wayland, set_selection frequently updates accessibility state without moving
   // the real keyboard selection, so synthetic Delete/types the wrong slice — skip.
   if (!std::getenv("WAYLAND_DISPLAY")) {
@@ -1576,7 +2178,7 @@ bool try_pickup_atspi(bool* direct_done, std::string* inject_utf8,
   if (pick_span_for_inject) {
     pick_span_for_inject->assign(romaji);
   }
-  logf("AT-SPI: non-editable control — injecting conversion text");
+  logf("AT-SPI: non-editable control — injecting conversion text elapsed=%lld ms", atspi_elapsed_ms());
   return true;
 }
 
@@ -1810,11 +2412,155 @@ static bool hypr_wayland_try_select_all(const char* log_ctx) {
     return false;
   }
   if (hyprctl_dispatch_sendshortcut("CONTROL,A,", log_ctx ? log_ctx : "Select all")) {
-    // No AT-SPI signal when the widget has expanded selection — keep a small window only.
-    nap_after_compose_event(std::chrono::milliseconds(12));
     return true;
   }
   return false;
+}
+
+static bool hypr_wayland_try_select_line_home(const char* log_ctx) {
+  if (!hyprctl_ipc_alive_for_wayland_keys()) {
+    return false;
+  }
+  if (hyprctl_dispatch_sendshortcut("SHIFT,Home,", log_ctx ? log_ctx : "Shift+Home")) {
+    return true;
+  }
+  return false;
+}
+
+static bool hypr_wayland_try_select_word_left(const char* log_ctx) {
+  if (!hyprctl_ipc_alive_for_wayland_keys()) {
+    return false;
+  }
+  if (hyprctl_dispatch_sendshortcut("CTRL SHIFT,Left,", log_ctx ? log_ctx : "Ctrl+Shift+Left")) {
+    return true;
+  }
+  return false;
+}
+
+static bool wayland_select_for_acquire(bool discord_like, const char* log_ctx) {
+  if (discord_like) {
+    return hypr_wayland_try_select_line_home(log_ctx ? log_ctx : "Discord pre-copy line select");
+  }
+  if (!hyprctl_ipc_alive_for_wayland_keys()) {
+    return false;
+  }
+  if (hyprctl_wayland_ctrl_shift_left()) {
+    return true;
+  }
+  return false;
+}
+
+static void wayland_poll_after_copy(const std::string& baseline_clip,
+                                    const std::string& baseline_primary,
+                                    const char* attempt_label, std::string* after, bool* got_fresh,
+                                    bool* clipboard_offer_unchanged, int max_wait_ms);
+static void wl_poll_until_clip_or_primary_moves(const std::string& ref_clip,
+                                                const std::string& ref_primary,
+                                                int max_wait_ms);
+
+static bool pickup_focus_still_current(const char* phase) {
+  return g_pickup_focus_watch.still_current(phase);
+}
+
+enum class WaylandAcquireFlow {
+  Generic,
+  ChromeLike,
+  DiscordLike,
+  TerminalLike,
+};
+
+static WaylandAcquireFlow classify_wayland_acquire_flow() {
+  if (focused_window_looks_like_discord()) {
+    return WaylandAcquireFlow::DiscordLike;
+  }
+  if (focused_window_looks_like_terminal()) {
+    return WaylandAcquireFlow::TerminalLike;
+  }
+  std::string id = lower_ascii_copy(g_hypr_window_snapshot.klass);
+  std::string initial = lower_ascii_copy(g_hypr_window_snapshot.initial_class);
+  std::string title = lower_ascii_copy(g_hypr_window_snapshot.title);
+  if ((!id.empty() && (id.find("chromium") != std::string::npos ||
+                       id.find("chrome") != std::string::npos)) ||
+      (!initial.empty() && (initial.find("chromium") != std::string::npos ||
+                            initial.find("chrome") != std::string::npos)) ||
+      (!title.empty() && (title.find("chromium") != std::string::npos ||
+                          title.find("chrome") != std::string::npos))) {
+    return WaylandAcquireFlow::ChromeLike;
+  }
+  return WaylandAcquireFlow::Generic;
+}
+
+static const char* flow_name(WaylandAcquireFlow flow) {
+  switch (flow) {
+    case WaylandAcquireFlow::ChromeLike:
+      return "chrome-like";
+    case WaylandAcquireFlow::DiscordLike:
+      return "discord-like";
+    case WaylandAcquireFlow::TerminalLike:
+      return "terminal-like";
+    default:
+      return "generic";
+  }
+}
+
+static bool wayland_acquire_once_for_flow(WaylandAcquireFlow flow, Display* d,
+                                          const std::string& baseline_clip,
+                                          const std::string& baseline_primary,
+                                          std::string* picked_out) {
+  if (!picked_out) {
+    return false;
+  }
+  picked_out->clear();
+  if (!wl_clipboard_available()) {
+    return false;
+  }
+
+  PickupActionQueue queue;
+  switch (flow) {
+    case WaylandAcquireFlow::ChromeLike:
+      logf("pick: chrome-like flow — Ctrl+Shift+Left then copy");
+      queue.push("chrome-like select", [&] { return hypr_wayland_try_select_word_left("Chrome acquire select"); });
+      break;
+    case WaylandAcquireFlow::DiscordLike:
+      logf("clipboard: discord-like flow — Shift+Home then copy");
+      queue.push("discord-like select", [&] { return hypr_wayland_try_select_line_home("Discord acquire select"); });
+      break;
+    case WaylandAcquireFlow::TerminalLike:
+      logf("clipboard: terminal-like flow — Shift+Home then copy");
+      queue.push("terminal-like select", [&] { return hypr_wayland_try_select_line_home("Terminal acquire select"); });
+      break;
+    default:
+      return false;
+  }
+  queue.push("focused-app copy", [&] { fake_ctrl_c_best(d); return true; });
+
+  if (!queue.consume(flow_name(flow))) {
+    picked_out->clear();
+    logf("clipboard: %s flow failed — stopping", flow_name(flow));
+    return false;
+  }
+  constexpr int kSelectSettleMs = 1800;
+  logf("pick: %s flow waiting up to %dms for selection to settle before copy", flow_name(flow),
+       kSelectSettleMs);
+  wl_poll_until_clip_or_primary_moves(baseline_clip, baseline_primary, kSelectSettleMs);
+  logf("pick: %s flow selection settle wait complete", flow_name(flow));
+  nap_after_compose_event(std::chrono::milliseconds(12));
+  std::string after_clip;
+  std::string after_primary;
+  read_wl_clip_offer(&after_clip);
+  read_wl_primary_offer(&after_primary);
+  logf("pick: %s flow post-copy offers clip=%zu primary=%zu", flow_name(flow),
+       after_clip.size(), after_primary.size());
+  log_text_preview("pick clip", after_clip);
+  log_text_preview("pick primary", after_primary);
+  if (!read_wl_clip_offer(picked_out) || picked_out->empty()) {
+    read_wl_primary_offer(picked_out);
+  }
+  if (picked_out->empty()) {
+    logf("clipboard: %s flow did not yield a pick", flow_name(flow));
+    return false;
+  }
+  return true;
 }
 
 static void notify_corrupted_pick_needs_recovery() {
@@ -1835,12 +2581,19 @@ static bool hypr_attempt_clear_focused_edit_field_best_effort(const char* log_ct
   if (block && block[0]) {
     return false;
   }
-  if (!hypr_wayland_try_select_all(log_ctx_note ? log_ctx_note : "Modore Ctrl+A stale field")) {
+  const bool terminal_like = focused_window_looks_like_terminal();
+  const bool selected = terminal_like
+                            ? hypr_wayland_try_select_line_home(log_ctx_note ? log_ctx_note
+                                                                              : "Modore Shift+Home stale field")
+                            : hypr_wayland_try_select_all(log_ctx_note ? log_ctx_note
+                                                                       : "Modore Ctrl+A stale field");
+  if (!selected) {
     return false;
   }
   if (hyprctl_wayland_delete_or_backspace()) {
     nap_after_compose_event(std::chrono::milliseconds(6));
-    logf("clipboard: cleared focused field attempt — Hypr Ctrl+A + delete/backspace sequence");
+    logf("clipboard: cleared focused field attempt — Hypr %s + delete/backspace sequence",
+         terminal_like ? "Shift+Home" : "Ctrl+A");
     return true;
   }
   return false;
@@ -1935,128 +2688,35 @@ static void fake_wayland_backspace_glyph_count(glong glyphs) {
 void inject_replacement_clear_then_type(Display* d, const std::string& utf8,
                                         const std::string* wayland_clipboard_pick_utf8,
                                         bool force_ctrl_a_ignore_glyph_env = false) {
+  ScopedLogTag log_scope("clipboard");
   MODORE_E2E_LOGF("inject: enter out_bytes=%zu d=%s pick_ptr=%s force_ctrl_a=%d", utf8.size(),
                   d ? "X11" : "null", wayland_clipboard_pick_utf8 ? "yes" : "no",
                   force_ctrl_a_ignore_glyph_env ? 1 : 0);
-  // Glyph erase + wl-copy paste needs wl-paste/wl-copy and a UTF-8 byte span matching the live
-  // field. Native Wayland uses d=nullptr; XWayland sessions often have d!=nullptr but still set
-  // WAYLAND_DISPLAY — the erase/paste path uses Hypr/wtype (not XTest), so allow wl_erase there too
-  // when AT-SPI supplies the span (clipboard pickup still passes the same pointer shape).
-  const char* wl_disp = std::getenv("WAYLAND_DISPLAY");
-  const bool on_wayland_desktop = wl_disp != nullptr && wl_disp[0] != '\0';
-  const bool wl_erase = wayland_clipboard_pick_utf8 && !wayland_clipboard_pick_utf8->empty() &&
-      wl_clipboard_available() && (!d || on_wayland_desktop);
-  MODORE_E2E_LOGF("inject: wl_erase=%d on_wayland_desktop=%d", wl_erase ? 1 : 0,
-                  on_wayland_desktop ? 1 : 0);
-  if (wl_erase) {
-    const std::string& pick_ref = *wayland_clipboard_pick_utf8;
-    const glong n = g_utf8_strlen(pick_ref.c_str(), static_cast<gssize>(pick_ref.size()));
-    logf("inject: span for glyph erase — %zu bytes (~%ld Unicode scalars) before replace",
-         pick_ref.size(), static_cast<long>(n));
-
-    // Chromium/Electron omnibox: per-glyph BackSpace often races IME — leftover romaji + paste
-    // becomes garbage (e.g. "henx 1 1"). Ctrl+A + paste is reliable for single-line fields.
-    // GTK mixed fields: set MODORE_WL_GLYPH_ERASE_ROMANJI=1 to force glyph erase for plain romaji.
-    bool cleared_via_select_all = false;
-    if (hyprctl_ipc_alive_for_wayland_keys() && pick_is_plain_ascii_romaji(pick_ref)) {
-      const char* force_glyph = std::getenv("MODORE_WL_GLYPH_ERASE_ROMANJI");
-      const bool glyph_only =
-          !force_ctrl_a_ignore_glyph_env && force_glyph && force_glyph[0] &&
-          std::strcmp(force_glyph, "0") != 0;
-      if (!glyph_only) {
-        logf("inject: Ctrl+A (select all) — plain ascii romaji pick");
-        cleared_via_select_all =
-            hypr_wayland_try_select_all("Select all before Modore replace (Ctrl+A)");
-        if (cleared_via_select_all) {
-          nap_after_compose_event(std::chrono::milliseconds(6));
-        }
-      } else {
-        logf("inject: MODORE_WL_GLYPH_ERASE_ROMANJI — using glyph BackSpace for plain romaji");
-      }
-    }
-    if (!cleared_via_select_all) {
-      logf("inject: glyph BackSpace erase — ~%ld scalars", static_cast<long>(n));
-      fake_wayland_backspace_glyph_count(n);
-      nap_after_compose_event(std::chrono::milliseconds(4));
-    }
-    const bool prefer_clipboard = utf8_contains_non_ascii(utf8);
-    // Fcitx/Mozc (and Chromium IME) intercept wtype unicode as composition: raw UTF-8 becomes
-    // garbage (partial kana, mojibake). wl-copy then Shift+Insert commits cleanly.
-    if (prefer_clipboard) {
-      logf(
-          "inject: wl-copy+pasting first (%zu UTF-8 bytes) — IME breaks raw wtype for non-ASCII",
-          utf8.size());
-      if (inject_utf8_via_wl_clipboard_paste(utf8)) {
-        return;
-      }
-    }
-    logf("inject: trying Unicode via wtype/ydotool after erase (%zu UTF-8 bytes)", utf8.size());
-    if (inject_utf8_wayland_fallback(utf8)) {
-      logf("inject: direct wtype/ydotool after erase succeeded — GTK often ignores paste "
-           "simulation");
-      return;
-    }
-    if (inject_utf8_via_wl_clipboard_paste(utf8)) {
-      logf(prefer_clipboard ? "inject: retry wl-copy+paste after wtype failed (%zu UTF-8 bytes)"
-                            : "inject: wl-copy+pasted after typed inject failed (%zu UTF-8 bytes)",
-           utf8.size());
-      return;
-    }
-    if (inject_via_atspi_string(utf8)) {
-      logf("inject: AT-SPI STRING after erase (often no-ops under Wayland)");
-      return;
-    }
-    logf("insert failed after erase (wtype/ydotool, wl-copy+paste, AT-SPI STRING)");
-    return;
-  }
-
-  MODORE_E2E_LOGF("inject: non-wl_erase path -> fake_delete_selection_best");
-  fake_delete_selection_best(d);
-  // Wayland / IME-heavy apps need a beat after synthetic Delete before typing.
-  if (d) {
-    nap_after_compose_event(std::chrono::milliseconds(6));
-  } else {
-    nap_after_compose_event(std::chrono::milliseconds(12));
-    const bool prefer_clipboard = utf8_contains_non_ascii(utf8);
-    if (prefer_clipboard) {
-      logf(
-          "inject: Wayland — wl-copy+pasting first (%zu UTF-8 bytes; IME breaks raw wtype unicode)",
-          utf8.size());
-      if (inject_utf8_via_wl_clipboard_paste(utf8)) {
-        return;
-      }
-    }
-    logf(
-        "inject: Wayland (no wl_erase) — Unicode keystrokes (%zu UTF-8 bytes); paste after if "
-        "needed",
-        utf8.size());
-    if (inject_utf8_wayland_fallback(utf8)) {
-      logf("inject: wtype/ydotool typed replacement (often replaces GTK selection outright)",
-           utf8.size());
-      return;
-    }
-    nap_after_compose_event(std::chrono::milliseconds(0));
-    if (inject_utf8_via_wl_clipboard_paste(utf8)) {
-      logf(prefer_clipboard ? "inject: wl-copy+paste retry after wtype failed (%zu UTF-8 bytes)"
-                            : "inject: wl-copy+pasted after typed inject failed (%zu UTF-8 bytes)",
-           utf8.size());
-      return;
-    }
-    if (inject_via_atspi_string(utf8)) {
-      logf("inject: AT-SPI STRING fallback (often no-ops under Wayland if you saw no text)");
-      return;
-    }
-    logf("insert failed (wl-copy+Hypr paste, wtype/ydotool, AT-SPI STRING)");
+  if (utf8.empty()) {
+    logf("inject: empty replacement");
     return;
   }
 
   if (inject_via_atspi_string(utf8)) {
+    logf("inject: AT-SPI STRING replaced text directly");
     return;
   }
-  if (inject_utf8_wayland_fallback(utf8)) {
+
+  if (d) {
+    if (!write_clipboard(utf8)) {
+      logf("inject: wl-copy/xclip failed (%zu UTF-8 bytes)", utf8.size());
+      return;
+    }
+    fake_ctrl_letter(d, XK_v);
+    logf("inject: clipboard paste via XTest Ctrl+V (%zu UTF-8 bytes)", utf8.size());
     return;
   }
-  logf("insert failed (AT-SPI STRING, wtype, ydotool)");
+
+  if (inject_utf8_via_wl_clipboard_paste(utf8)) {
+    logf("inject: clipboard paste via Wayland clipboard path (%zu UTF-8 bytes)", utf8.size());
+    return;
+  }
+  logf("insert failed (AT-SPI STRING, clipboard paste)");
 }
 
 // Interpret wl-paste after a synthetic copy. When the selection already matches the
@@ -2176,6 +2836,10 @@ static void wayland_poll_after_copy(const std::string& baseline_clip,
 
 void do_clipboard_pickup(Display* d, const std::string& clip_saved,
                          bool clipboard_clear_attempted_on_wl) {
+  ScopedLogTag log_scope("clipboard");
+  if (!g_pickup_focus_watch.armed) {
+    g_pickup_focus_watch.arm("pickup");
+  }
   const bool wl = wl_clipboard_available();
   std::string baseline_clip;
   std::string baseline_primary;
@@ -2208,10 +2872,33 @@ void do_clipboard_pickup(Display* d, const std::string& clip_saved,
 
   std::string picked;
   bool picked_ready = false;
+  const WaylandAcquireFlow wayland_flow = wl ? classify_wayland_acquire_flow()
+                                             : WaylandAcquireFlow::Generic;
+  const bool discord_like = wayland_flow == WaylandAcquireFlow::DiscordLike;
   // Pick came from PRIMARY (or CLIPBOARD mirrored to it) without trusting post-Ctrl+C CLIPBOARD.
   // Nautilus-style path bars still skip glyph erase after `maybe_narrow_path_primary_pick` rewrote
   // the pick to a final segment; ordinary fields use glyph BackSpace + paste.
   bool pick_from_wayland_primary_mirror = false;
+
+  if (wl && wayland_flow != WaylandAcquireFlow::Generic) {
+    logf("clipboard: focused Wayland flow=%s", flow_name(wayland_flow));
+    if (wayland_acquire_once_for_flow(wayland_flow, d, baseline_clip, baseline_primary, &picked)) {
+      picked_ready = true;
+      logf("pick: %s flow acquired", flow_name(wayland_flow));
+      log_text_preview("pick", picked);
+    } else {
+      logf("clipboard: %s flow did not yield a pick — no fallback ladder", flow_name(wayland_flow));
+      write_clipboard(clip_saved);
+      return;
+    }
+  }
+
+  logf("pick: stage=generic-heuristics");
+  if (!pickup_focus_still_current("before generic clipboard heuristics")) {
+    logf("pick: canceled before generic heuristics because focused app changed");
+    write_clipboard(clip_saved);
+    return;
+  }
 
   // If we successfully ran wl-copy "" at pickup start, never trust "PRIMARY is fresh, CLIPBOARD is
   // stale junk" without also running synthetic copy. GTK path-bar cases still get Ctrl+Insert/Ctrl+C;
@@ -2242,11 +2929,9 @@ void do_clipboard_pickup(Display* d, const std::string& clip_saved,
       picked = std::move(prim);
       picked_ready = true;
       pick_from_wayland_primary_mirror = true;
-      logf(
-          "clipboard: using Wayland PRIMARY (%zu bytes) without synthetic copy — CLIPBOARD offer "
-          "looks unrelated/stale (%zu bytes); aligns with GTK selection when universal copy never "
-          "reaches wl-paste/Walker",
-          picked.size(), baseline_clip.size());
+      logf("pick: using Wayland PRIMARY without synthetic copy (primary=%zu clipboard=%zu)",
+           picked.size(), baseline_clip.size());
+      log_text_preview("pick", picked);
     }
   }
 
@@ -2266,69 +2951,56 @@ void do_clipboard_pickup(Display* d, const std::string& clip_saved,
       picked = std::move(prim);
       picked_ready = true;
       pick_from_wayland_primary_mirror = true;
-      logf(
-          "clipboard: CLIPBOARD equals PRIMARY short line (%zu bytes) — using as pick "
-          "(path-bar narrowing may skip glyph erase; otherwise wl_erase applies)",
-          picked.size());
+      logf("pick: CLIPBOARD equals PRIMARY short line");
+      log_text_preview("pick", picked);
     }
   }
 
   std::string after;
   bool got_fresh = false;
   bool clip_noop_vs_baseline = false;
-  bool did_force_select = false;
 
   if (!picked_ready) {
+    logf("pick: stage=synthetic-copy");
     // XTest copy writes the X11 CLIPBOARD; wl-paste can stay stale on XWayland Chromium — only poll
     // wl-clipboard when synthetic copy also used the Wayland path (d == nullptr).
     const bool use_wayland_clipboard_reads = wl && !d;
-    MODORE_E2E_LOGF("clipboard: use_wayland_clipboard_reads=%d (wl=%d d=%s)",
+    MODORE_E2E_LOGF("pick: use_wayland_clipboard_reads=%d (wl=%d d=%s)",
                     use_wayland_clipboard_reads ? 1 : 0, wl ? 1 : 0, d ? "X11" : "null");
+    if (!pickup_focus_still_current("before synthetic copy")) {
+      logf("clipboard: canceled before synthetic copy because focused app changed");
+      write_clipboard(clip_saved);
+      return;
+    }
     if (wl && wl_clip_empty_after_trim) {
-      fake_ctrl_shift_left_best(d);
+      if (discord_like) {
+        logf("pick: Discord-like window — preferring Shift+Home before copy");
+      }
+      wayland_select_for_acquire(discord_like, discord_like ? "Discord pre-copy line select"
+                                                            : "Pre-copy selection");
       if (use_wayland_clipboard_reads) {
         wl_poll_until_clip_or_primary_moves(baseline_clip, baseline_primary, 28);
-        logf("clipboard: Wayland pre-copy Ctrl+Shift+Left — clipboard was empty (trimmed)");
+        logf("pick: Wayland pre-copy %s — clipboard was empty (trimmed)",
+             discord_like ? "Shift+Home" : "Ctrl+Shift+Left");
       } else {
         std::this_thread::sleep_for(std::chrono::milliseconds(72));
-        logf("clipboard: pre-copy Ctrl+Shift+Left — clipboard was empty (trimmed wl baseline); using "
-             "X11 CLIPBOARD reads");
+        logf("pick: pre-copy %s — clipboard was empty (trimmed wl baseline); using X11 "
+             "CLIPBOARD reads",
+             discord_like ? "Shift+Home" : "Ctrl+Shift+Left");
       }
+    }
+    if (!pickup_focus_still_current("before first Ctrl+C")) {
+      logf("clipboard: canceled before first Ctrl+C because focused app changed");
+      write_clipboard(clip_saved);
+      return;
     }
     fake_ctrl_c_best(d);
 
     if (use_wayland_clipboard_reads) {
       // Fast ceiling — most clients publish in <50ms; step=4ms polls exit early when possible.
       constexpr int kPollMsFirst = 72;
-      constexpr int kPollMsAfterNudge = 100;
-      constexpr int kPollMsBareRetry = 72;
       wayland_poll_after_copy(baseline_clip, baseline_primary, "after first Ctrl+C:", &after,
                               &got_fresh, &clip_noop_vs_baseline, kPollMsFirst);
-      if (!got_fresh) {
-        // Chromium/Electron Wayland: prepickup CLIPBOARD is often non-empty noise, so we skip the
-        // pre-copy Ctrl+Shift+Left block — but then there is no selection and universal-copy is a
-        // no-op. Nudge word-left to establish a span, then copy again.
-        logf(
-            "clipboard: first copy did not surface fresh clip/primary (clip=%zu prim=%zu baseline) — "
-            "Ctrl+Shift+Left then copy (electron/wayland)",
-            baseline_clip.size(), baseline_primary.size());
-        fake_ctrl_shift_left_best(d);
-        {
-          std::string c0, p0;
-          read_wl_clip_offer(&c0);
-          read_wl_primary_offer(&p0);
-          wl_poll_until_clip_or_primary_moves(c0, p0, 32);
-        }
-        fake_ctrl_c_best(d);
-        wayland_poll_after_copy(baseline_clip, baseline_primary, "after word-nudge Ctrl+C:", &after,
-                                &got_fresh, &clip_noop_vs_baseline, kPollMsAfterNudge);
-      }
-      if (!got_fresh) {
-        nap_after_compose_event(std::chrono::milliseconds(0));
-        fake_ctrl_c_best(d);
-        wayland_poll_after_copy(baseline_clip, baseline_primary, "after bare retry Ctrl+C:", &after,
-                                &got_fresh, &clip_noop_vs_baseline, kPollMsBareRetry);
-      }
       if (!got_fresh && skip_primary_vs_stale_clipboard_shortcut &&
           !baseline_primary.empty() &&
           wl_primary_is_utf8_bounded_ascii_only_fast_pick(baseline_primary) &&
@@ -2362,11 +3034,11 @@ void do_clipboard_pickup(Display* d, const std::string& clip_saved,
                after.size());
         }
       }
-    } else {
-      if (!read_clipboard(&after)) {
-        after.clear();
-      }
-      if (!after.empty() && !clipboard_normalized_equal(after, baseline_clip)) {
+      } else {
+        if (!read_clipboard(&after)) {
+          after.clear();
+        }
+        if (!after.empty() && !clipboard_normalized_equal(after, baseline_clip)) {
         got_fresh = true;
       } else if (!after.empty()) {
         got_fresh = true;
@@ -2374,30 +3046,15 @@ void do_clipboard_pickup(Display* d, const std::string& clip_saved,
              after.size());
       }
       if (!got_fresh) {
-        logf("clipboard: first Ctrl+C did not change clipboard vs baseline (%zu chars) — retry",
+        logf("clipboard: first Ctrl+C did not change clipboard vs baseline (%zu chars)",
              baseline_clip.size());
-        std::this_thread::sleep_for(std::chrono::milliseconds(80));
-        fake_ctrl_c_best(d);
-        std::this_thread::sleep_for(std::chrono::milliseconds(220));
-        if (!read_clipboard(&after)) {
-          after.clear();
-        }
-        if (!after.empty() && !clipboard_normalized_equal(after, baseline_clip)) {
-          got_fresh = true;
-        } else if (!after.empty()) {
-          got_fresh = true;
-          logf(
-              "clipboard: X11 retry pick from clipboard (unchanged vs baseline; %zu bytes)",
-              after.size());
-        }
       }
-    }
 
-    MODORE_E2E_LOGF("clipboard: after synthetic copy phase got_fresh=%d after_sz=%zu clip_noop=%d",
-                    got_fresh ? 1 : 0, after.size(), clip_noop_vs_baseline ? 1 : 0);
+      MODORE_E2E_LOGF("clipboard: after synthetic copy phase got_fresh=%d after_sz=%zu clip_noop=%d",
+                      got_fresh ? 1 : 0, after.size(), clip_noop_vs_baseline ? 1 : 0);
 
     if (!got_fresh) {
-      logf("clipboard: no selection on first copy (empty or unchanged vs baseline)");
+      logf("pick: no selection on first copy (empty or unchanged vs baseline)");
     } else if (looks_like_line_copy(after)) {
       std::string via_primary;
       if (wl && wl_try_primary_as_highlighted_span(baseline_primary, after, &via_primary)) {
@@ -2408,14 +3065,13 @@ void do_clipboard_pickup(Display* d, const std::string& clip_saved,
         // Ctrl+C did not refresh the CLIPBOARD offer; the buffer is whatever was already there.
         // Taking "first logical line" often converts unrelated paste data (see log: 500+ byte
         // blobs) while BackSpace+paste mutates the rename field the user actually sees.
-        logf("clipboard: CLIPBOARD unchanged after Ctrl+C — refusing first-line truncation on "
-             "multiline/large buffer (%zu bytes); forcing word-select",
-             after.size());
+        logf("pick: CLIPBOARD unchanged after Ctrl+C — refusing first-line truncation on "
+             "multiline/large buffer");
       } else if (clipboard_first_reasonable_line(after, &picked)) {
-        logf("clipboard: using first logical line (%zu bytes), skipping word-select",
-             picked.size());
+        logf("pick: using first logical line");
+        log_text_preview("pick", picked);
       } else {
-        logf("clipboard: line-shaped clipboard but first line empty after trim — word-select");
+        logf("pick: line-shaped clipboard but first line empty after trim — word-select");
       }
     } else {
       std::string via_primary_single;
@@ -2425,97 +3081,17 @@ void do_clipboard_pickup(Display* d, const std::string& clip_saved,
         logf("clipboard: Wayland primary span (%zu bytes) inside single-line clip (%zu bytes)",
              picked.size(), after.size());
       } else if (wl && clip_noop_vs_baseline) {
-        logf("clipboard: CLIPBOARD unchanged after Ctrl+C — refusing single-line pick (%zu "
-             "bytes); forcing word-select",
-             after.size());
+        logf("pick: CLIPBOARD unchanged after Ctrl+C — refusing single-line pick; forcing word-select");
       } else {
         picked = after;
+        log_text_preview("pick", picked);
       }
     }
 
     if (picked.empty()) {
-      std::string snap_clip;
-      std::string snap_prim;
-      if (use_wayland_clipboard_reads) {
-        read_wl_clip_offer(&snap_clip);
-        read_wl_primary_offer(&snap_prim);
-      } else if (!read_clipboard(&snap_clip)) {
-        snap_clip.clear();
-      }
-
-      fake_ctrl_shift_left_best(d);
-      did_force_select = true;
-      if (use_wayland_clipboard_reads) {
-        wl_poll_until_clip_or_primary_moves(snap_clip, snap_prim, 48);
-      } else {
-        std::this_thread::sleep_for(std::chrono::milliseconds(70));
-      }
-
-      std::string baseline_ws_clip;
-      std::string baseline_ws_primary;
-      if (use_wayland_clipboard_reads) {
-        read_wl_clip_offer(&baseline_ws_clip);
-        read_wl_primary_offer(&baseline_ws_primary);
-      } else if (!read_clipboard(&baseline_ws_clip)) {
-        baseline_ws_clip.clear();
-      }
-
-      fake_ctrl_c_best(d);
-      constexpr int kPollWordSelectCopyMs = 90;
-
-      if (use_wayland_clipboard_reads) {
-        bool gs = false;
-        bool noop_ws = false;
-        wayland_poll_after_copy(baseline_ws_clip, baseline_ws_primary,
-                                "after word-select Ctrl+C:", &after, &gs, &noop_ws,
-                                kPollWordSelectCopyMs);
-        if (!gs) {
-          after.clear();
-        } else if (noop_ws && wl) {
-          std::string narrowed_after_noop;
-          if (wl_try_primary_as_highlighted_span(baseline_ws_primary, after, &narrowed_after_noop)) {
-            after.assign(narrowed_after_noop);
-            logf(
-                "clipboard: word-select + primary narrowed after clipboard-noop Ctrl+C (%zu bytes)",
-                after.size());
-          } else {
-            logf("clipboard: word-select Ctrl+C left CLIPBOARD unchanged vs snapshot — refusing "
-                 "likely-stale clip (%zu bytes)",
-                 after.size());
-            after.clear();
-          }
-        }
-      } else {
-        constexpr int kStepMs = 8;
-        after.clear();
-        const auto ddl = std::chrono::steady_clock::now() + std::chrono::milliseconds(380);
-        while (std::chrono::steady_clock::now() < ddl) {
-          std::string c;
-          if (!read_clipboard(&c)) {
-            c.clear();
-          }
-          if (!c.empty()) {
-            after.swap(c);
-            break;
-          }
-          std::this_thread::sleep_for(std::chrono::milliseconds(kStepMs));
-        }
-      }
-
-      if (after.empty()) {
-        logf("clipboard: nothing to convert");
-        if (did_force_select) {
-          fake_right_arrow_best(d);
-        }
-        write_clipboard(clip_saved);
-        return;
-      }
-      picked = after;
-      std::string via_primary_ws;
-      if (wl && wl_try_primary_as_highlighted_span(baseline_ws_primary, after, &via_primary_ws)) {
-        picked = std::move(via_primary_ws);
-        logf("clipboard: word-select + primary narrowed pick (%zu bytes)", picked.size());
-      }
+      logf("pick: nothing to convert");
+      write_clipboard(clip_saved);
+      return;
     }
   }
 
@@ -2528,26 +3104,20 @@ void do_clipboard_pickup(Display* d, const std::string& clip_saved,
   const bool pick_trimmed_utf8_noise = trim_pick_leading_romaji_if_utf8_contaminated(&picked);
 
   if (clipboard_pick_probably_not_romaji_field(picked)) {
-    logf("clipboard: pick looks like a shell/command line (or modore path) — skipping Mozc to avoid "
+    logf("pick: looks like a shell/command line (or modore path) — skipping Mozc to avoid "
          "mixed kana+ASCII garbage in clipboard history");
-    if (did_force_select) {
-      fake_right_arrow_best(d);
-    }
     write_clipboard(clip_saved);
     return;
   }
 
   if (clipboard_pick_probably_ide_ui_hint(picked)) {
-    if (did_force_select) {
-      fake_right_arrow_best(d);
-    }
     write_clipboard(clip_saved);
     return;
   }
 
   if (!pick_is_plain_ascii_romaji(picked) && pick_looks_like_mojibake_garbage(picked)) {
     logf(
-        "clipboard: pick blocked as stale mojibake — not running Mozc (no UI recovery by default; "
+        "pick: blocked as stale mojibake — not running Mozc (no UI recovery by default; "
         "set MODORE_MOJIBAKE_RECOVERY=1 for notify + Hypr Ctrl+A clear; MODORE_NO_MOJIBAKE_RECOVERY "
         "still suppresses the clear when recovery is on)");
     if (mojibake_recovery_aggressive_enabled()) {
@@ -2558,23 +3128,19 @@ void do_clipboard_pickup(Display* d, const std::string& clip_saved,
         logf("clipboard: attempted Hypr Ctrl+A + delete/backspace to clear fouled omnibox");
       }
     }
-    if (did_force_select) {
-      fake_right_arrow_best(d);
-    }
     write_clipboard(clip_saved);
     return;
   }
 
   std::string replacement;
-  MODORE_E2E_LOGF("do_clipboard_pickup: calling mozc_convert pick_sz=%zu", picked.size());
+  logf("pick: stage=mozc-convert");
+  log_text_preview("pick", picked);
   if (!mozc_convert_utf8(picked, &replacement)) {
-    logf("clipboard: mozc_convert failed (%zu-byte pick)", picked.size());
-    if (did_force_select) {
-      fake_right_arrow_best(d);
-    }
+    logf("pick: mozc_convert failed");
     write_clipboard(clip_saved);
     return;
   }
+  log_text_preview("replacement", replacement);
 
   // PRIMARY mirror shortcuts previously skipped wl_erase (glyph BackSpace loop) because Nautilus
   // path bars mis-count vs the narrowed segment. Plain browser/Electron IME fields need that erase:
@@ -2583,16 +3149,14 @@ void do_clipboard_pickup(Display* d, const std::string& clip_saved,
       pick_from_wayland_primary_mirror && path_pick_narrowed_to_segment && !omniboz_url_tail_narrowed;
   inject_replacement_clear_then_type(d, replacement, skip_wayland_glyph_erase ? nullptr : &picked,
                                      pick_trimmed_utf8_noise);
-  MODORE_E2E_LOGF("do_clipboard_pickup: inject_replacement returned (pick %zu -> out %zu)", picked.size(),
+  MODORE_E2E_LOGF("pick: inject_replacement returned (pick %zu -> out %zu)", picked.size(),
                   replacement.size());
-  logf("clipboard: conversion %zu-byte pick → %zu-byte output (see inject: lines above)",
-       picked.size(), replacement.size());
+  logf("pick: conversion complete");
 
   nap_after_compose_event(std::chrono::milliseconds(2));
   write_clipboard(clip_saved);
-  if (did_force_select) {
-    fake_right_arrow_best(d);
-  }
+}
+
 }
 
 static void snapshot_clip_for_restore(std::string* clip_saved) {
@@ -2609,16 +3173,21 @@ static void snapshot_clip_for_restore(std::string* clip_saved) {
 }
 
 void do_pickup(Display* d) {
+  ScopedLogTag log_scope("pickup");
   std::lock_guard<std::mutex> lock(g_pickup_mu);
+  const auto pickup_started = std::chrono::steady_clock::now();
   MODORE_E2E_LOGF("do_pickup: enter d=%s", d ? "X11" : "null");
+  g_pickup_focus_watch.arm("pickup");
 
-  // Per-app routing override. Today wm-class isn't plumbed (passing NULL);
-  // scripts can still branch on env or always-on rules. A script returning
+  // Per-app routing override. Use the focused Hyprland class when available so
+  // scripts can branch on app-specific quirks instead of treating every native
+  // Wayland window as the same bucket. A script returning
   // "clipboard" skips the AT-SPI try and goes straight to the clipboard
   // fallback — useful for apps where AT-SPI lies about success. "ax" and
   // "keystroke" are no-ops here (existing flow already tries AT-SPI first
   // then falls back to clipboard/keystroke).
-  auto scripted_route = modore_script::route_for(nullptr);
+  const char* app_id = current_focused_app_id();
+  auto scripted_route = modore_script::route_for(app_id);
   if (scripted_route && *scripted_route == modore_script::Route::Clipboard) {
     modore_log("scripting", "route → clipboard (user script)");
     if (std::getenv("WAYLAND_DISPLAY")) {
@@ -2638,10 +3207,21 @@ void do_pickup(Display* d) {
   std::string inject;
   std::string atspi_pick_span;
   if (!skip_atspi_first || !skip_atspi_first[0]) {
+    const auto atspi_started = std::chrono::steady_clock::now();
     if (try_pickup_atspi(&direct, &inject, &atspi_pick_span)) {
+      const auto atspi_done = std::chrono::steady_clock::now();
+      logf("pickup: AT-SPI path completed in %lld ms",
+           static_cast<long long>(
+               std::chrono::duration_cast<std::chrono::milliseconds>(atspi_done - atspi_started)
+                   .count()));
       if (direct) {
         MODORE_E2E_LOGF("do_pickup: AT-SPI direct editable replace done");
         logf("replaced via AT-SPI (editable)");
+        logf("pickup: total elapsed %lld ms",
+             static_cast<long long>(
+                 std::chrono::duration_cast<std::chrono::milliseconds>(
+                     std::chrono::steady_clock::now() - pickup_started)
+                     .count()));
         return;
       }
       std::string clip_saved;
@@ -2667,8 +3247,18 @@ void do_pickup(Display* d) {
       MODORE_E2E_LOGF("do_pickup: AT-SPI non-direct inject path finished");
       nap_after_compose_event(std::chrono::milliseconds(3));
       write_clipboard(clip_saved);
+      logf("pickup: total elapsed %lld ms",
+           static_cast<long long>(
+               std::chrono::duration_cast<std::chrono::milliseconds>(
+                   std::chrono::steady_clock::now() - pickup_started)
+                   .count()));
       return;
     }
+    logf("pickup: AT-SPI attempt took %lld ms and did not produce a span",
+         static_cast<long long>(
+             std::chrono::duration_cast<std::chrono::milliseconds>(
+                 std::chrono::steady_clock::now() - atspi_started)
+                 .count()));
   }
 
   // Escape hatch: refuse the racy synthetic-Ctrl+C + clipboard pickup pipeline entirely. AT-SPI
@@ -2713,6 +3303,11 @@ void do_pickup(Display* d) {
     }
   }
   do_clipboard_pickup(d, clip_saved, clipboard_clear_attempted_on_wl);
+  logf("pickup: total elapsed %lld ms",
+       static_cast<long long>(
+           std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::steady_clock::now() - pickup_started)
+               .count()));
 }
 
 struct RunOptions {
@@ -2746,6 +3341,7 @@ bool parse_run_options(int argc, char** argv, RunOptions* o) {
 }
 
 void run_ipc_pickup() {
+  ScopedLogTag log_scope("ipc");
   MODORE_E2E_LOGF("run_ipc_pickup: DISPLAY=%s WAYLAND_DISPLAY=%s MODORE_IPC_SOCKET=%s",
                   std::getenv("DISPLAY") ? std::getenv("DISPLAY") : "(unset)",
                   std::getenv("WAYLAND_DISPLAY") ? std::getenv("WAYLAND_DISPLAY") : "(unset)",
@@ -2813,14 +3409,12 @@ static void print_modore_host_usage(const char* prog) {
       "second instance\n"
       "  MODORE_E2E_TRACE=1      verbose [e2e] step logs on stderr + modore.log (Puppeteer / debugging)\n"
       "  MODORE_SKIP_ATSPI_FIRST=1  skip Accessibility pick — clipboard/Ctrl+C only (disables "
-      "AT-SPI romaji span erase for Chromium on Wayland)\n"
+      "AT-SPI direct replace first)\n"
       "  MODORE_ATSPI_ONLY=1     refuse the clipboard fallback entirely; if AT-SPI can't read the "
       "focused field, bail (no synthetic Ctrl+C, no wl-paste reads — avoids screenshot/PNG bytes "
       "leaking in as text)\n"
       "  MODORE_PICKUP_CLEAR_CLIPBOARD=1  empty CLIPBOARD before synthetic Ctrl+C (GTK staleness; "
-      "extra wl-copy)\n"
-      "  MODORE_WL_GLYPH_ERASE_ROMANJI=1  Wayland: per-glyph BackSpace for plain romaji (default: "
-      "Ctrl+A clear — better for Chromium omnibox; use for GTK mixed fields)\n\n",
+      "extra wl-copy)\n\n",
       prog, prog, prog, prog, prog, prog);
 }
 
@@ -2900,30 +3494,60 @@ int main(int argc, char** argv) {
     modore_log("atspi", "init failed");
     return 1;
   }
+  start_atspi_focus_cache_listener();
 
+  if (!setup_pickup_pipe()) {
+    return 1;
+  }
   if (!opts.no_ipc) {
-    if (!setup_pickup_pipe()) {
-      return 1;
-    }
     ipc_start_background([]() { notify_main_pickup_pending(); });
   }
 
-  if (opts.ipc_only) {
+  bool evdev_hotkey_active = false;
+  std::string evdev_error;
+  if (wl_env && wl_env[0]) {
+    evdev_hotkey_active = start_evdev_hotkey_monitor(
+        modore_config.conversion_hotkey, modore_config.conversion_hotkey_description,
+        []() { notify_main_pickup_pending(); }, &evdev_error);
+    if (evdev_hotkey_active) {
+      modore_log("ipc", "native Wayland hotkey is handled by evdev /dev/input monitoring");
+    } else if (!evdev_error.empty()) {
+      modore_log("hotkey", "evdev hotkey monitor unavailable: %s", evdev_error.c_str());
+    }
+  }
+
+  bool hyprland_bind_active = false;
+  if (!evdev_hotkey_active && wl_env && wl_env[0] && !opts.no_ipc && hyprctl_ipc_alive_for_wayland_keys()) {
+    const std::string self_path = resolve_self_executable_path(argv[0]);
+    hyprland_bind_active =
+        register_hyprland_hotkey_bind(self_path, modore_config.conversion_hotkey,
+                                       modore_config.conversion_hotkey_description);
+    if (hyprland_bind_active) {
+      modore_log("ipc",
+                 "native Wayland hotkey is handled by Hyprland; compositor bind now triggers the "
+                 "running host");
+    }
+  }
+
+  if (evdev_hotkey_active) {
+    modore_log("ipc", "waiting on socket — evdev hotkey monitor will call pickup internally");
+    main_thread_run_pipe_only_loop();
+  } else if (opts.ipc_only && !hyprland_bind_active) {
+    const std::string combo = hyprland_hotkey_combo(modore_config.conversion_hotkey);
     modore_log("ipc",
                "IMPORTANT — ipc-only: the conversion hotkey in ~/.config/modore/modore.conf is "
-               "NOT wired to this mode. systemd/Omarchy almost always ships --ipc-only, so "
-               "presses do nothing.");
+               "not wired to this mode unless Hyprland bind registration is available.");
     modore_log("ipc",
-               "ipc-only fix: bind a chord in Hypr/Omarchy to exec your host trigger, for example "
-               "(avoid Ctrl+Shift+` in Edge — it opens devtools); adjust path if needed:\n"
-               "  binddp = CONTROL SHIFT ALT, J, Modore pickup, exec, %s/.local/bin/modore-host "
-               "--trigger",
+               "manual compositor bind example for the configured chord:\n"
+               "  bind = %s, exec, %s/.local/bin/modore-host --trigger",
+               combo.c_str(),
                getenv_string("HOME", "/HOME").c_str());
     modore_log("ipc",
                "waiting on socket — after adding the bind, log should show `pickup:` when keys work");
-    for (;;) {
-      main_thread_run_pickup_after_wake();
-    }
+    main_thread_run_pipe_only_loop();
+  } else if (hyprland_bind_active) {
+    modore_log("ipc", "waiting on socket — Hyprland bind will call `--trigger` for pickup");
+    main_thread_run_pipe_only_loop();
   }
 
   Display* d = XOpenDisplay(nullptr);

@@ -62,7 +62,7 @@ hotkey = Ctrl+Shift+grave
 # mozc_backend = built-in
 ```
 
-デフォルトはmacOSが `Cmd+Semicolon`、Linuxが `Super+Semicolon`。ホットキー
+デフォルトはmacOSが `Cmd+Semicolon`、Linuxが `Ctrl+Semicolon`。ホットキー
 の文法、修飾キーのエイリアス、キー名一覧は
 [docs/configuration.md](docs/configuration.md) を参照。
 

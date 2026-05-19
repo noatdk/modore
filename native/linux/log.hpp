@@ -4,10 +4,11 @@
 // for XDG_CONFIG_HOME). Thread-safe.
 //
 // New code should call `modore_log(tag, fmt, ...)` so the log line carries a
-// subsystem tag (`[boot]`, `[config]`, `[ipc]`, etc.). The legacy
-// `modore_logf(fmt, ...)` keeps working but tags lines `[host]`; migrate
-// clusters opportunistically as you touch them — see `native/macos/Log.swift`
-// for the parallel tag vocabulary.
+// subsystem tag (`[boot]`, `[config]`, `[ipc]`, etc.). For call sites that
+// still use the legacy `modore_logf(fmt, ...)`, prefer putting them under a
+// local scope tag in the host code so they stay searchable instead of all
+// collapsing to `[host]`; see `native/macos/Log.swift` for the parallel tag
+// vocabulary.
 //
 // The line format (`<timestamp> [<tag>] <message>`) lives in log.cpp. Change
 // it there, not at call sites.

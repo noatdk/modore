@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <chrono>
 #include <mutex>
 #include <string>
 
@@ -18,18 +19,23 @@ namespace {
 std::mutex g_log_mu;
 FILE* g_log_file = nullptr;
 
-// Returns "YYYY-mm-dd HH:MM:SS " (fixed width for grep/sort).
+// Returns "YYYY-mm-dd HH:MM:SS.mmm " (fixed width for grep/sort).
 void format_timestamp(char* out, size_t cap) {
-  if (!out || cap < 24) {
+  if (!out || cap < 28) {
     return;
   }
-  const std::time_t t = std::time(nullptr);
+  const auto now = std::chrono::system_clock::now();
+  const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+      now.time_since_epoch());
+  const std::time_t t = std::chrono::system_clock::to_time_t(now);
   std::tm tm_local{};
   if (localtime_r(&t, &tm_local) == nullptr) {
     std::snprintf(out, cap, "(no-time) ");
     return;
   }
-  std::strftime(out, cap, "%Y-%m-%d %H:%M:%S ", &tm_local);
+  const auto ms = static_cast<int>(now_ms.count() % 1000);
+  std::strftime(out, cap, "%Y-%m-%d %H:%M:%S", &tm_local);
+  std::snprintf(out + std::strlen(out), cap - std::strlen(out), ".%03d ", ms);
 }
 
 std::string modore_log_file_path() {

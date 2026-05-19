@@ -53,7 +53,7 @@ modifier).
 `F1`–`F12`, `Space`, arrows, `Return`, `Tab`, etc. On Linux any name
 understood by `XStringToKeysym(3)` also works.
 
-**Default**: `Cmd+Semicolon` on macOS, `Super+Semicolon` on Linux. Applied
+**Default**: `Cmd+Semicolon` on macOS, `Ctrl+Semicolon` on Linux. Applied
 when the file is missing or the `hotkey` key is absent.
 
 **Validation**: a malformed `hotkey` value logs a warning and falls back

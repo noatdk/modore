@@ -62,7 +62,7 @@ hotkey = Ctrl+Shift+grave
 # mozc_backend = built-in
 ```
 
-Default is `Cmd+Semicolon` on macOS and `Super+Semicolon` on Linux. Full
+Default is `Cmd+Semicolon` on macOS and `Ctrl+Semicolon` on Linux. Full
 hotkey grammar, modifier aliases, and key names in
 [docs/configuration.md](docs/configuration.md).
 

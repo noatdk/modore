@@ -134,7 +134,11 @@ void boot(const std::string& script_dir) {
   }
   mdr_set_log_callback(g_engine, log_trampoline, nullptr);
   mdr_set_defaults(g_engine, nullptr, default_pickup, default_replacement, default_route);
-  mdr_load_dir(g_engine, script_dir.c_str());
+  if (mdr_load_dir(g_engine, script_dir.c_str()) != 0) {
+    modore_log("scripting", "script dir load failed (dir=%s)", script_dir.c_str());
+  } else {
+    modore_log("scripting", "script dir loaded (dir=%s)", script_dir.c_str());
+  }
   modore_log("scripting", "engine ABI v%d loaded (dir=%s)",
              mdr_abi_version(), script_dir.c_str());
 }
@@ -149,8 +153,10 @@ bool is_loaded() { return g_engine != nullptr; }
 
 std::optional<Route> route_for(const char* app_id) {
   if (!g_engine) return std::nullopt;
+  mdr_pickup_ctx_t ctx{};
+  ctx.app_id = app_id;
   mdr_route_t out = MDR_ROUTE_DEFAULT;
-  int rc = mdr_route(g_engine, app_id, &out);
+  int rc = mdr_route(g_engine, &ctx, &out);
   if (rc != 1) return std::nullopt;
   switch (out) {
     case MDR_ROUTE_AX:        return Route::Ax;

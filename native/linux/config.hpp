@@ -4,7 +4,7 @@
 //
 //   # comment
 //   [conversion]
-//   hotkey = Super+Semicolon
+//   hotkey = Ctrl+Semicolon
 //
 // Modifiers (combine with +): Ctrl, Shift, Alt, Super.
 // Key names: Slash, Period, Comma, a–z, 0–9, Space, Return, Tab, Escape,
@@ -27,7 +27,7 @@ struct X11HotkeySpec {
 
 struct ModoreConfig {
   X11HotkeySpec conversion_hotkey{};
-  // Human-readable chord for logs (defaults to "Super+Semicolon (default)").
+  // Human-readable chord for logs (defaults to "Ctrl+Semicolon (default)").
   std::string conversion_hotkey_description;
 };
 

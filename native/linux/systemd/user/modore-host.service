@@ -1,5 +1,5 @@
 [Unit]
-Description=modore — modeless Japanese conversion host (IPC + optional X11 hotkey)
+Description=modore — modeless Japanese conversion host (hotkey + IPC)
 # Start with the graphical session so DISPLAY / WAYLAND_* are typically available.
 PartOf=graphical-session.target
 After=graphical-session.target
@@ -11,22 +11,24 @@ Type=simple
 # /run/user/$UID/modore.sock; still run `systemctl --user import-environment …` if needed.
 # AT-SPI and GNOME portal-style services expect a session bus in this path.
 #
-# Pickup uses the same Wayland clipboard as `wl-paste` / Omarchy Walker (SUPER CTRL V). If
-# synthetic copy never changes the offer, Walker will not gain a new row either — ensure the
-# graphical session ran e.g. `systemctl --user import-environment WAYLAND_DISPLAY DISPLAY
-# HYPRLAND_INSTANCE_SIGNATURE XDG_CURRENT_DESKTOP` so this service matches your Hypr session.
+# Pickup uses the same Wayland clipboard as `wl-paste` / Omarchy Walker (SUPER CTRL V). The
+# hotkey path prefers raw `/dev/input/event*` monitoring on Wayland; if that is not readable,
+# the host falls back to X11 grabs / compositor-trigger mode. Ensure the graphical session ran
+# e.g. `systemctl --user import-environment WAYLAND_DISPLAY DISPLAY HYPRLAND_INSTANCE_SIGNATURE
+# XDG_CURRENT_DESKTOP` so this service matches your session.
 Environment=XDG_RUNTIME_DIR=%t
 Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=%t/bus
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin
+Environment=LD_LIBRARY_PATH=%h/.local/lib/modore
 # PATH: so `wtype` / `wl-paste` resolve under systemd --user; the host also prepends in code.
-# Install: `make -C native/linux install-user-bin` puts the binary here.
-ExecStart=%h/.local/bin/modore-host --ipc-only
+# Install: `make -C native/linux install-user-bin` puts the real binary here.
+ExecStart=%h/.local/lib/modore/modore-host
 Restart=on-failure
 RestartSec=3
 
-# If conversion should use an X11 grab as well, remove `--ipc-only` from ExecStart
-# (override with `systemctl --user edit modore-host`) and ensure DISPLAY is set,
-# e.g. drop-in with Environment=DISPLAY=:1
+# If you want IPC-only compositor-trigger mode, add `--ipc-only` back with
+# `systemctl --user edit modore-host`. Raw-input hotkey monitoring remains enabled
+# on Wayland when the kernel device nodes are readable.
 
 [Install]
 WantedBy=graphical-session.target

@@ -30,14 +30,16 @@ LDFLAGS := -pthread -Wl,-rpath,\$$ORIGIN
 # gobject: g_object_ref/unref (atspi headers use GObject; link needs -lgobject).
 PKG_GOBJECT := $(shell pkg-config --libs gobject-2.0)
 
-SRC := main.cpp config.cpp ipc.cpp log.cpp scripting.cpp
+SRC := main.cpp config.cpp evdev_hotkey.cpp ipc.cpp log.cpp scripting.cpp
 
 PREFIX := $(HOME)/.local
+INSTALL_LIB_DIR := $(PREFIX)/lib/modore
+INSTALL_REAL_BIN := $(INSTALL_LIB_DIR)/modore-host
 INSTALL_BIN := $(PREFIX)/bin/modore-host
 SYSTEMD_USER_DIR := $(HOME)/.config/systemd/user
 SYSTEMD_UNIT := $(CURDIR)/systemd/user/modore-host.service
 
-.PHONY: all run clean install-user-bin install-systemd-user
+.PHONY: all run run-local clean install-user-bin bootstrap-evdev-access install-systemd-user reload-user-service
 
 all: $(OUT)
 
@@ -64,25 +66,36 @@ $(OUT): $(SRC) $(BRIDGE_LIB) $(ENGINE_LIB) Makefile
 		-L"$(BUILD)" -lmozc_bridge -lmodore_script -lstdc++ \
 		$(PKG_ATSPI) $(PKG_GOBJECT) $(PKG_X11)
 
-run: $(OUT)
+run: install-systemd-user reload-user-service
+
+run-local: $(OUT)
 	"$(OUT)"
 
 # Copies modore-host + libmozc_bridge.so + libmodore_script.so into
 # ~/.local (rpath expects the .so beside the real binary;
 # ~/.local/bin/modore-host is a symlink).
 install-user-bin: $(OUT)
-	install -d "$(PREFIX)/lib/modore" "$(PREFIX)/bin"
-	install -m755 "$(OUT)" "$(PREFIX)/lib/modore/modore-host"
-	install -m755 "$(BRIDGE_SO)" "$(PREFIX)/lib/modore/libmozc_bridge.so"
-	install -m755 "$(ENGINE_SO)" "$(PREFIX)/lib/modore/libmodore_script.so"
-	ln -sf "$(PREFIX)/lib/modore/modore-host" "$(INSTALL_BIN)"
+	install -d "$(INSTALL_LIB_DIR)" "$(PREFIX)/bin"
+	install -m755 "$(OUT)" "$(INSTALL_REAL_BIN)"
+	install -m755 "$(BRIDGE_SO)" "$(INSTALL_LIB_DIR)/libmozc_bridge.so"
+	install -m755 "$(ENGINE_SO)" "$(INSTALL_LIB_DIR)/libmodore_script.so"
+	ln -sf "$(INSTALL_REAL_BIN)" "$(INSTALL_BIN)"
+
+bootstrap-evdev-access: install-user-bin
+	@echo "WARNING: skipping file capabilities on $(INSTALL_REAL_BIN)"
+	@echo "         file caps trigger secure-exec and break the user-service loader path"
+	@echo "         hotkey access to /dev/input/event* may still need a separate helper or udev rule"
 
 # Installs the user unit and reloads systemd. Enable/start separately, e.g.
 #   systemctl --user enable --now modore-host.service
-install-systemd-user: install-user-bin
+install-systemd-user: bootstrap-evdev-access
 	install -d "$(SYSTEMD_USER_DIR)"
 	install -m644 "$(SYSTEMD_UNIT)" "$(SYSTEMD_USER_DIR)/modore-host.service"
-	@echo "systemd: run  systemctl --user daemon-reload  (then enable/start as needed)"
+	@echo "systemd: user unit installed"
+
+reload-user-service:
+	systemctl --user daemon-reload
+	systemctl --user restart modore-host
 
 clean:
 	rm -rf "$(BUILD)"

@@ -15,8 +15,10 @@ flags trim that surface:
 | `--ipc-only`   |        ✗        |          ✓           |
 | `--no-ipc`     |        ✓        |          ✗           |
 
-Use `--ipc-only` on Wayland sessions where the X11 grab can't be relied
-on, or when you'd rather drive conversion from a compositor keybind.
+On Wayland, the host first tries to monitor `/dev/input/event*` directly
+so native apps can trigger conversion without a compositor bind. If raw
+input access is unavailable, it falls back to the X11 grab path and, on
+Hyprland, a compositor bind.
 Use `--no-ipc` if you don't want a socket on disk.
 
 `modore-host --trigger` is a separate command that connects to the
@@ -39,38 +41,53 @@ fallback exists for that case.
 ## Wayland setup
 
 Native-Wayland windows don't see X11 grabs, so the X11 hotkey will only
-fire while an XWayland client has focus. For everything else, bind the
-conversion key in your compositor and let it call `modore-host --trigger`.
+fire while an XWayland client has focus. On Wayland, `modore-host`
+prefers a raw `/dev/input/event*` monitor like espanso does. If that
+device access is not available, the host falls back to the compositor
+bind / `--trigger` path.
 
 Install one of `wtype` or `ydotool` so the host can synthesize keys, and
-`wl-clipboard` (`wl-paste` / `wl-copy`) so the clipboard fallback path
-works.
+`wl-clipboard` (`wl-paste` / `wl-copy`) so the clipboard path works.
+The Wayland flow now mirrors espanso more closely: app-specific pickup
+uses a single action queue, replacement writes the converted text to the
+clipboard, pastes once, and restores the previous clipboard afterward.
+`make -C native/linux run` now tries to bootstrap raw `/dev/input/event*`
+access automatically by applying `cap_dac_override+p` to the installed
+binary under `~/.local/lib/modore/modore-host`. When the shell is not
+root, it tries `sudo setcap` and may prompt for a password. If that still
+fails, it prints a warning and the host falls back to the compositor/X11
+path instead. You can still grant the capability manually in the same
+spirit as espanso's Linux install notes (`setcap 'cap_dac_override+p'
+~/.local/lib/modore/modore-host` is the shape they document).
 
 Hyprland example:
 
 ```ini
-exec-once = /path/to/modore-host --ipc-only
-bind = $mainMod, slash, exec, /path/to/modore-host --trigger
+exec-once = /path/to/modore-host
 ```
 
 Use the real path to `modore-host` from `make build` /
 `native/linux/build/`.
 
+## Logging
+
+The Linux host writes tagged lines to stderr and `~/.config/modore/modore.log`.
+The tags are stable and meant for filtering the same way the macOS host uses
+subsystem categories: `boot`, `config`, `hotkey`, `ipc`, `pickup`, `atspi`,
+`clipboard`, `mozc`, `scripting`, `e2e`, plus the generic `host` fallback for
+older call sites.
+
+`MODORE_E2E_TRACE=1` adds step-level traces for pickup and injection paths.
+That is the quickest way to understand which branch the host took on a given
+conversion.
+
 ## Chromium / Electron quirks
 
-When `DISPLAY` is set on a Wayland session (the typical XWayland setup
-under Hyprland), `modore-host --trigger` prefers the X11 keyboard path
-(`XTest` copy/paste helpers) because many Electron and Chromium builds
-still attach to `DISPLAY` even on Wayland sessions. Look for this line
-in `modore.log` to confirm:
-
-```
-ipc pickup: using X11 keyboard/display path
-```
-
-Pure ozone / Wayland-only browsers (i.e. `DISPLAY` unset) use the same
-`wtype` / `hyprctl` + `wl-clipboard` path as any other native-Wayland
-client.
+When `DISPLAY` is set on a Wayland session, XWayland clients still use
+the X11 keyboard helpers. Native Wayland clients use the Hyprland bind
+plus the clipboard-paste path above. The host logs the focused window and
+the selected flow before pickup starts, so the active app is visible even
+when AT-SPI does not expose the field.
 
 ## AT-SPI prerequisites
 
@@ -85,16 +102,22 @@ Set `MODORE_ATSPI_ONLY=1` if you'd rather fail loudly than fall back.
 
 ## systemd user unit
 
-`native/linux/systemd/user/modore-host.service` ships an `--ipc-only`
-service that starts with the graphical session. Drop it in with:
+`native/linux/systemd/user/modore-host.service` starts with the graphical
+session and listens on the IPC socket while keeping the local hotkey path
+enabled by default. Drop it in with:
 
 ```sh
 make -C native/linux install-user-bin   # copy binary to ~/.local/bin
 systemctl --user enable --now modore-host
 ```
 
-To run with the X11 grab as well, `systemctl --user edit modore-host`
-and remove `--ipc-only` from `ExecStart`.
+To run in manual compositor-bind mode, `systemctl --user edit modore-host`
+and add `--ipc-only` to `ExecStart`.
+
+`make -C native/linux run` now installs the binary, reloads the user
+unit, restarts `modore-host`, and tries to bootstrap evdev access in one
+step. Use `make -C native/linux run-local` if you want the old behavior of
+launching the freshly built binary directly.
 
 ## Environment knobs
 
@@ -105,6 +128,3 @@ likely to need:
 - `MODORE_E2E_TRACE=1` — verbose `[e2e]` step logs (Puppeteer, debugging).
 - `MODORE_ATSPI_ONLY=1` — refuse the clipboard fallback if AT-SPI can't
   read the focused field.
-- `MODORE_WL_GLYPH_ERASE_ROMANJI=1` — Wayland: per-glyph BackSpace for
-  plain romaji instead of the default `Ctrl+A` clear. Use for GTK mixed
-  fields; the default works better for Chromium omnibox.
