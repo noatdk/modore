@@ -34,7 +34,7 @@ The Linux columns are the same binary on different display servers;
 | --------------------------------------------- | :---: | :---------: | :-------------: | :-----: |
 | Top-candidate Mozc conversion (in-process)    |   ✓   |     ✓       |       ✓         |    ✗    |
 | Acronym/code prefix preserved (`R&Diraisho`)  |   ✓¹⁸ |     ✗       |       ✗         |    ✗    |
-| Cycle through Mozc candidates (repeat hotkey) |   ✓   |     ✗       |       ✗         |    ✗    |
+| Cycle through Mozc candidates (repeat hotkey) |   ✓   |     ✓       |       ✓         |    ✗    |
 | Esc to undo last conversion                   |   ✓   |     ✗       |       ✗         |    ✗    |
 | Katakana modifier (Shift+hotkey → カタカナ)   |   ✓   |     ✗       |       ✗         |    ✗    |
 | Floating candidate panel                      |   ✓   |     ✗       |       ✗         |    ✗    |
@@ -55,8 +55,8 @@ The Linux columns are the same binary on different display servers;
 | Feature                                       | macOS | Linux (X11) | Linux (Wayland) | Windows |
 | --------------------------------------------- | :---: | :---------: | :-------------: | :-----: |
 | `~/.config/modore/modore.conf` (XDG)          |   ✓   |     ✓       |       ✓         |    ✗    |
-| Auto-reload on config change                  |   ✓¹² |     ✗       |       ✗         |    ✗    |
-| Tunable clipboard-fallback timings            |   ✓¹⁴ |     ✗       |       ✗         |    ✗    |
+| Auto-reload on config change                  |   ✓¹² |     ◐²³     |       ◐²³       |    ✗    |
+| Tunable clipboard-fallback timings            |   ✓¹⁴ |     ✓²³     |       ✓²³       |    ✗    |
 | `--check-config` preflight (no engine start)  |   ✓¹⁵ |     ✗       |       ✗         |    ✗    |
 | Menu-bar status item ("running" indicator)    |   ✓¹⁶ |     ✗       |       ✗         |    ✗    |
 | SecureInput awareness (sudo/password prompts) |   ✓¹⁷ |     —       |       —         |    —    |
@@ -87,6 +87,7 @@ X11/compositor-trigger paths when raw access is unavailable.
 ¹⁵ `modore-host --check-config` parses the same file the running host would and reports each section's outcome. Exits 0 on healthy load, 1 on malformed hotkey, 2 on rejected `[clipboard]` key. Useful for pre-commit hooks and dotfiles tests.
 
 ¹⁶ `NSStatusItem` showing "ﾓﾄﾞﾚ" (half-width katakana for "modore") in the menu bar; menu lists the live hotkey, delivery path (Carbon vs CGEventTap), and shortcuts for opening / revealing the config plus Quit. Refreshes automatically on config reload. See `native/macos/StatusItem.swift`.
+²³ Linux hot-reloads `[clipboard]` timing values from `modore.conf` on a short poll interval. Hotkey registration still happens at startup, so changing `[conversion] hotkey` requires a restart.
 
 ¹⁸ Leading `[A-Z][A-Z0-9&/.+\-_:@#]*` head followed by lowercase is held back from Mozc and re-attached to the result, so `R&Diraisho` → `R&D依頼書` and `APIkaitou` → `API回答`. Single-uppercase words (`Karen`) are not split. Phase 2 plans a user dict at `~/.config/modore/non-japanese.txt` for tokens this heuristic misses. See `native/macos/Pickup/SpanSplit.swift::splitAcronymHead`.
 

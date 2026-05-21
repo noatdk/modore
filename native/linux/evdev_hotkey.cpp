@@ -45,6 +45,8 @@ struct ModState {
   bool super = false;
 };
 
+std::atomic<unsigned int> g_current_modifier_mask{0};
+
 static bool bit_is_set(const unsigned char *bits, size_t bit) {
   return (bits[bit / 8] & (1u << (bit % 8))) != 0;
 }
@@ -114,6 +116,23 @@ static bool evdev_update_modifier_state(unsigned short code, int value,
   default:
     return false;
   }
+}
+
+static unsigned int evdev_modifier_mask(const ModState &mods) {
+  unsigned int mask = 0;
+  if (mods.shift) {
+    mask |= ShiftMask;
+  }
+  if (mods.ctrl) {
+    mask |= ControlMask;
+  }
+  if (mods.alt) {
+    mask |= Mod1Mask;
+  }
+  if (mods.super) {
+    mask |= Mod4Mask;
+  }
+  return mask;
 }
 
 static bool evdev_keycode_for_keysym(std::uint64_t keysym,
@@ -396,7 +415,8 @@ static bool hotkey_matches(const ModState &mods, const EvdevHotkeySpec &spec) {
 }
 
 static void monitor_loop(std::vector<EvdevDevice> devices, EvdevHotkeySpec spec,
-                         std::function<void()> on_trigger) {
+                         std::function<void()> on_trigger,
+                         std::function<void()> on_non_hotkey_keydown) {
   if (devices.empty()) {
     modore_log("hotkey",
                "evdev monitor has no readable /dev/input/event* devices");
@@ -405,6 +425,9 @@ static void monitor_loop(std::vector<EvdevDevice> devices, EvdevHotkeySpec spec,
 
   std::vector<pollfd> fds(devices.size());
   ModState mods{};
+  g_current_modifier_mask.store(evdev_modifier_mask(mods),
+                                std::memory_order_relaxed);
+  bool hotkey_armed = false;
 
   for (;;) {
     for (size_t i = 0; i < devices.size(); ++i) {
@@ -449,15 +472,32 @@ static void monitor_loop(std::vector<EvdevDevice> devices, EvdevHotkeySpec spec,
           continue;
         }
         if (evdev_update_modifier_state(ev.code, ev.value, &mods)) {
+          g_current_modifier_mask.store(evdev_modifier_mask(mods),
+                                        std::memory_order_relaxed);
           continue;
         }
         if (ev.code != spec.key_code) {
+          if (ev.value == 1 && on_non_hotkey_keydown &&
+              !evdev_update_modifier_state(ev.code, ev.value, &mods)) {
+            hotkey_armed = false;
+            on_non_hotkey_keydown();
+          }
           continue;
         }
         if (ev.value == 1 && hotkey_matches(mods, spec)) {
-          modore_log("hotkey",
-                     "evdev hotkey matched (/dev/input event stream)");
+          hotkey_armed = true;
+          continue;
+        }
+        if (ev.value == 0 && hotkey_armed && hotkey_matches(mods, spec)) {
+          modore_log(
+              "hotkey",
+              "evdev hotkey matched on release (/dev/input event stream)");
+          hotkey_armed = false;
           on_trigger();
+          continue;
+        }
+        if (ev.value == 0) {
+          hotkey_armed = false;
         }
       }
       if (remove_device) {
@@ -479,9 +519,14 @@ static void monitor_loop(std::vector<EvdevDevice> devices, EvdevHotkeySpec spec,
 
 } // namespace
 
+unsigned int evdev_current_modifier_mask() {
+  return g_current_modifier_mask.load(std::memory_order_relaxed);
+}
+
 bool start_evdev_hotkey_monitor(const X11HotkeySpec &hotkey,
                                 const std::string &description,
                                 std::function<void()> on_trigger,
+                                std::function<void()> on_non_hotkey_keydown,
                                 std::string *error_message) {
   if (error_message) {
     error_message->clear();
@@ -505,8 +550,11 @@ bool start_evdev_hotkey_monitor(const X11HotkeySpec &hotkey,
     return false;
   }
   std::thread([devices = std::move(devices), spec,
-               on_trigger = std::move(on_trigger)]() mutable {
-    monitor_loop(std::move(devices), spec, std::move(on_trigger));
+               on_trigger = std::move(on_trigger),
+               on_non_hotkey_keydown =
+                   std::move(on_non_hotkey_keydown)]() mutable {
+    monitor_loop(std::move(devices), spec, std::move(on_trigger),
+                 std::move(on_non_hotkey_keydown));
   }).detach();
   modore_log("hotkey", "evdev hotkey active (%s)", description.c_str());
   return true;

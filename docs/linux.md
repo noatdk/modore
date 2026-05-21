@@ -51,6 +51,9 @@ Install one of `wtype` or `ydotool` so the host can synthesize keys, and
 The Wayland flow now mirrors espanso more closely: app-specific pickup
 uses a single action queue, replacement writes the converted text to the
 clipboard, pastes once, and restores the previous clipboard afterward.
+The clipboard and pickup waits are configurable in `modore.conf` under
+`[clipboard]`, and Linux hot-reloads those timing values without a
+rebuild.
 `make -C native/linux run` now tries to bootstrap raw `/dev/input/event*`
 access automatically by applying `cap_dac_override+p` to the installed
 binary under `~/.local/lib/modore/modore-host`. When the shell is not
@@ -60,18 +63,18 @@ path instead. You can still grant the capability manually in the same
 spirit as espanso's Linux install notes (`setcap 'cap_dac_override+p'
 ~/.local/lib/modore/modore-host` is the shape they document).
 
-Rollback note:
-if you want the pre-`100ms fix` timing back, restore the earlier
-clipboard pacing in `native/linux/main.cpp` by raising these constants to
-their previous conservative values:
+Timing knobs worth tuning first:
 
-- `kSelectSettleMs`
-- `kPrePasteDelayMs`
-- `kInjectPasteWaitMs`
-- `kRestoreClipboardDelayMs`
+- `pre_copy_delay_ms` / `pre_paste_delay_ms`
+- `read_timeout_ms` / `paste_visibility_wait_ms`
+- `restore_clipboard_delay_ms` / `short_restore_delay_ms`
+- `wayland_select_settle_ms`
+- `wayland_copy_poll_ms`
+- `wayland_copy_poll_step_ms`
+- `cycle_backspace_step_ms`
 
-That brings back the slower but more forgiving clipboard cadence without
-changing the rest of the pickup flow.
+If the clipboard is still racing, increase `wayland_copy_poll_ms` and
+`restore_clipboard_delay_ms` before touching the rest of the flow.
 
 Hyprland example:
 

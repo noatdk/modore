@@ -15,8 +15,8 @@
 #include "ipc.hpp"
 #include "log.hpp"
 #include "scripting.hpp"
-
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <chrono>
 #include <cstdio>
@@ -27,12 +27,15 @@
 #include <fstream>
 #include <functional>
 #include <mutex>
+#include <optional>
 #include <poll.h>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/un.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -195,7 +198,214 @@ static void nap_after_compose_event(std::chrono::milliseconds d) {
 // helpers).
 static void child_clear_im_modules();
 
+extern unsigned int g_conversion_hotkey_modifier_mask;
+
+static unsigned int x11_current_modifier_mask(Display *d) {
+  if (!d) {
+    return 0;
+  }
+  unsigned char keymap[32]{};
+  if (!XQueryKeymap(d, reinterpret_cast<char *>(keymap))) {
+    return 0;
+  }
+
+  XModifierKeymap *modmap = XGetModifierMapping(d);
+  if (!modmap) {
+    return 0;
+  }
+
+  const auto keycode_pressed = [&](KeyCode code) {
+    if (!code) {
+      return false;
+    }
+    const unsigned idx = static_cast<unsigned>(code / 8);
+    const unsigned bit = static_cast<unsigned>(code % 8);
+    return idx < sizeof(keymap) && (keymap[idx] & (1u << bit));
+  };
+
+  const auto modifier_pressed = [&](int modifier_index) {
+    if (!modmap || modifier_index < 0) {
+      return false;
+    }
+    const int start = modifier_index * modmap->max_keypermod;
+    for (int i = 0; i < modmap->max_keypermod; ++i) {
+      if (keycode_pressed(modmap->modifiermap[start + i])) {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  unsigned int mask = 0;
+  if (modifier_pressed(ShiftMapIndex)) {
+    mask |= ShiftMask;
+  }
+  if (modifier_pressed(ControlMapIndex)) {
+    mask |= ControlMask;
+  }
+  if (modifier_pressed(Mod1MapIndex)) {
+    mask |= Mod1Mask;
+  }
+  if (modifier_pressed(Mod4MapIndex)) {
+    mask |= Mod4Mask;
+  }
+  if (modifier_pressed(Mod5MapIndex)) {
+    mask |= Mod5Mask;
+  }
+  XFreeModifiermap(modmap);
+  return mask;
+}
+
+static unsigned int active_trigger_modifier_mask(Display *d) {
+  if (d) {
+    return x11_current_modifier_mask(d);
+  }
+  return evdev_current_modifier_mask();
+}
+
+static bool trigger_ctrl_is_held(Display *d) {
+  return (active_trigger_modifier_mask(d) & ControlMask) != 0;
+}
+
 std::mutex g_pickup_mu;
+bool g_wayland_uses_hypr_sendshortcut = false;
+unsigned int g_conversion_hotkey_modifier_mask = Mod4Mask;
+std::uint64_t g_conversion_hotkey_keysym = XK_semicolon;
+
+struct LinuxClipboardTimingConfig {
+  std::atomic<int> pre_paste_delay_ms{30};
+  std::atomic<int> paste_visibility_wait_ms{6};
+  std::atomic<int> paste_visibility_step_ms{1};
+  std::atomic<int> short_restore_delay_ms{20};
+  std::atomic<int> long_restore_delay_ms{300};
+  std::atomic<int> cycle_settle_delay_ms{20};
+  std::atomic<int> cycle_post_inject_delay_ms{2};
+  std::atomic<int> cycle_backspace_step_ms{12};
+  std::atomic<int> pickup_start_delay_ms{1};
+  std::atomic<int> atspi_direct_settle_delay_ms{2};
+  std::atomic<int> atspi_replacement_settle_delay_ms{3};
+  std::atomic<int> clear_poll_max_wait_ms{40};
+  std::atomic<int> clear_poll_step_ms{1};
+  std::atomic<int> wayland_select_settle_ms{28};
+  std::atomic<int> wayland_copy_poll_ms{72};
+  std::atomic<int> wayland_copy_poll_step_ms{2};
+};
+
+LinuxClipboardTimingConfig g_clipboard_timings{};
+
+static int clipboard_timing_ms(const std::atomic<int> &value) {
+  return value.load(std::memory_order_relaxed);
+}
+
+static void apply_linux_config(const ModoreConfig &cfg) {
+  g_clipboard_timings.pre_paste_delay_ms.store(cfg.clipboard_pre_paste_delay_ms,
+                                               std::memory_order_relaxed);
+  g_clipboard_timings.paste_visibility_wait_ms.store(
+      cfg.clipboard_paste_visibility_wait_ms, std::memory_order_relaxed);
+  g_clipboard_timings.paste_visibility_step_ms.store(
+      cfg.clipboard_paste_visibility_step_ms, std::memory_order_relaxed);
+  g_clipboard_timings.short_restore_delay_ms.store(
+      cfg.clipboard_short_restore_delay_ms, std::memory_order_relaxed);
+  g_clipboard_timings.long_restore_delay_ms.store(
+      cfg.clipboard_long_restore_delay_ms, std::memory_order_relaxed);
+  g_clipboard_timings.cycle_settle_delay_ms.store(
+      cfg.clipboard_cycle_settle_delay_ms, std::memory_order_relaxed);
+  g_clipboard_timings.cycle_post_inject_delay_ms.store(
+      cfg.clipboard_cycle_post_inject_delay_ms, std::memory_order_relaxed);
+  g_clipboard_timings.cycle_backspace_step_ms.store(
+      cfg.clipboard_cycle_backspace_step_ms, std::memory_order_relaxed);
+  g_clipboard_timings.pickup_start_delay_ms.store(
+      cfg.clipboard_pickup_start_delay_ms, std::memory_order_relaxed);
+  g_clipboard_timings.atspi_direct_settle_delay_ms.store(
+      cfg.clipboard_atspi_direct_settle_delay_ms, std::memory_order_relaxed);
+  g_clipboard_timings.atspi_replacement_settle_delay_ms.store(
+      cfg.clipboard_atspi_replacement_settle_delay_ms,
+      std::memory_order_relaxed);
+  g_clipboard_timings.clear_poll_max_wait_ms.store(
+      cfg.clipboard_clear_poll_max_wait_ms, std::memory_order_relaxed);
+  g_clipboard_timings.clear_poll_step_ms.store(cfg.clipboard_clear_poll_step_ms,
+                                               std::memory_order_relaxed);
+  g_clipboard_timings.wayland_select_settle_ms.store(
+      cfg.clipboard_wayland_select_settle_ms, std::memory_order_relaxed);
+  g_clipboard_timings.wayland_copy_poll_ms.store(
+      cfg.clipboard_wayland_copy_poll_ms, std::memory_order_relaxed);
+  g_clipboard_timings.wayland_copy_poll_step_ms.store(
+      cfg.clipboard_wayland_copy_poll_step_ms, std::memory_order_relaxed);
+}
+
+static void log_linux_config_timings() {
+  modore_log(
+      "config",
+      "clipboard timings: pre_paste=%dms paste_wait=%dms paste_step=%dms "
+      "short_restore=%dms long_restore=%dms cycle_settle=%dms "
+      "cycle_post_inject=%dms cycle_backspace_step=%dms pickup_start=%dms "
+      "atspi_direct=%dms "
+      "atspi_replacement=%dms clear_poll=%d/%dms wayland_select=%dms "
+      "wayland_copy_poll=%d/%dms",
+      clipboard_timing_ms(g_clipboard_timings.pre_paste_delay_ms),
+      clipboard_timing_ms(g_clipboard_timings.paste_visibility_wait_ms),
+      clipboard_timing_ms(g_clipboard_timings.paste_visibility_step_ms),
+      clipboard_timing_ms(g_clipboard_timings.short_restore_delay_ms),
+      clipboard_timing_ms(g_clipboard_timings.long_restore_delay_ms),
+      clipboard_timing_ms(g_clipboard_timings.cycle_settle_delay_ms),
+      clipboard_timing_ms(g_clipboard_timings.cycle_post_inject_delay_ms),
+      clipboard_timing_ms(g_clipboard_timings.cycle_backspace_step_ms),
+      clipboard_timing_ms(g_clipboard_timings.pickup_start_delay_ms),
+      clipboard_timing_ms(g_clipboard_timings.atspi_direct_settle_delay_ms),
+      clipboard_timing_ms(
+          g_clipboard_timings.atspi_replacement_settle_delay_ms),
+      clipboard_timing_ms(g_clipboard_timings.clear_poll_max_wait_ms),
+      clipboard_timing_ms(g_clipboard_timings.clear_poll_step_ms),
+      clipboard_timing_ms(g_clipboard_timings.wayland_select_settle_ms),
+      clipboard_timing_ms(g_clipboard_timings.wayland_copy_poll_ms),
+      clipboard_timing_ms(g_clipboard_timings.wayland_copy_poll_step_ms));
+}
+
+static void reload_config_from_disk(bool initial_load) {
+  ModoreConfig loaded;
+  std::string cfg_err;
+  if (!load_modore_config(&loaded, &cfg_err)) {
+    modore_log("config", "%s — using defaults", cfg_err.c_str());
+  }
+  apply_linux_config(loaded);
+  if (initial_load) {
+    modore_log("config", "[conversion] hotkey=%s — %s",
+               loaded.conversion_hotkey_description.c_str(),
+               modore_config_path().c_str());
+  } else {
+    modore_log("config", "config reloaded from %s",
+               modore_config_path().c_str());
+  }
+  log_linux_config_timings();
+}
+
+static void start_config_reload_watcher() {
+  std::thread([]() {
+    const std::string path = modore_config_path();
+    struct timespec last_mtime{0, 0};
+    bool have_last = false;
+    struct stat st{};
+    if (stat(path.c_str(), &st) == 0) {
+      last_mtime = st.st_mtim;
+      have_last = true;
+    }
+    for (;;) {
+      if (stat(path.c_str(), &st) == 0) {
+        if (have_last && (st.st_mtim.tv_sec != last_mtime.tv_sec ||
+                          st.st_mtim.tv_nsec != last_mtime.tv_nsec)) {
+          have_last = true;
+          last_mtime = st.st_mtim;
+          reload_config_from_disk(false);
+        }
+        have_last = true;
+        last_mtime = st.st_mtim;
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+      } else {
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+      }
+    }
+  }).detach();
+}
 
 // Wakes the main thread when a client sends "pickup" on the unix socket (must
 // not run AT-SPI / pickup from the IPC accept thread).
@@ -418,7 +628,7 @@ static bool wtype_chord_ctrl_c() {
   return wtype_exec_chord("Ctrl+C", {"-s", "40", "-M", "ctrl", "c"});
 }
 
-// Omarchy SUPER+C → sendshortcut CTRL+Insert (Universal copy); GTK4/Wayland
+// Omarchy SUPER+C → sendkeystate CTRL+Insert (Universal copy); GTK4/Wayland
 // often syncs WL clipboard from this chord when plain Ctrl+C does not update
 // the clipboard offer.
 static bool wtype_chord_ctrl_insert_copy() {
@@ -429,6 +639,15 @@ static bool wtype_chord_ctrl_insert_copy() {
 static bool wtype_chord_ctrl_shift_left() {
   return wtype_exec_chord("Ctrl+Shift+Left", {"-s", "40", "-M", "ctrl", "-M",
                                               "shift", "-k", "Left"});
+}
+
+static bool wtype_chord_ctrl_a() {
+  return wtype_exec_chord("Ctrl+A", {"-s", "40", "-M", "ctrl", "a"});
+}
+
+static bool wtype_chord_shift_home() {
+  return wtype_exec_chord("Shift+Home",
+                          {"-s", "40", "-M", "shift", "-k", "Home"});
 }
 
 static bool wtype_key_right() {
@@ -442,7 +661,7 @@ static bool wtype_key_delete_or_backspace() {
   return wtype_exec_chord("BackSpace", {"-k", "BackSpace"});
 }
 
-// --- Hyprland hyprctl sendshortcut (preferred on Hyprland; routes like real
+// --- Hyprland hyprctl sendkeystate (preferred on Hyprland; routes like real
 // keys)
 
 static std::string g_hyprctl_path;
@@ -505,7 +724,7 @@ static bool hyprctl_ipc_alive_for_wayland_keys();
 
 static bool hyprctl_query_activewindow_json(std::string *json) {
   json->clear();
-  if (!hyprctl_ipc_alive_for_wayland_keys()) {
+  if (!g_wayland_uses_hypr_sendshortcut) {
     return false;
   }
   const char *hc = resolve_hyprctl_executable();
@@ -649,7 +868,7 @@ static bool hyprctl_query_activewindow_snapshot(HyprWindowSnapshot *snapshot) {
 }
 
 static void log_hyprland_activewindow_snapshot(const char *context) {
-  if (!hyprctl_ipc_alive_for_wayland_keys()) {
+  if (!g_wayland_uses_hypr_sendshortcut) {
     return;
   }
   HyprWindowSnapshot snapshot{};
@@ -785,7 +1004,7 @@ static void start_hyprland_focus_cache_listener() {
     return;
   }
   started = true;
-  if (!hyprctl_ipc_alive_for_wayland_keys()) {
+  if (!g_wayland_uses_hypr_sendshortcut) {
     return;
   }
   std::thread([]() { hyprland_socket2_event_loop(); }).detach();
@@ -814,7 +1033,7 @@ struct PickupFocusWatch {
   void arm(const char *scope_name) {
     scope = scope_name ? scope_name : "pickup";
     armed = false;
-    if (!hyprctl_ipc_alive_for_wayland_keys()) {
+    if (!g_wayland_uses_hypr_sendshortcut) {
       return;
     }
     if (!copy_hypr_window_snapshot(&start)) {
@@ -922,6 +1141,25 @@ static bool focused_window_looks_like_discord() {
   return false;
 }
 
+static bool focused_window_looks_like_chromium_or_chrome() {
+  HyprWindowSnapshot snapshot{};
+  if (!copy_hypr_window_snapshot(&snapshot)) {
+    return false;
+  }
+  std::string id = lower_ascii_copy(snapshot.klass);
+  std::string initial = lower_ascii_copy(snapshot.initial_class);
+  std::string title = lower_ascii_copy(snapshot.title);
+  if ((!id.empty() && (id.find("chromium") != std::string::npos ||
+                       id.find("chrome") != std::string::npos)) ||
+      (!initial.empty() && (initial.find("chromium") != std::string::npos ||
+                            initial.find("chrome") != std::string::npos)) ||
+      (!title.empty() && (title.find("chromium") != std::string::npos ||
+                          title.find("chrome") != std::string::npos))) {
+    return true;
+  }
+  return false;
+}
+
 static bool hyprctl_ipc_alive_for_wayland_keys() {
   static int cached = -1;
   if (cached >= 0) {
@@ -971,7 +1209,7 @@ static bool hypr_focus_is_wayland_native() {
   return true;
 }
 
-static bool hyprctl_dispatch_sendshortcut(const char *shortcut_spec,
+static bool hyprctl_dispatch_sendkeystate(const char *keystate_spec,
                                           const char *desc_for_log,
                                           bool log_failure = true) {
   const char *hc = resolve_hyprctl_executable();
@@ -989,7 +1227,7 @@ static bool hyprctl_dispatch_sendshortcut(const char *shortcut_spec,
       (void)::dup2(fd, STDERR_FILENO);
       (void)::close(fd);
     }
-    execl(hc, "hyprctl", "dispatch", "sendshortcut", shortcut_spec, nullptr);
+    execl(hc, "hyprctl", "dispatch", "sendkeystate", keystate_spec, nullptr);
     _exit(127);
   }
   int st = 0;
@@ -997,9 +1235,32 @@ static bool hyprctl_dispatch_sendshortcut(const char *shortcut_spec,
   const bool ok = WIFEXITED(st) && WEXITSTATUS(st) == 0;
   if (!ok && log_failure) {
     const int code = WIFEXITED(st) ? WEXITSTATUS(st) : -1;
-    logf("hyprctl sendshortcut failed exit=%d (%s)", code, desc_for_log);
+    logf("hyprctl sendkeystate failed exit=%d (%s)", code, desc_for_log);
   }
   return ok;
+}
+
+static bool hyprctl_dispatch_keystate_tap(const char *mod_spec,
+                                          const char *key_spec,
+                                          const char *desc_for_log,
+                                          bool log_failure = true) {
+  std::string down;
+  std::string up;
+  if (mod_spec && *mod_spec) {
+    down = mod_spec;
+  }
+  down.push_back(',');
+  down += key_spec;
+  down += ",down,";
+  if (mod_spec && *mod_spec) {
+    up = mod_spec;
+  }
+  up.push_back(',');
+  up += key_spec;
+  up += ",up,";
+  return hyprctl_dispatch_sendkeystate(down.c_str(), desc_for_log,
+                                       log_failure) &&
+         hyprctl_dispatch_sendkeystate(up.c_str(), desc_for_log, log_failure);
 }
 
 static std::string hyprland_bind_mods_for_mask(unsigned int mask) {
@@ -1164,48 +1425,124 @@ static bool register_hyprland_hotkey_bind(const std::string &host_path,
   return true;
 }
 
-static bool hyprctl_wayland_copy_selection() {
-  // Try the universal copy chord first, then fall back to Ctrl+C only if
-  // needed. Sending both every time adds avoidable latency on the hot path.
-  const bool insert = hyprctl_dispatch_sendshortcut(
-      "CTRL,Insert,", "Ctrl+Insert (Omarchy SUPER+C universal copy)",
-      /*log_failure=*/false);
-  if (insert) {
-    return true;
-  }
-  const bool letter_c =
-      hyprctl_dispatch_sendshortcut("CTRL,C,", "Ctrl+C fallback",
-                                    /*log_failure=*/false);
-  const bool any = letter_c;
-  if (!any) {
-    logf("hyprctl: universal copy pair failed (both Ctrl+Insert and Ctrl+C "
-         "sendshortcut rejected)");
-  }
-  return any;
-}
-
-static bool hyprctl_wayland_ctrl_shift_left() {
-  return hyprctl_dispatch_sendshortcut("CTRL SHIFT,Left,", "Ctrl+Shift+Left");
-}
-
-static bool hyprctl_wayland_delete_or_backspace() {
-  if (hyprctl_dispatch_sendshortcut(",DELETE,", "Delete")) {
-    return true;
-  }
-  return hyprctl_dispatch_sendshortcut(",BACKSPACE,", "BACKSPACE");
-}
-
-static const char *wayland_pickup_synthetic_backend_label(Display *d) {
-  if (d) {
-    return "XTest";
-  }
-  if (hyprctl_ipc_alive_for_wayland_keys()) {
-    return "hyprctl";
+static bool wayland_send_ctrl_c() {
+  if (g_wayland_uses_hypr_sendshortcut) {
+    return hyprctl_dispatch_keystate_tap("CTRL", "C", "Ctrl+C copy");
   }
   if (wtype_is_available()) {
-    return "wtype";
+    if (wtype_chord_ctrl_insert_copy()) {
+      return true;
+    }
+    return wtype_chord_ctrl_c();
   }
-  return "none";
+  return false;
+}
+
+static bool wayland_send_ctrl_shift_left() {
+  if (g_wayland_uses_hypr_sendshortcut) {
+    return hyprctl_dispatch_keystate_tap("CTRL SHIFT", "Left",
+                                         "Ctrl+Shift+Left");
+  }
+  return wtype_is_available() ? wtype_chord_ctrl_shift_left() : false;
+}
+
+static bool wayland_send_select_all() {
+  if (g_wayland_uses_hypr_sendshortcut) {
+    return hyprctl_dispatch_keystate_tap("CTRL", "A", "Select all");
+  }
+  return wtype_is_available() ? wtype_chord_ctrl_a() : false;
+}
+
+static bool wayland_send_select_line_home() {
+  if (g_wayland_uses_hypr_sendshortcut) {
+    return hyprctl_dispatch_keystate_tap("SHIFT", "Home", "Shift+Home");
+  }
+  return wtype_is_available() ? wtype_chord_shift_home() : false;
+}
+
+static bool wayland_send_select_word_left() {
+  if (g_wayland_uses_hypr_sendshortcut) {
+    return hyprctl_dispatch_keystate_tap("CTRL SHIFT", "Left",
+                                         "Ctrl+Shift+Left");
+  }
+  return wtype_is_available() ? wtype_chord_ctrl_shift_left() : false;
+}
+
+static bool wayland_send_shift_left() {
+  if (g_wayland_uses_hypr_sendshortcut) {
+    return hyprctl_dispatch_keystate_tap("SHIFT", "Left", "Shift+Left");
+  }
+  return wtype_is_available()
+             ? wtype_exec_chord("Shift+Left",
+                                {"-s", "40", "-M", "shift", "-k", "Left"})
+             : false;
+}
+
+static bool wayland_send_delete_or_backspace() {
+  if (g_wayland_uses_hypr_sendshortcut) {
+    return hyprctl_dispatch_keystate_tap("", "Delete", "Delete") ||
+           hyprctl_dispatch_keystate_tap("", "BackSpace", "BackSpace");
+  }
+  if (wtype_is_available()) {
+    return wtype_key_delete_or_backspace();
+  }
+  return false;
+}
+
+static bool wayland_send_backspace_only() {
+  if (g_wayland_uses_hypr_sendshortcut) {
+    return hyprctl_dispatch_keystate_tap("", "BackSpace", "BackSpace");
+  }
+  if (wtype_is_available()) {
+    return wtype_exec_chord("BackSpace", {"-k", "BackSpace"});
+  }
+  return false;
+}
+
+static bool wayland_send_paste_chord() {
+  const bool prefer_ctrl_v = focused_window_looks_like_chromium_or_chrome();
+  modore_log("wayland", "paste chord prefer_ctrl_v=%d hypr=%d wtype=%d",
+             prefer_ctrl_v ? 1 : 0, g_wayland_uses_hypr_sendshortcut ? 1 : 0,
+             wtype_is_available() ? 1 : 0);
+  if (g_wayland_uses_hypr_sendshortcut) {
+    if (prefer_ctrl_v) {
+      modore_log("wayland", "paste chord hypr branch trying Ctrl+V");
+      if (hyprctl_dispatch_keystate_tap("CTRL", "V", "Ctrl+V paste")) {
+        return true;
+      }
+      modore_log("wayland",
+                 "paste chord hypr Ctrl+V failed, trying Shift+Insert");
+      return hyprctl_dispatch_keystate_tap("SHIFT", "Insert",
+                                           "Shift+Insert paste");
+    }
+    modore_log("wayland", "paste chord hypr branch trying Shift+Insert");
+    if (hyprctl_dispatch_keystate_tap("SHIFT", "Insert",
+                                      "Shift+Insert paste")) {
+      return true;
+    }
+    modore_log("wayland",
+               "paste chord hypr Shift+Insert failed, trying Ctrl+V");
+    return hyprctl_dispatch_keystate_tap("CTRL", "V", "Ctrl+V paste");
+  }
+  if (wtype_is_available()) {
+    if (prefer_ctrl_v) {
+      modore_log("wayland", "paste chord wtype branch trying Ctrl+V");
+      if (wtype_chord_ctrl_v()) {
+        return true;
+      }
+      modore_log("wayland",
+                 "paste chord wtype Ctrl+V failed, trying Shift+Insert");
+      return wtype_chord_shift_insert();
+    }
+    modore_log("wayland", "paste chord wtype branch trying Shift+Insert");
+    if (wtype_chord_shift_insert()) {
+      return true;
+    }
+    modore_log("wayland",
+               "paste chord wtype Shift+Insert failed, trying Ctrl+V");
+    return wtype_chord_ctrl_v();
+  }
+  return false;
 }
 
 bool read_clipboard_cmd(const char *cmd, std::string *out) {
@@ -1531,6 +1868,255 @@ bool mozc_convert_utf8(const std::string &romaji, std::string *replacement) {
   }
 }
 
+static std::optional<std::pair<std::string, std::vector<std::string>>>
+mozc_convert_utf8_with_candidates(const std::string &romaji) {
+  if (romaji.empty()) {
+    return std::nullopt;
+  }
+
+  size_t commit_cap = std::max<size_t>(romaji.size() * 4 + 64, 256);
+  char cand_buf[16384] = {0};
+  size_t cand_total_len = 0;
+  int candidate_count = 0;
+
+  for (;;) {
+    std::string commit_buf(commit_cap, '\0');
+    size_t commit_len = 0;
+    int rc = mozc_bridge_convert_with_candidates_ex(
+        romaji.data(), romaji.size(), commit_buf.data(), commit_buf.size(),
+        &commit_len, cand_buf, sizeof(cand_buf), &cand_total_len, 16,
+        &candidate_count, 0u);
+    if (rc == 0) {
+      std::string committed(commit_buf.data(), commit_len);
+      std::vector<std::string> candidates;
+      size_t pos = 0;
+      while (pos < cand_total_len) {
+        size_t next = pos;
+        while (next < cand_total_len && cand_buf[next] != '\0') {
+          ++next;
+        }
+        candidates.emplace_back(cand_buf + pos, next - pos);
+        pos = next + 1;
+      }
+      if (candidates.empty() || candidates.front() != committed) {
+        candidates.insert(candidates.begin(), committed);
+      }
+      (void)candidate_count;
+      return std::make_pair(std::move(committed), std::move(candidates));
+    }
+    if (rc < 0) {
+      logf("mozc_bridge_convert_with_candidates_ex: %s",
+           mozc_bridge_last_error() ? mozc_bridge_last_error()
+                                    : "unknown error");
+      return std::nullopt;
+    }
+    if (static_cast<size_t>(rc) > (1u << 20)) {
+      logf("mozc_bridge_convert_with_candidates_ex: unreasonably large output "
+           "(%d)",
+           rc);
+      return std::nullopt;
+    }
+    commit_cap = static_cast<size_t>(rc) + 1;
+  }
+}
+
+struct ConversionSession {
+  enum class Backing {
+    AtspiEditable,
+    ClipboardFallback,
+  };
+
+  Backing backing = Backing::ClipboardFallback;
+  AtspiAccessible *focus = nullptr;
+  std::string app_id;
+  glong span_start = 0;
+  glong span_end = 0;
+  glong current_text_chars = 0;
+  std::string current_text;
+  std::vector<std::string> candidates;
+  int candidate_index = 0;
+  std::chrono::steady_clock::time_point last_touch{};
+};
+
+std::mutex g_conversion_session_mu;
+bool g_has_conversion_session = false;
+ConversionSession g_conversion_session{};
+
+static void clear_conversion_session_locked() {
+  if (g_has_conversion_session && g_conversion_session.focus) {
+    g_object_unref(g_conversion_session.focus);
+    g_conversion_session.focus = nullptr;
+  }
+  g_conversion_session = ConversionSession{};
+  g_has_conversion_session = false;
+}
+
+static void invalidate_conversion_session_for_user_input() {
+  std::lock_guard<std::mutex> lock(g_conversion_session_mu);
+  if (!g_has_conversion_session) {
+    return;
+  }
+  modore_log("cycle", "session cleared: user typed a non-hotkey key");
+  clear_conversion_session_locked();
+}
+
+static std::vector<std::string>
+normalize_candidate_session_state(const std::string &replacement,
+                                  std::vector<std::string> candidates,
+                                  int *current_index) {
+  if (candidates.empty()) {
+    candidates.push_back(replacement);
+    if (current_index) {
+      *current_index = 0;
+    }
+    return candidates;
+  }
+  const auto it = std::find(candidates.begin(), candidates.end(), replacement);
+  if (it == candidates.end()) {
+    candidates.insert(candidates.begin(), replacement);
+    if (current_index) {
+      *current_index = 0;
+    }
+    return candidates;
+  }
+  if (current_index) {
+    *current_index = static_cast<int>(std::distance(candidates.begin(), it));
+  }
+  return candidates;
+}
+
+static void set_conversion_session(ConversionSession session) {
+  std::lock_guard<std::mutex> lock(g_conversion_session_mu);
+  clear_conversion_session_locked();
+  modore_log("cycle",
+             "session stored: backing=%s app_id=%s candidates=%zu index=%d",
+             session.backing == ConversionSession::Backing::AtspiEditable
+                 ? "atspi"
+                 : "clipboard",
+             session.app_id.empty() ? "(unset)" : session.app_id.c_str(),
+             session.candidates.size(), session.candidate_index);
+  g_conversion_session = std::move(session);
+  g_has_conversion_session = true;
+}
+
+static bool
+conversion_session_available_locked(std::chrono::steady_clock::time_point now) {
+  if (!g_has_conversion_session) {
+    return false;
+  }
+  constexpr auto kSessionTtl = std::chrono::milliseconds(5000);
+  if (now - g_conversion_session.last_touch > kSessionTtl) {
+    clear_conversion_session_locked();
+    return false;
+  }
+  return true;
+}
+
+static bool hotkey_can_leak_text(std::uint64_t keysym) {
+  return keysym >= 0x20 && keysym <= 0x7e;
+}
+
+static glong clipboard_cycle_residue_chars() {
+  if (!hotkey_can_leak_text(g_conversion_hotkey_keysym)) {
+    return 0;
+  }
+  const unsigned int held_mods = evdev_current_modifier_mask();
+  if ((held_mods & g_conversion_hotkey_modifier_mask) == 0) {
+    return 0;
+  }
+  return 1;
+}
+
+static void fake_wayland_backspace_glyph_count(glong glyphs);
+
+static void fake_x11_backspace_glyph_count(Display *d, glong glyphs) {
+  if (!d || glyphs <= 0) {
+    return;
+  }
+  const bool ctrl_held = trigger_ctrl_is_held(d);
+  constexpr glong kMax = 384;
+  if (glyphs > kMax) {
+    logf("inject: clipping X11 BackSpace repeats from %ld to %ld glyphs",
+         static_cast<long>(glyphs), static_cast<long>(kMax));
+    glyphs = kMax;
+  }
+  KeyCode backspace = XKeysymToKeycode(d, XK_BackSpace);
+  KeyCode delete_key = XKeysymToKeycode(d, XK_Delete);
+  KeyCode left_key = XKeysymToKeycode(d, XK_Left);
+  KeyCode shift_l = XKeysymToKeycode(d, XK_Shift_L);
+  if (!backspace) {
+    logf("inject: no X11 keycode for BackSpace");
+    return;
+  }
+  KeyCode ctrl_l = XKeysymToKeycode(d, XK_Control_L);
+  KeyCode ctrl_r = XKeysymToKeycode(d, XK_Control_R);
+  if (ctrl_held) {
+    if (!delete_key || !left_key || !shift_l) {
+      logf("inject: missing X11 keycode for selection-delete fallback");
+    }
+    MODORE_E2E_LOGF("cycle: ctrl held; selecting glyph span before Delete");
+    if (ctrl_l) {
+      XTestFakeKeyEvent(d, ctrl_l, False, CurrentTime);
+    }
+    if (ctrl_r) {
+      XTestFakeKeyEvent(d, ctrl_r, False, CurrentTime);
+    }
+    XFlush(d);
+    if (delete_key && left_key && shift_l) {
+      XTestFakeKeyEvent(d, shift_l, True, CurrentTime);
+      for (glong i = 0; i < glyphs; ++i) {
+        XTestFakeKeyEvent(d, left_key, True, CurrentTime);
+        XTestFakeKeyEvent(d, left_key, False, CurrentTime);
+        XFlush(d);
+        yield_to_compose_pipeline();
+      }
+      XTestFakeKeyEvent(d, shift_l, False, CurrentTime);
+      XTestFakeKeyEvent(d, delete_key, True, CurrentTime);
+      XTestFakeKeyEvent(d, delete_key, False, CurrentTime);
+      XFlush(d);
+      yield_to_compose_pipeline();
+    } else {
+      for (glong i = 0; i < glyphs; ++i) {
+        XTestFakeKeyEvent(d, backspace, True, CurrentTime);
+        XTestFakeKeyEvent(d, backspace, False, CurrentTime);
+        XFlush(d);
+        yield_to_compose_pipeline();
+      }
+    }
+    if (ctrl_l) {
+      XTestFakeKeyEvent(d, ctrl_l, True, CurrentTime);
+    }
+    if (ctrl_r) {
+      XTestFakeKeyEvent(d, ctrl_r, True, CurrentTime);
+    }
+    XFlush(d);
+    return;
+  }
+  for (glong i = 0; i < glyphs; ++i) {
+    XTestFakeKeyEvent(d, backspace, True, CurrentTime);
+    XTestFakeKeyEvent(d, backspace, False, CurrentTime);
+    XFlush(d);
+    yield_to_compose_pipeline();
+  }
+  if (ctrl_held) {
+    if (ctrl_l) {
+      XTestFakeKeyEvent(d, ctrl_l, True, CurrentTime);
+    }
+    if (ctrl_r) {
+      XTestFakeKeyEvent(d, ctrl_r, True, CurrentTime);
+    }
+    XFlush(d);
+  }
+}
+
+static void fake_backspace_glyph_count(Display *d, glong glyphs) {
+  if (d) {
+    fake_x11_backspace_glyph_count(d, glyphs);
+    return;
+  }
+  fake_wayland_backspace_glyph_count(glyphs);
+}
+
 // --- UTF-8 word boundaries (glib offsets = Unicode character indices) ---
 
 void word_range_chars(const gchar *text, glong caret_chars, glong n_chars,
@@ -1679,29 +2265,14 @@ void fake_ctrl_c_best(Display *d) {
     MODORE_E2E_LOGF("fake_ctrl_c_best: XTest Ctrl+C sent");
     return;
   }
-  using namespace std::chrono_literals;
-  bool hypr_any = false;
-  bool w_any = false;
-  if (hyprctl_ipc_alive_for_wayland_keys()) {
-    hypr_any = hyprctl_wayland_copy_selection();
-    if (hypr_any) {
-      MODORE_E2E_LOGF("fake_ctrl_c_best: Wayland hypr_ok=1 wtype_ok=0");
-      return;
-    }
-  }
-  if (wtype_is_available()) {
-    w_any = wtype_chord_ctrl_insert_copy();
-    if (!w_any) {
-      w_any = wtype_chord_ctrl_c();
-    }
-  }
-  if (!hypr_any && !w_any) {
-    logf("Wayland: need Hyprland `hyprctl sendshortcut` or `wtype` — cannot "
+  if (!wayland_send_ctrl_c()) {
+    logf("Wayland: need Hyprland `hyprctl sendkeystate` or `wtype` — cannot "
          "simulate universal "
          "copy (Ctrl+Insert / Ctrl+C)");
   } else {
     MODORE_E2E_LOGF("fake_ctrl_c_best: Wayland hypr_ok=%d wtype_ok=%d",
-                    hypr_any ? 1 : 0, w_any ? 1 : 0);
+                    g_wayland_uses_hypr_sendshortcut ? 1 : 0,
+                    wtype_is_available() ? 1 : 0);
   }
 }
 
@@ -1710,14 +2281,7 @@ void fake_ctrl_shift_left_best(Display *d) {
     fake_ctrl_shift_left(d);
     return;
   }
-  if (hyprctl_ipc_alive_for_wayland_keys()) {
-    if (hyprctl_wayland_ctrl_shift_left()) {
-      return;
-    }
-  }
-  if (wtype_is_available()) {
-    (void)wtype_chord_ctrl_shift_left();
-  }
+  (void)wayland_send_ctrl_shift_left();
 }
 
 // Heuristic matching macOS: line-copy detection ---------------------------
@@ -2323,17 +2887,19 @@ bool try_pickup_atspi(bool *direct_done, std::string *inject_utf8,
   logf("pick: atspi span extracted elapsed=%lld ms", atspi_elapsed_ms());
   log_text_preview("pick", romaji);
 
+  std::vector<std::string> candidates;
+  std::string converted;
+  auto converted_with_candidates = mozc_convert_utf8_with_candidates(romaji);
+  if (!converted_with_candidates.has_value()) {
+    logf("AT-SPI: convert failed elapsed=%lld ms", atspi_elapsed_ms());
+    g_object_unref(focus);
+    return false;
+  }
+  converted = std::move(converted_with_candidates->first);
+  candidates = std::move(converted_with_candidates->second);
+
   AtspiEditableText *ed = atspi_accessible_get_editable_text_iface(focus);
   if (ed && atspi_accessible_is_editable_text(focus)) {
-    std::string converted;
-    logf("AT-SPI: editable path mozc_convert start elapsed=%lld ms",
-         atspi_elapsed_ms());
-    if (!mozc_convert_utf8(romaji, &converted)) {
-      logf("AT-SPI: editable path mozc_convert failed elapsed=%lld ms",
-           atspi_elapsed_ms());
-      g_object_unref(focus);
-      return false;
-    }
     logf("AT-SPI: editable path mozc_convert done elapsed=%lld ms",
          atspi_elapsed_ms());
     log_text_preview("replacement", converted);
@@ -2351,6 +2917,10 @@ bool try_pickup_atspi(bool *direct_done, std::string *inject_utf8,
         converted = std::move(*scripted);
       }
     }
+
+    int candidate_index = 0;
+    candidates = normalize_candidate_session_state(
+        converted, std::move(candidates), &candidate_index);
 
     gboolean ok1 =
         atspi_editable_text_delete_text(ed, span_start, span_end, &err);
@@ -2386,6 +2956,19 @@ bool try_pickup_atspi(bool *direct_done, std::string *inject_utf8,
     } else {
       g_clear_error(&err);
     }
+    ConversionSession session;
+    session.backing = ConversionSession::Backing::AtspiEditable;
+    session.focus = ATSPI_ACCESSIBLE(g_object_ref(focus));
+    session.app_id = app_id;
+    session.span_start = span_start;
+    session.span_end = span_end;
+    session.current_text_chars = static_cast<glong>(g_utf8_strlen(
+        converted.c_str(), static_cast<gssize>(converted.size())));
+    session.current_text = converted;
+    session.candidates = std::move(candidates);
+    session.candidate_index = candidate_index;
+    session.last_touch = std::chrono::steady_clock::now();
+    set_conversion_session(std::move(session));
     *direct_done = true;
     logf("AT-SPI: editable path complete elapsed=%lld ms", atspi_elapsed_ms());
     g_object_unref(focus);
@@ -2394,12 +2977,7 @@ bool try_pickup_atspi(bool *direct_done, std::string *inject_utf8,
 
   logf("AT-SPI: non-editable path mozc_convert start elapsed=%lld ms",
        atspi_elapsed_ms());
-  if (!mozc_convert_utf8(romaji, inject_utf8)) {
-    logf("AT-SPI: convert failed (non-editable field) elapsed=%lld ms",
-         atspi_elapsed_ms());
-    g_object_unref(focus);
-    return false;
-  }
+  *inject_utf8 = converted;
   logf("AT-SPI: non-editable path mozc_convert done elapsed=%lld ms",
        atspi_elapsed_ms());
   log_text_preview("replacement", *inject_utf8);
@@ -2425,9 +3003,199 @@ bool try_pickup_atspi(bool *direct_done, std::string *inject_utf8,
   if (pick_span_for_inject) {
     pick_span_for_inject->assign(romaji);
   }
+  int candidate_index = 0;
+  candidates = normalize_candidate_session_state(
+      converted, std::move(candidates), &candidate_index);
+  ConversionSession session;
+  session.backing = ConversionSession::Backing::ClipboardFallback;
+  session.app_id = app_id;
+  session.current_text = converted;
+  session.current_text_chars = static_cast<glong>(
+      g_utf8_strlen(converted.c_str(), static_cast<gssize>(converted.size())));
+  session.candidates = std::move(candidates);
+  session.candidate_index = candidate_index;
+  session.last_touch = std::chrono::steady_clock::now();
+  set_conversion_session(std::move(session));
   logf("AT-SPI: non-editable control — injecting conversion text elapsed=%lld "
        "ms",
        atspi_elapsed_ms());
+  return true;
+}
+
+static void snapshot_clip_for_restore(std::string *clip_saved);
+void inject_replacement_clear_then_type(
+    Display *d, const std::string &utf8,
+    const std::string *wayland_clipboard_pick_utf8,
+    bool force_ctrl_a_ignore_glyph_env);
+
+static bool try_cycle_active_conversion(Display *d) {
+  ScopedLogTag log_scope("cycle");
+
+  ConversionSession snap;
+  {
+    std::lock_guard<std::mutex> lock(g_conversion_session_mu);
+    const auto now = std::chrono::steady_clock::now();
+    if (!conversion_session_available_locked(now)) {
+      modore_log("cycle", "no active session in scope");
+      return false;
+    }
+    snap = g_conversion_session;
+  }
+
+  if (snap.candidates.empty()) {
+    modore_log("cycle", "session fell through: no candidates captured");
+    std::lock_guard<std::mutex> lock(g_conversion_session_mu);
+    clear_conversion_session_locked();
+    return false;
+  }
+
+  const int next_index =
+      (snap.candidate_index + 1) % static_cast<int>(snap.candidates.size());
+  const std::string &from = snap.current_text;
+  const std::string &to = snap.candidates[static_cast<size_t>(next_index)];
+  const glong from_chars = snap.current_text_chars > 0
+                               ? snap.current_text_chars
+                               : g_utf8_strlen(from.c_str(), from.size());
+
+  bool swapped = false;
+  switch (snap.backing) {
+  case ConversionSession::Backing::AtspiEditable: {
+    GError *err = nullptr;
+    AtspiAccessible *focus = snap.focus;
+    AtspiText *text = focus ? atspi_accessible_get_text_iface(focus) : nullptr;
+    if (!text) {
+      if (focus) {
+        g_object_unref(focus);
+      }
+      focus = g_cached_atspi_focus.take_ref();
+      if (focus) {
+        modore_log("cycle", "reacquired AT-SPI focus for cycle retry");
+        text = atspi_accessible_get_text_iface(focus);
+      }
+    }
+    if (!focus || !text) {
+      if (focus) {
+        g_object_unref(focus);
+      }
+      break;
+    }
+    gint n_chars = atspi_text_get_character_count(text, &err);
+    if (err) {
+      g_clear_error(&err);
+      break;
+    }
+    if (snap.span_start < 0 || snap.span_start >= n_chars) {
+      break;
+    }
+    const glong delete_chars = std::max<glong>(1, from_chars);
+    gchar *full = atspi_text_get_text(text, 0, n_chars, &err);
+    if (err || !full) {
+      g_clear_error(&err);
+      g_object_unref(focus);
+      break;
+    }
+    const gchar *span_a = g_utf8_offset_to_pointer(full, snap.span_start);
+    const gchar *span_b = g_utf8_offset_to_pointer(full, snap.span_end);
+    const std::string text_at_span(span_a, span_b - span_a);
+    if (text_at_span != from) {
+      modore_log("cycle",
+                 "atspi span mismatch: session='%s' visible='%s' — replacing "
+                 "anyway",
+                 from.c_str(), text_at_span.c_str());
+    }
+    AtspiEditableText *ed = atspi_accessible_get_editable_text_iface(focus);
+    if (!ed) {
+      g_free(full);
+      g_object_unref(focus);
+      break;
+    }
+    gboolean ok1 = atspi_editable_text_delete_text(
+        ed, snap.span_start,
+        std::min<glong>(n_chars, snap.span_start + delete_chars), &err);
+    if (!ok1) {
+      g_clear_error(&err);
+      g_free(full);
+      g_object_unref(focus);
+      break;
+    }
+    gboolean ok2 = atspi_editable_text_insert_text(
+        ed, snap.span_start, to.c_str(), static_cast<gint>(to.size()), &err);
+    if (!ok2) {
+      g_clear_error(&err);
+      g_free(full);
+      g_object_unref(focus);
+      break;
+    }
+    g_clear_error(&err);
+    const gint caret_after =
+        snap.span_start + static_cast<gint>(g_utf8_strlen(
+                              to.c_str(), static_cast<gssize>(to.size())));
+    (void)atspi_text_set_caret_offset(text, caret_after, &err);
+    if (err) {
+      g_clear_error(&err);
+    }
+    g_free(full);
+    g_object_unref(focus);
+    swapped = true;
+    break;
+  }
+  case ConversionSession::Backing::ClipboardFallback: {
+    std::string clip_saved;
+    snapshot_clip_for_restore(&clip_saved);
+    const glong residue_chars = clipboard_cycle_residue_chars();
+    const glong glyphs = from_chars + residue_chars;
+    log_text_preview("cycle from", from);
+    log_text_preview("cycle to", to);
+    if (residue_chars > 0) {
+      logf("cycle: configured hotkey may leak one glyph while modifiers are "
+           "still held");
+    }
+    logf("cycle: clipboard fallback clear %ld glyphs (%zu bytes from, %zu "
+         "bytes to)",
+         static_cast<long>(glyphs), from.size(), to.size());
+    fake_backspace_glyph_count(d, glyphs);
+    if (std::getenv("WAYLAND_DISPLAY")) {
+      // Give the compositor a beat to apply the final erase before we queue
+      // the replacement paste. Without this, the new candidate can land while
+      // the old span is still being collapsed.
+      nap_after_compose_event(std::chrono::milliseconds(
+          clipboard_timing_ms(g_clipboard_timings.cycle_settle_delay_ms)));
+    }
+    // Reuse the same clipboard-based injection path as the normal pickup
+    // conversion. That path already proved stable on Wayland and keeps the
+    // paste transport identical between fresh convert and cycle.
+    inject_replacement_clear_then_type(d, to, nullptr, false);
+    nap_after_compose_event(std::chrono::milliseconds(
+        clipboard_timing_ms(g_clipboard_timings.cycle_post_inject_delay_ms)));
+    if (std::getenv("WAYLAND_DISPLAY")) {
+      nap_after_compose_event(std::chrono::milliseconds(
+          clipboard_timing_ms(g_clipboard_timings.cycle_settle_delay_ms)));
+    }
+    write_clipboard(clip_saved);
+    swapped = true;
+    break;
+  }
+  }
+
+  if (!swapped) {
+    std::lock_guard<std::mutex> lock(g_conversion_session_mu);
+    clear_conversion_session_locked();
+    return false;
+  }
+
+  {
+    std::lock_guard<std::mutex> lock(g_conversion_session_mu);
+    if (g_has_conversion_session) {
+      g_conversion_session.candidate_index = next_index;
+      g_conversion_session.current_text = to;
+      g_conversion_session.current_text_chars = static_cast<glong>(
+          g_utf8_strlen(to.c_str(), static_cast<gssize>(to.size())));
+      g_conversion_session.last_touch = std::chrono::steady_clock::now();
+    }
+  }
+
+  logf("cycle: '%s' -> '%s' (%d/%zu)", from.c_str(), to.c_str(), next_index + 1,
+       snap.candidates.size());
   return true;
 }
 
@@ -2670,50 +3438,27 @@ static bool mojibake_recovery_aggressive_enabled() {
 }
 
 static bool hypr_wayland_try_select_all(const char *log_ctx) {
-  if (!hyprctl_ipc_alive_for_wayland_keys()) {
-    return false;
-  }
-  if (hyprctl_dispatch_sendshortcut("CONTROL,A,",
-                                    log_ctx ? log_ctx : "Select all")) {
-    return true;
-  }
-  return false;
+  (void)log_ctx;
+  return wayland_send_select_all();
 }
 
 static bool hypr_wayland_try_select_line_home(const char *log_ctx) {
-  if (!hyprctl_ipc_alive_for_wayland_keys()) {
-    return false;
-  }
-  if (hyprctl_dispatch_sendshortcut("SHIFT,Home,",
-                                    log_ctx ? log_ctx : "Shift+Home")) {
-    return true;
-  }
-  return false;
+  (void)log_ctx;
+  return wayland_send_select_line_home();
 }
 
 static bool hypr_wayland_try_select_word_left(const char *log_ctx) {
-  if (!hyprctl_ipc_alive_for_wayland_keys()) {
-    return false;
-  }
-  if (hyprctl_dispatch_sendshortcut("CTRL SHIFT,Left,",
-                                    log_ctx ? log_ctx : "Ctrl+Shift+Left")) {
-    return true;
-  }
-  return false;
+  (void)log_ctx;
+  return wayland_send_select_word_left();
 }
 
 static bool wayland_select_for_acquire(bool discord_like, const char *log_ctx) {
   if (discord_like) {
-    return hypr_wayland_try_select_line_home(
-        log_ctx ? log_ctx : "Discord pre-copy line select");
+    (void)log_ctx;
+    return wayland_send_select_line_home();
   }
-  if (!hyprctl_ipc_alive_for_wayland_keys()) {
-    return false;
-  }
-  if (hyprctl_wayland_ctrl_shift_left()) {
-    return true;
-  }
-  return false;
+  (void)log_ctx;
+  return wayland_send_ctrl_shift_left();
 }
 
 static void wayland_poll_after_copy(const std::string &baseline_clip,
@@ -2738,12 +3483,6 @@ enum class WaylandAcquireFlow {
 };
 
 static WaylandAcquireFlow classify_wayland_acquire_flow() {
-  if (focused_window_looks_like_discord()) {
-    return WaylandAcquireFlow::DiscordLike;
-  }
-  if (focused_window_looks_like_terminal()) {
-    return WaylandAcquireFlow::TerminalLike;
-  }
   HyprWindowSnapshot snapshot{};
   if (!copy_hypr_window_snapshot(&snapshot)) {
     return WaylandAcquireFlow::Generic;
@@ -2751,6 +3490,17 @@ static WaylandAcquireFlow classify_wayland_acquire_flow() {
   std::string id = lower_ascii_copy(snapshot.klass);
   std::string initial = lower_ascii_copy(snapshot.initial_class);
   std::string title = lower_ascii_copy(snapshot.title);
+  modore_log(
+      "ipc",
+      "wayland flow classify snapshot: class=%s initialClass=%s title=%s "
+      "initialTitle=%s xwayland=%s",
+      snapshot.klass.empty() ? "(unset)" : snapshot.klass.c_str(),
+      snapshot.initial_class.empty() ? "(unset)"
+                                     : snapshot.initial_class.c_str(),
+      snapshot.title.empty() ? "(unset)" : snapshot.title.c_str(),
+      snapshot.initial_title.empty() ? "(unset)"
+                                     : snapshot.initial_title.c_str(),
+      snapshot.xwayland ? "yes" : "no");
   if ((!id.empty() && (id.find("chromium") != std::string::npos ||
                        id.find("chrome") != std::string::npos)) ||
       (!initial.empty() && (initial.find("chromium") != std::string::npos ||
@@ -2758,6 +3508,12 @@ static WaylandAcquireFlow classify_wayland_acquire_flow() {
       (!title.empty() && (title.find("chromium") != std::string::npos ||
                           title.find("chrome") != std::string::npos))) {
     return WaylandAcquireFlow::ChromeLike;
+  }
+  if (focused_window_looks_like_discord()) {
+    return WaylandAcquireFlow::DiscordLike;
+  }
+  if (focused_window_looks_like_terminal()) {
+    return WaylandAcquireFlow::TerminalLike;
   }
   return WaylandAcquireFlow::Generic;
 }
@@ -2826,7 +3582,8 @@ static bool wayland_acquire_once_for_flow(WaylandAcquireFlow flow, Display *d,
            std::chrono::duration_cast<std::chrono::milliseconds>(
                std::chrono::steady_clock::now() - queue_started)
                .count()));
-  constexpr int kSelectSettleMs = 20;
+  const int kSelectSettleMs =
+      clipboard_timing_ms(g_clipboard_timings.wayland_select_settle_ms);
   logf("pick: %s flow waiting up to %dms for selection to settle before copy",
        flow_name(flow), kSelectSettleMs);
   wl_poll_until_clip_or_primary_moves(baseline_clip, baseline_primary,
@@ -2870,7 +3627,7 @@ static void notify_corrupted_pick_needs_recovery() {
 
 static bool
 hypr_attempt_clear_focused_edit_field_best_effort(const char *log_ctx_note) {
-  if (!wl_clipboard_available() || !hyprctl_ipc_alive_for_wayland_keys()) {
+  if (!wl_clipboard_available() || !g_wayland_uses_hypr_sendshortcut) {
     return false;
   }
   const char *block = std::getenv("MODORE_NO_MOJIBAKE_RECOVERY");
@@ -2887,8 +3644,9 @@ hypr_attempt_clear_focused_edit_field_best_effort(const char *log_ctx_note) {
   if (!selected) {
     return false;
   }
-  if (hyprctl_wayland_delete_or_backspace()) {
-    nap_after_compose_event(std::chrono::milliseconds(6));
+  if (wayland_send_delete_or_backspace()) {
+    nap_after_compose_event(std::chrono::milliseconds(
+        clipboard_timing_ms(g_clipboard_timings.cycle_post_inject_delay_ms)));
     logf("clipboard: cleared focused field attempt — Hypr %s + "
          "delete/backspace sequence",
          terminal_like ? "Shift+Home" : "Ctrl+A");
@@ -2917,53 +3675,42 @@ static bool inject_utf8_via_wl_clipboard_paste(const std::string &utf8) {
                           .count()));
   // Keep the clipboard hot path minimal: wait only if a compositor needs a beat
   // to expose the new offer.
-  constexpr int kPrePasteDelayMs = 12;
-  MODORE_E2E_LOGF("inject_wl_paste: pre-paste delay=%dms", kPrePasteDelayMs);
-  nap_after_compose_event(std::chrono::milliseconds(kPrePasteDelayMs));
+  const int pre_paste_delay_ms =
+      clipboard_timing_ms(g_clipboard_timings.pre_paste_delay_ms);
+  MODORE_E2E_LOGF("inject_wl_paste: pre-paste delay=%dms", pre_paste_delay_ms);
+  nap_after_compose_event(std::chrono::milliseconds(pre_paste_delay_ms));
   // Brief poll — offer is usually visible in one compositor frame; cap stays
   // low for responsiveness.
-  constexpr int kInjectPasteWaitMs = 6;
-  constexpr int kInjectPasteStepMs = 1;
-  if (!wait_wl_clipboard_equals_normalized(utf8, kInjectPasteWaitMs,
-                                           kInjectPasteStepMs)) {
+  const int inject_paste_wait_ms =
+      clipboard_timing_ms(g_clipboard_timings.paste_visibility_wait_ms);
+  const int inject_paste_step_ms =
+      clipboard_timing_ms(g_clipboard_timings.paste_visibility_step_ms);
+  if (!wait_wl_clipboard_equals_normalized(utf8, inject_paste_wait_ms,
+                                           inject_paste_step_ms)) {
     logf("inject: wl-copy payload not yet visible to wl-paste after %dms — "
          "sending paste anyway",
-         kInjectPasteWaitMs);
+         inject_paste_wait_ms);
   }
-  // Paste: wtype first for a real synthetic chord with inter-key delay; Hypr
-  // sendshortcut is a fallback when the uinput path is unavailable.
+  // Paste: Hyprland sessions use sendkeystate; other Wayland sessions keep
+  // the existing wtype-first path.
   bool ok = false;
-  MODORE_E2E_LOGF("inject_wl_paste: backend order wtype=%d hypr=%d",
-                  wtype_is_available() ? 1 : 0,
-                  hyprctl_ipc_alive_for_wayland_keys() ? 1 : 0);
-  if (wtype_is_available()) {
-    MODORE_E2E_LOGF("inject_wl_paste: trying wtype Shift+Insert");
-    if (wtype_chord_shift_insert()) {
-      logf("inject: wl-copy+wtype Shift+Insert (%zu UTF-8 bytes)", utf8.size());
-      ok = true;
-    } else if (wtype_chord_ctrl_v()) {
-      logf("inject: wl-copy+wtype Ctrl+V (%zu UTF-8 bytes)", utf8.size());
-      ok = true;
+  MODORE_E2E_LOGF("inject_wl_paste: backend order hypr=%d wtype=%d",
+                  g_wayland_uses_hypr_sendshortcut ? 1 : 0,
+                  wtype_is_available() ? 1 : 0);
+  if (wayland_send_paste_chord()) {
+    if (g_wayland_uses_hypr_sendshortcut) {
+      logf("inject: wl-copy+hypr paste (%zu UTF-8 bytes)", utf8.size());
     } else {
-      logf("inject: wl-copy OK but wtype Shift+Insert / Ctrl+V failed");
+      logf("inject: wl-copy+wtype paste (%zu UTF-8 bytes)", utf8.size());
     }
-  }
-  if (!ok && hyprctl_ipc_alive_for_wayland_keys()) {
-    MODORE_E2E_LOGF("inject_wl_paste: trying Hypr sendshortcut fallback");
-    if (hyprctl_dispatch_sendshortcut("SHIFT,Insert,",
-                                      "Shift+Insert paste (Omarchy SUPER+V)")) {
-      logf("inject: wl-copy+hypr Shift+Insert (%zu UTF-8 bytes)", utf8.size());
-      ok = true;
-    } else if (hyprctl_dispatch_sendshortcut("CONTROL,V,", "Ctrl+V paste")) {
-      logf("inject: wl-copy+hypr Ctrl+V (%zu UTF-8 bytes)", utf8.size());
-      ok = true;
-    }
-    if (!ok) {
-      logf("inject: wl-copy OK but Hypr Shift+Insert / Ctrl+V failed");
-    }
+    ok = true;
+  } else if (g_wayland_uses_hypr_sendshortcut && wtype_is_available()) {
+    logf("inject: wl-copy OK but Hypr paste / wtype fallback failed");
+  } else if (!g_wayland_uses_hypr_sendshortcut && wtype_is_available()) {
+    logf("inject: wl-copy OK but wtype paste failed");
   }
   MODORE_E2E_LOGF("inject_wl_paste: paste chord sent ok=%d", ok ? 1 : 0);
-  if (!ok && !wtype_is_available() && !hyprctl_ipc_alive_for_wayland_keys()) {
+  if (!ok && !g_wayland_uses_hypr_sendshortcut && !wtype_is_available()) {
     logf("inject: wl-copy ok — no Hypr IPC and no wtype for paste");
   }
   if (ok) {
@@ -2973,8 +3720,7 @@ static bool inject_utf8_via_wl_clipboard_paste(const std::string &utf8) {
   return ok;
 }
 
-// After Ctrl+C many clients collapse the selection; a single Delete/Backspace
-// is wrong. Erase the converted span using one BackSpace per Unicode scalar
+// Erase the converted span using one BackSpace per Unicode scalar
 // (fine for ASCII romaji).
 static void fake_wayland_backspace_glyph_count(glong glyphs) {
   constexpr glong kMax = 384;
@@ -2986,22 +3732,24 @@ static void fake_wayland_backspace_glyph_count(glong glyphs) {
          static_cast<long>(glyphs), static_cast<long>(kMax));
     glyphs = kMax;
   }
-  const bool hc = hyprctl_ipc_alive_for_wayland_keys();
-  const bool wt = wtype_is_available();
+  MODORE_E2E_LOGF("cycle: backspace loop start glyphs=%ld backend=%s",
+                  static_cast<long>(glyphs),
+                  g_wayland_uses_hypr_sendshortcut ? "hyprctl" : "wtype");
+  const bool ctrl_held = trigger_ctrl_is_held(nullptr);
+  if (ctrl_held) {
+    MODORE_E2E_LOGF("cycle: ctrl held; using plain per-glyph BackSpace");
+  }
   for (glong i = 0; i < glyphs; ++i) {
-    bool ok = false;
-    if (hc) {
-      ok = hyprctl_dispatch_sendshortcut(",BACKSPACE,", "BackSpace erase pick",
-                                         false);
-    }
-    if (!ok && wt) {
-      ok = wtype_exec_chord("BackSpace", {"-k", "BackSpace"});
-    }
+    const bool ok = wayland_send_backspace_only();
     if (!ok) {
       logf("inject: BackSpace stopped early at %ld / %ld (no backend)",
            static_cast<long>(i), static_cast<long>(glyphs));
       break;
     }
+    MODORE_E2E_LOGF("cycle: backspace sent %ld/%ld", static_cast<long>(i + 1),
+                    static_cast<long>(glyphs));
+    nap_after_compose_event(std::chrono::milliseconds(
+        clipboard_timing_ms(g_clipboard_timings.cycle_backspace_step_ms)));
     yield_to_compose_pipeline();
   }
 }
@@ -3020,7 +3768,7 @@ void inject_replacement_clear_then_type(
     logf("inject: empty replacement");
     return;
   }
-  logf("replacement utf8=%s", utf8.c_str());
+  logf("inject payload utf8=%s", utf8.c_str());
 
   if (d) {
     MODORE_E2E_LOGF("inject: entering X11 clipboard paste path");
@@ -3097,7 +3845,8 @@ static void wl_poll_until_clip_or_primary_moves(const std::string &ref_clip,
   }
   const auto deadline =
       std::chrono::steady_clock::now() + std::chrono::milliseconds(max_wait_ms);
-  constexpr int kStep = 1;
+  const int kStep =
+      clipboard_timing_ms(g_clipboard_timings.wayland_copy_poll_step_ms);
   while (std::chrono::steady_clock::now() < deadline) {
     std::string c;
     std::string p;
@@ -3126,7 +3875,8 @@ static void wayland_poll_after_copy(const std::string &baseline_clip,
   if (clipboard_offer_unchanged) {
     *clipboard_offer_unchanged = false;
   }
-  constexpr int kStep = 2;
+  const int kStep =
+      clipboard_timing_ms(g_clipboard_timings.wayland_copy_poll_step_ms);
   const auto deadline =
       std::chrono::steady_clock::now() + std::chrono::milliseconds(max_wait_ms);
 
@@ -3317,12 +4067,14 @@ void do_clipboard_pickup(Display *d, const std::string &clip_saved,
                                  discord_like ? "Discord pre-copy line select"
                                               : "Pre-copy selection");
       if (use_wayland_clipboard_reads) {
-        wl_poll_until_clip_or_primary_moves(baseline_clip, baseline_primary,
-                                            28);
+        wl_poll_until_clip_or_primary_moves(
+            baseline_clip, baseline_primary,
+            clipboard_timing_ms(g_clipboard_timings.wayland_select_settle_ms));
         logf("pick: Wayland pre-copy %s — clipboard was empty (trimmed)",
              discord_like ? "Shift+Home" : "Ctrl+Shift+Left");
       } else {
-        std::this_thread::sleep_for(std::chrono::milliseconds(72));
+        std::this_thread::sleep_for(std::chrono::milliseconds(
+            clipboard_timing_ms(g_clipboard_timings.wayland_copy_poll_ms)));
         logf("pick: pre-copy %s — clipboard was empty (trimmed wl baseline); "
              "using X11 "
              "CLIPBOARD reads",
@@ -3335,7 +4087,8 @@ void do_clipboard_pickup(Display *d, const std::string &clip_saved,
     if (use_wayland_clipboard_reads) {
       // Fast ceiling — most clients publish in <50ms; step=4ms polls exit early
       // when possible.
-      constexpr int kPollMsFirst = 72;
+      const int kPollMsFirst =
+          clipboard_timing_ms(g_clipboard_timings.wayland_copy_poll_ms);
       wayland_poll_after_copy(baseline_clip, baseline_primary,
                               "after first Ctrl+C:", &after, &got_fresh,
                               &clip_noop_vs_baseline, kPollMsFirst);
@@ -3519,17 +4272,24 @@ void do_clipboard_pickup(Display *d, const std::string &clip_saved,
   }
   logf("pick: mojibake heuristic passed");
 
-  std::string replacement;
-  logf("pick: stage=mozc-convert");
-  log_text_preview("pick", picked);
-  if (!mozc_convert_utf8(picked, &replacement)) {
+  auto conversion = mozc_convert_utf8_with_candidates(picked);
+  if (!conversion.has_value()) {
     logf("pick: mozc_convert failed");
     MODORE_E2E_LOGF("do_clipboard_pickup: mozc_convert failed");
     write_clipboard(clip_saved);
     return;
   }
-  log_text_preview("replacement", replacement);
-  logf("replacement utf8=%s", replacement.c_str());
+  std::string replacement = std::move(conversion->first);
+  std::vector<std::string> candidates = std::move(conversion->second);
+
+  int candidate_index = 0;
+  candidates = normalize_candidate_session_state(
+      replacement, std::move(candidates), &candidate_index);
+
+  logf("pick: stage=mozc-convert");
+  log_text_preview("pick", picked);
+  log_text_preview("replacement (conversion)", replacement);
+  logf("replacement (conversion result) utf8=%s", replacement.c_str());
   MODORE_E2E_LOGF("do_clipboard_pickup: mozc_convert succeeded out_bytes=%zu",
                   replacement.size());
 
@@ -3549,15 +4309,26 @@ void do_clipboard_pickup(Display *d, const std::string &clip_saved,
       pick_trimmed_utf8_noise);
   MODORE_E2E_LOGF("pick: inject_replacement returned (pick %zu -> out %zu)",
                   picked.size(), replacement.size());
+  ConversionSession session;
+  session.backing = ConversionSession::Backing::ClipboardFallback;
+  session.app_id = current_focused_app_id();
+  session.current_text = replacement;
+  session.current_text_chars = static_cast<glong>(g_utf8_strlen(
+      replacement.c_str(), static_cast<gssize>(replacement.size())));
+  session.candidates = std::move(candidates);
+  session.candidate_index = candidate_index;
+  session.last_touch = std::chrono::steady_clock::now();
+  set_conversion_session(std::move(session));
   logf("pick: conversion complete");
 
-  nap_after_compose_event(std::chrono::milliseconds(2));
+  nap_after_compose_event(std::chrono::milliseconds(
+      clipboard_timing_ms(g_clipboard_timings.short_restore_delay_ms)));
   if (std::getenv("WAYLAND_DISPLAY")) {
-    constexpr int kRestoreClipboardDelayMs = 20;
+    const int restore_delay_ms =
+        clipboard_timing_ms(g_clipboard_timings.short_restore_delay_ms);
     MODORE_E2E_LOGF("do_clipboard_pickup: delaying clipboard restore by %d ms",
-                    kRestoreClipboardDelayMs);
-    nap_after_compose_event(
-        std::chrono::milliseconds(kRestoreClipboardDelayMs));
+                    restore_delay_ms);
+    nap_after_compose_event(std::chrono::milliseconds(restore_delay_ms));
   }
   MODORE_E2E_LOGF(
       "do_clipboard_pickup: restoring clipboard baseline after pickup");
@@ -3585,6 +4356,19 @@ void do_pickup(Display *d) {
   MODORE_E2E_LOGF("do_pickup: enter d=%s", d ? "X11" : "null");
   g_pickup_focus_watch.arm("pickup");
 
+  // Mirror macOS repeat-hotkey UX: if the previous conversion is still
+  // alive and the user hits the conversion chord again, step to the next
+  // Mozc candidate instead of starting a fresh pickup.
+  if (try_cycle_active_conversion(d)) {
+    logf("pickup: cycle complete");
+    logf("pickup: total elapsed %lld ms",
+         static_cast<long long>(
+             std::chrono::duration_cast<std::chrono::milliseconds>(
+                 std::chrono::steady_clock::now() - pickup_started)
+                 .count()));
+    return;
+  }
+
   // Per-app routing override. Use the focused Hyprland class when available so
   // scripts can branch on app-specific quirks instead of treating every native
   // Wayland window as the same bucket. A script returning
@@ -3597,7 +4381,8 @@ void do_pickup(Display *d) {
   if (scripted_route && *scripted_route == modore_script::Route::Clipboard) {
     modore_log("scripting", "route → clipboard (user script)");
     if (std::getenv("WAYLAND_DISPLAY")) {
-      nap_after_compose_event(std::chrono::milliseconds(1));
+      nap_after_compose_event(std::chrono::milliseconds(
+          clipboard_timing_ms(g_clipboard_timings.pickup_start_delay_ms)));
     }
     std::string clip_saved;
     snapshot_clip_for_restore(&clip_saved);
@@ -3641,7 +4426,8 @@ void do_pickup(Display *d) {
       if (!std::getenv("WAYLAND_DISPLAY")) {
         if (inject_via_atspi_string(inject)) {
           logf("replaced via AT-SPI STRING inject (no wl-copy paste path)");
-          nap_after_compose_event(std::chrono::milliseconds(2));
+          nap_after_compose_event(std::chrono::milliseconds(clipboard_timing_ms(
+              g_clipboard_timings.atspi_direct_settle_delay_ms)));
           write_clipboard(clip_saved);
           return;
         }
@@ -3658,13 +4444,14 @@ void do_pickup(Display *d) {
       MODORE_E2E_LOGF(
           "do_pickup: AT-SPI inject_replacement_clear_then_type returned");
       MODORE_E2E_LOGF("do_pickup: AT-SPI non-direct inject path finished");
-      nap_after_compose_event(std::chrono::milliseconds(3));
+      nap_after_compose_event(std::chrono::milliseconds(clipboard_timing_ms(
+          g_clipboard_timings.atspi_replacement_settle_delay_ms)));
       if (std::getenv("WAYLAND_DISPLAY")) {
-        constexpr int kRestoreClipboardDelayMs = 300;
+        const int restore_delay_ms =
+            clipboard_timing_ms(g_clipboard_timings.long_restore_delay_ms);
         MODORE_E2E_LOGF("do_pickup: delaying clipboard restore by %d ms",
-                        kRestoreClipboardDelayMs);
-        nap_after_compose_event(
-            std::chrono::milliseconds(kRestoreClipboardDelayMs));
+                        restore_delay_ms);
+        nap_after_compose_event(std::chrono::milliseconds(restore_delay_ms));
       }
       write_clipboard(clip_saved);
       logf("pickup: total elapsed %lld ms",
@@ -3703,10 +4490,11 @@ void do_pickup(Display *d) {
     // Hypr needs a short beat after the exec that spawned --trigger so
     // sendshortcut targets the same surface; skip this delay entirely when
     // AT-SPI handled pickup above.
-    nap_after_compose_event(std::chrono::milliseconds(1));
+    nap_after_compose_event(std::chrono::milliseconds(
+        clipboard_timing_ms(g_clipboard_timings.pickup_start_delay_ms)));
   }
   logf("pickup: start synthetic_keys=%s",
-       wayland_pickup_synthetic_backend_label(d));
+       g_wayland_uses_hypr_sendshortcut ? "hyprctl/sendkeystate" : "wtype");
   MODORE_E2E_LOGF("do_pickup: falling through to synthetic clipboard pickup");
   std::string clip_saved;
   snapshot_clip_for_restore(&clip_saved);
@@ -3723,7 +4511,9 @@ void do_pickup(Display *d) {
            clip_saved.size());
       if (wl_clipboard_available()) {
         clipboard_clear_attempted_on_wl = true;
-        if (!poll_wl_clipboard_cleared(40, 1)) {
+        if (!poll_wl_clipboard_cleared(
+                clipboard_timing_ms(g_clipboard_timings.clear_poll_max_wait_ms),
+                clipboard_timing_ms(g_clipboard_timings.clear_poll_step_ms))) {
           logf("pickup: CLIPBOARD still non-empty after wl-copy \"\" — "
                "disabling PRIMARY-vs-stale-CLIPBOARD "
                "fast path; synthetic copy will run");
@@ -3733,11 +4523,11 @@ void do_pickup(Display *d) {
   }
   do_clipboard_pickup(d, clip_saved, clipboard_clear_attempted_on_wl);
   if (std::getenv("WAYLAND_DISPLAY")) {
-    constexpr int kRestoreClipboardDelayMs = 300;
+    const int restore_delay_ms =
+        clipboard_timing_ms(g_clipboard_timings.long_restore_delay_ms);
     MODORE_E2E_LOGF("do_pickup: delaying clipboard restore by %d ms",
-                    kRestoreClipboardDelayMs);
-    nap_after_compose_event(
-        std::chrono::milliseconds(kRestoreClipboardDelayMs));
+                    restore_delay_ms);
+    nap_after_compose_event(std::chrono::milliseconds(restore_delay_ms));
   }
   MODORE_E2E_LOGF("do_pickup: restoring clipboard baseline after pickup");
   logf("pickup: total elapsed %lld ms",
@@ -3898,6 +4688,12 @@ int main(int argc, char **argv) {
   modore_log("boot", "starting pid=%d DISPLAY=%s WAYLAND_DISPLAY=%s",
              static_cast<int>(::getpid()), disp_env ? disp_env : "(unset)",
              wl_env ? wl_env : "(unset)");
+  g_wayland_uses_hypr_sendshortcut = hyprctl_ipc_alive_for_wayland_keys();
+  if (wl_env && wl_env[0]) {
+    modore_log("boot", "Wayland paste transport: %s (startup-detected)",
+               g_wayland_uses_hypr_sendshortcut ? "hyprctl-first"
+                                                : "wtype-first");
+  }
   if (wl_env) {
     modore_log(
         "boot",
@@ -3909,11 +4705,11 @@ int main(int argc, char **argv) {
                "Wayland pickup capabilities: hyprctl_IPC=%s "
                "HYPRLAND_INSTANCE_SIGNATURE=%s "
                "wtype=%s wl-paste=%s",
-               hyprctl_ipc_alive_for_wayland_keys() ? "yes" : "no",
+               g_wayland_uses_hypr_sendshortcut ? "yes" : "no",
                (sig && sig[0]) ? "set" : "(unset)",
                wtype_is_available() ? "yes" : "no",
                wl_clipboard_available() ? "yes" : "no");
-    if (!hyprctl_ipc_alive_for_wayland_keys() && !wtype_is_available()) {
+    if (!g_wayland_uses_hypr_sendshortcut && !wtype_is_available()) {
       modore_log("boot", "Wayland: need `hyprctl` (Hyprland) or `wtype` for "
                          "synthetic keys / clipboard pickup");
     }
@@ -3932,8 +4728,15 @@ int main(int argc, char **argv) {
   if (!load_modore_config(&modore_config, &cfg_err)) {
     modore_log("config", "%s — using defaults", cfg_err.c_str());
   }
-  modore_log("config", "[conversion] hotkey=%s — ~/.config/modore/modore.conf",
-             modore_config.conversion_hotkey_description.c_str());
+  g_conversion_hotkey_modifier_mask =
+      modore_config.conversion_hotkey.modifier_mask;
+  g_conversion_hotkey_keysym = modore_config.conversion_hotkey.keysym;
+  apply_linux_config(modore_config);
+  modore_log("config", "[conversion] hotkey=%s — %s",
+             modore_config.conversion_hotkey_description.c_str(),
+             modore_config_path().c_str());
+  log_linux_config_timings();
+  start_config_reload_watcher();
 
   // Scripting engine. Empty / missing dir is a pass-through no-op.
   {
@@ -3968,7 +4771,8 @@ int main(int argc, char **argv) {
     evdev_hotkey_active = start_evdev_hotkey_monitor(
         modore_config.conversion_hotkey,
         modore_config.conversion_hotkey_description,
-        []() { notify_main_pickup_pending(); }, &evdev_error);
+        []() { notify_main_pickup_pending(); },
+        []() { invalidate_conversion_session_for_user_input(); }, &evdev_error);
     if (evdev_hotkey_active) {
       modore_log(
           "ipc",
@@ -3981,7 +4785,7 @@ int main(int argc, char **argv) {
 
   bool hyprland_bind_active = false;
   if (!evdev_hotkey_active && wl_env && wl_env[0] && !opts.no_ipc &&
-      hyprctl_ipc_alive_for_wayland_keys()) {
+      g_wayland_uses_hypr_sendshortcut) {
     const std::string self_path = resolve_self_executable_path(argv[0]);
     hyprland_bind_active = register_hyprland_hotkey_bind(
         self_path, modore_config.conversion_hotkey,

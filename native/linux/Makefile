@@ -18,15 +18,15 @@ BRIDGE_SO := $(BUILD)/libmozc_bridge.so
 ENGINE_SO := $(BUILD)/libmodore_script.so
 
 CXX ?= g++
+CC ?= gcc
 CLANG_FORMAT ?= clang-format
 
 export PATH := $(REPO_ROOT)/bridge/build-tools:$(PATH)
 
 PKG_ATSPI := $(shell pkg-config --cflags --libs atspi-2)
 PKG_X11 := $(shell pkg-config --cflags --libs x11 xtst)
-
 CXXFLAGS := -std=c++20 -O2 -Wall -Wextra \
-           -I$(BRIDGE_SRC)/include -I$(ENGINE_SRC)/include -pthread
+           -I$(BRIDGE_SRC)/include -I$(ENGINE_SRC)/include -I$(BUILD) -pthread
 LDFLAGS := -pthread -Wl,-rpath,\$$ORIGIN
 # gobject: g_object_ref/unref (atspi headers use GObject; link needs -lgobject).
 PKG_GOBJECT := $(shell pkg-config --libs gobject-2.0)

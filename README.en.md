@@ -14,7 +14,7 @@ conversion.
 | Host    | State                                                              |
 | ------- | ------------------------------------------------------------------ |
 | macOS   | shipping; configurable hotkey, candidate cycling + Esc-undo + optional candidate panel |
-| Linux   | shipping; X11 grab + AT-SPI2 + Unix socket IPC + Wayland fallbacks |
+| Linux   | shipping; X11 grab + AT-SPI2 + Unix socket IPC + Wayland fallbacks + candidate cycling |
 | Windows | planned, not started                                               |
 
 

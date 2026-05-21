@@ -233,7 +233,6 @@ int RunConvertFlow(SessionDriver *driver,
       }
     }
 
-    std::string candidate_commit;
     if (!force_katakana && capture_cands && out.has_candidate_window()) {
       TraceRawCandidates(out);
       const mozc::commands::Output base_output = out;
@@ -241,16 +240,11 @@ int RunConvertFlow(SessionDriver *driver,
           CaptureFocusedSegmentCandidates(driver, &out, error);
       const std::vector<CandidateEntry> full_candidates =
           RebuildFullSpanCandidates(base_output, focused_candidates);
-      const std::string top_candidate =
-          !full_candidates.empty() ? full_candidates.front().value : std::string();
       const size_t written = CopyCandidateValuesToBuffer(
           full_candidates, cands_buf, cands_cap, max_candidates,
           out_candidate_count);
       if (cands_total_len) {
         *cands_total_len = written;
-      }
-      if (!top_candidate.empty()) {
-        candidate_commit = top_candidate;
       }
     }
 
@@ -268,10 +262,6 @@ int RunConvertFlow(SessionDriver *driver,
         committed = JoinPreeditSegments(out);
       }
     }
-    if (!candidate_commit.empty()) {
-      committed = candidate_commit;
-    }
-
     if (committed.empty()) {
       committed.assign(romaji, romaji_len);
     }
@@ -373,7 +363,6 @@ int RunConvertFlowWithDetails(
       }
     }
 
-    std::string candidate_commit;
     if (!force_katakana && capture_cands && out.has_candidate_window()) {
       TraceRawCandidates(out);
       const mozc::commands::Output base_output = out;
@@ -381,16 +370,11 @@ int RunConvertFlowWithDetails(
           CaptureFocusedSegmentCandidates(driver, &out, error);
       const std::vector<CandidateEntry> full_candidates =
           RebuildFullSpanCandidates(base_output, focused_candidates);
-      const std::string top_candidate =
-          !full_candidates.empty() ? full_candidates.front().value : std::string();
       const size_t written = CopyCandidateRecordsToBuffers(
           full_candidates, cand_records, cand_records_cap, cand_strings_buf,
           cand_strings_cap, max_candidates, out_candidate_count);
       if (cand_strings_len) {
         *cand_strings_len = written;
-      }
-      if (!top_candidate.empty()) {
-        candidate_commit = top_candidate;
       }
     }
 
@@ -408,10 +392,6 @@ int RunConvertFlowWithDetails(
         committed = JoinPreeditSegments(out);
       }
     }
-    if (!candidate_commit.empty()) {
-      committed = candidate_commit;
-    }
-
     if (committed.empty()) {
       committed.assign(romaji, romaji_len);
     }

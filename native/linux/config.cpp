@@ -5,8 +5,10 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cerrno>
 #include <cstdlib>
 #include <fstream>
+#include <limits>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -50,6 +52,8 @@ std::string default_config_dir() {
   }
   return std::string("/.config/modore");
 }
+
+std::string config_path() { return default_config_dir() + "/modore.conf"; }
 
 KeySym resolve_keysym_token(const std::string &key_token) {
   const std::string k = to_lower(trim(key_token));
@@ -185,13 +189,33 @@ void apply_conversion_defaults(ModoreConfig *out) {
   out->conversion_hotkey_description = "Ctrl+Semicolon (default)";
 }
 
+bool parse_non_negative_int(const std::string &value, int *out) {
+  if (!out) {
+    return false;
+  }
+  if (value.empty()) {
+    return false;
+  }
+  char *end = nullptr;
+  errno = 0;
+  const long parsed = std::strtol(value.c_str(), &end, 10);
+  if (errno != 0 || !end || *end != '\0' || parsed < 0 ||
+      parsed > static_cast<long>(std::numeric_limits<int>::max())) {
+    return false;
+  }
+  *out = static_cast<int>(parsed);
+  return true;
+}
+
 } // namespace
+
+std::string modore_config_path() { return config_path(); }
 
 bool load_modore_config(ModoreConfig *out, std::string *error_message) {
   error_message->clear();
   apply_conversion_defaults(out);
 
-  const std::string path = default_config_dir() + "/modore.conf";
+  const std::string path = modore_config_path();
   std::ifstream f(path);
   if (!f) {
     return true;
@@ -200,6 +224,22 @@ bool load_modore_config(ModoreConfig *out, std::string *error_message) {
   std::string current_section;
   std::string line;
   std::string hotkey_value;
+  std::string pre_paste_delay_value;
+  std::string paste_visibility_wait_value;
+  std::string paste_visibility_step_value;
+  std::string short_restore_delay_value;
+  std::string long_restore_delay_value;
+  std::string cycle_settle_delay_value;
+  std::string cycle_post_inject_delay_value;
+  std::string cycle_backspace_step_value;
+  std::string pickup_start_delay_value;
+  std::string atspi_direct_settle_delay_value;
+  std::string atspi_replacement_settle_delay_value;
+  std::string clear_poll_max_wait_value;
+  std::string clear_poll_step_value;
+  std::string wayland_select_settle_value;
+  std::string wayland_copy_poll_value;
+  std::string wayland_copy_poll_step_value;
   while (std::getline(f, line)) {
     const auto hash = line.find('#');
     if (hash != std::string::npos) {
@@ -221,21 +261,107 @@ bool load_modore_config(ModoreConfig *out, std::string *error_message) {
     const std::string k_l = to_lower(k);
     if (current_section == "conversion" && k_l == "hotkey") {
       hotkey_value = v;
+    } else if (current_section == "clipboard") {
+      if (k_l == "pre_copy_delay_ms" || k_l == "pre_paste_delay_ms") {
+        pre_paste_delay_value = v;
+      } else if (k_l == "read_timeout_ms" ||
+                 k_l == "paste_visibility_wait_ms") {
+        paste_visibility_wait_value = v;
+      } else if (k_l == "read_step_ms" || k_l == "paste_visibility_step_ms") {
+        paste_visibility_step_value = v;
+      } else if (k_l == "restore_clipboard_delay_ms" ||
+                 k_l == "short_restore_delay_ms") {
+        short_restore_delay_value = v;
+      } else if (k_l == "restore_clipboard_long_delay_ms" ||
+                 k_l == "pickup_restore_delay_ms") {
+        long_restore_delay_value = v;
+      } else if (k_l == "cycle_settle_delay_ms") {
+        cycle_settle_delay_value = v;
+      } else if (k_l == "cycle_post_inject_delay_ms") {
+        cycle_post_inject_delay_value = v;
+      } else if (k_l == "cycle_backspace_step_ms") {
+        cycle_backspace_step_value = v;
+      } else if (k_l == "pickup_start_delay_ms") {
+        pickup_start_delay_value = v;
+      } else if (k_l == "atspi_direct_settle_delay_ms") {
+        atspi_direct_settle_delay_value = v;
+      } else if (k_l == "atspi_replacement_settle_delay_ms") {
+        atspi_replacement_settle_delay_value = v;
+      } else if (k_l == "clear_poll_max_wait_ms") {
+        clear_poll_max_wait_value = v;
+      } else if (k_l == "clear_poll_step_ms") {
+        clear_poll_step_value = v;
+      } else if (k_l == "wayland_select_settle_ms") {
+        wayland_select_settle_value = v;
+      } else if (k_l == "wayland_copy_poll_ms") {
+        wayland_copy_poll_value = v;
+      } else if (k_l == "wayland_copy_poll_step_ms") {
+        wayland_copy_poll_step_value = v;
+      }
     }
   }
 
-  if (hotkey_value.empty()) {
-    return true;
+  if (!hotkey_value.empty()) {
+    X11HotkeySpec parsed{};
+    std::string err;
+    if (!parse_hotkey_chord(hotkey_value, &parsed, &err)) {
+      *error_message = err;
+      apply_conversion_defaults(out);
+      return false;
+    }
+    out->conversion_hotkey = parsed;
+    out->conversion_hotkey_description = trim(hotkey_value);
   }
 
-  X11HotkeySpec parsed{};
-  std::string err;
-  if (!parse_hotkey_chord(hotkey_value, &parsed, &err)) {
-    *error_message = err;
-    apply_conversion_defaults(out);
-    return false;
+  int parsed_int = 0;
+  if (parse_non_negative_int(pre_paste_delay_value, &parsed_int)) {
+    out->clipboard_pre_paste_delay_ms = parsed_int;
   }
-  out->conversion_hotkey = parsed;
-  out->conversion_hotkey_description = trim(hotkey_value);
+  if (parse_non_negative_int(paste_visibility_wait_value, &parsed_int)) {
+    out->clipboard_paste_visibility_wait_ms = parsed_int;
+  }
+  if (parse_non_negative_int(paste_visibility_step_value, &parsed_int)) {
+    out->clipboard_paste_visibility_step_ms = parsed_int;
+  }
+  if (parse_non_negative_int(short_restore_delay_value, &parsed_int)) {
+    out->clipboard_short_restore_delay_ms = parsed_int;
+  }
+  if (parse_non_negative_int(long_restore_delay_value, &parsed_int)) {
+    out->clipboard_long_restore_delay_ms = parsed_int;
+  }
+  if (parse_non_negative_int(cycle_settle_delay_value, &parsed_int)) {
+    out->clipboard_cycle_settle_delay_ms = parsed_int;
+  }
+  if (parse_non_negative_int(cycle_post_inject_delay_value, &parsed_int)) {
+    out->clipboard_cycle_post_inject_delay_ms = parsed_int;
+  }
+  if (parse_non_negative_int(cycle_backspace_step_value, &parsed_int)) {
+    out->clipboard_cycle_backspace_step_ms = parsed_int;
+  }
+  if (parse_non_negative_int(pickup_start_delay_value, &parsed_int)) {
+    out->clipboard_pickup_start_delay_ms = parsed_int;
+  }
+  if (parse_non_negative_int(atspi_direct_settle_delay_value, &parsed_int)) {
+    out->clipboard_atspi_direct_settle_delay_ms = parsed_int;
+  }
+  if (parse_non_negative_int(atspi_replacement_settle_delay_value,
+                             &parsed_int)) {
+    out->clipboard_atspi_replacement_settle_delay_ms = parsed_int;
+  }
+  if (parse_non_negative_int(clear_poll_max_wait_value, &parsed_int)) {
+    out->clipboard_clear_poll_max_wait_ms = parsed_int;
+  }
+  if (parse_non_negative_int(clear_poll_step_value, &parsed_int)) {
+    out->clipboard_clear_poll_step_ms = parsed_int;
+  }
+  if (parse_non_negative_int(wayland_select_settle_value, &parsed_int)) {
+    out->clipboard_wayland_select_settle_ms = parsed_int;
+  }
+  if (parse_non_negative_int(wayland_copy_poll_value, &parsed_int)) {
+    out->clipboard_wayland_copy_poll_ms = parsed_int;
+  }
+  if (parse_non_negative_int(wayland_copy_poll_step_value, &parsed_int)) {
+    out->clipboard_wayland_copy_poll_step_ms = parsed_int;
+  }
   return true;
 }

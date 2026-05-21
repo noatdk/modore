@@ -60,3 +60,9 @@ hotkey = Ctrl+Shift+grave
 # pre_copy_delay_ms = 20
 # read_timeout_ms = 250
 # restore_clipboard_delay_ms = 50
+#
+# Linux also reloads these Wayland pickup/cycle timing knobs live:
+# wayland_select_settle_ms = 60
+# wayland_copy_poll_ms = 72
+# wayland_copy_poll_step_ms = 2
+# cycle_backspace_step_ms = 12
