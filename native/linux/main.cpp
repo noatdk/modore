@@ -1951,15 +1951,6 @@ static void clear_conversion_session_locked() {
   g_has_conversion_session = false;
 }
 
-static void invalidate_conversion_session_for_user_input() {
-  std::lock_guard<std::mutex> lock(g_conversion_session_mu);
-  if (!g_has_conversion_session) {
-    return;
-  }
-  modore_log("cycle", "session cleared: user typed a non-hotkey key");
-  clear_conversion_session_locked();
-}
-
 static std::vector<std::string>
 normalize_candidate_session_state(const std::string &replacement,
                                   std::vector<std::string> candidates,
@@ -1983,6 +1974,15 @@ normalize_candidate_session_state(const std::string &replacement,
     *current_index = static_cast<int>(std::distance(candidates.begin(), it));
   }
   return candidates;
+}
+
+static void invalidate_conversion_session_for_user_input() {
+  std::lock_guard<std::mutex> lock(g_conversion_session_mu);
+  if (!g_has_conversion_session) {
+    return;
+  }
+  modore_log("session", "session cleared: user typed a non-hotkey key");
+  clear_conversion_session_locked();
 }
 
 static void set_conversion_session(ConversionSession session) {
@@ -2680,20 +2680,20 @@ bool try_pickup_atspi(bool *direct_done, std::string *inject_utf8,
       g_object_unref(ss);
     }
     if (!atspi_accessible_is_text(focus) || !focusish) {
-      logf("AT-SPI: cached focused accessible rejected (text=%d focusish=%d) "
+      logf("cached focused accessible rejected (text=%d focusish=%d) "
            "elapsed=%lld ms",
            atspi_accessible_is_text(focus) ? 1 : 0, focusish ? 1 : 0,
            atspi_elapsed_ms());
       g_object_unref(focus);
       focus = nullptr;
     } else {
-      logf("AT-SPI: using cached focused accessible elapsed=%lld ms",
+      logf("using cached focused accessible elapsed=%lld ms",
            atspi_elapsed_ms());
     }
   }
   AtspiAccessible *found_focus = nullptr;
   const gint n_desk = atspi_get_desktop_count();
-  logf("AT-SPI: desktop_count=%d elapsed=%lld ms", static_cast<int>(n_desk),
+  logf("desktop_count=%d elapsed=%lld ms", static_cast<int>(n_desk),
        atspi_elapsed_ms());
   if (!focus) {
     const gint n_try = n_desk > 0 ? n_desk : 1;
@@ -2702,13 +2702,13 @@ bool try_pickup_atspi(bool *direct_done, std::string *inject_utf8,
       if (!desktop) {
         continue;
       }
-      logf("AT-SPI: scanning desktop %d elapsed=%lld ms", static_cast<int>(di),
+      logf("scanning desktop %d elapsed=%lld ms", static_cast<int>(di),
            atspi_elapsed_ms());
       found_focus = find_focused_leaf(desktop, 0);
       if (!found_focus) {
         found_focus = find_text_with_focus_or_active(desktop, 0);
         if (found_focus) {
-          logf("AT-SPI: desktop %d — Text widget FOCUSED/ACTIVE (no strict "
+          logf("desktop %d — Text widget FOCUSED/ACTIVE (no strict "
                "focus leaf)",
                static_cast<int>(di));
         }
@@ -2721,57 +2721,57 @@ bool try_pickup_atspi(bool *direct_done, std::string *inject_utf8,
     focus = found_focus;
     if (focus) {
       g_cached_atspi_focus.update(focus);
-      logf("AT-SPI: cached focus from DFS elapsed=%lld ms", atspi_elapsed_ms());
+      logf("cached focus from DFS elapsed=%lld ms", atspi_elapsed_ms());
     }
   }
   if (!focus) {
-    logf("AT-SPI: no focused accessible elapsed=%lld ms", atspi_elapsed_ms());
+    logf("no focused accessible elapsed=%lld ms", atspi_elapsed_ms());
     return false;
   }
-  logf("AT-SPI: focus located elapsed=%lld ms", atspi_elapsed_ms());
+  logf("focus located elapsed=%lld ms", atspi_elapsed_ms());
   if (!atspi_accessible_is_text(focus)) {
-    logf("AT-SPI: focused node has no Text interface elapsed=%lld ms",
+    logf("focused node has no Text interface elapsed=%lld ms",
          atspi_elapsed_ms());
     g_object_unref(focus);
     return false;
   }
   AtspiText *text = atspi_accessible_get_text_iface(focus);
   if (!text) {
-    logf("AT-SPI: get_text_iface failed elapsed=%lld ms", atspi_elapsed_ms());
+    logf("get_text_iface failed elapsed=%lld ms", atspi_elapsed_ms());
     g_object_unref(focus);
     return false;
   }
-  logf("AT-SPI: text iface ready elapsed=%lld ms", atspi_elapsed_ms());
+  logf("text iface ready elapsed=%lld ms", atspi_elapsed_ms());
 
   gint n_chars = atspi_text_get_character_count(text, &err);
   if (err) {
     g_clear_error(&err);
-    logf("AT-SPI: character_count failed elapsed=%lld ms", atspi_elapsed_ms());
+    logf("character_count failed elapsed=%lld ms", atspi_elapsed_ms());
     g_object_unref(focus);
     return false;
   }
-  logf("AT-SPI: character_count=%d elapsed=%lld ms", static_cast<int>(n_chars),
+  logf("character_count=%d elapsed=%lld ms", static_cast<int>(n_chars),
        atspi_elapsed_ms());
 
   gchar *full = atspi_text_get_text(text, 0, n_chars, &err);
   if (err || !full) {
     g_clear_error(&err);
-    logf("AT-SPI: get_text failed elapsed=%lld ms", atspi_elapsed_ms());
+    logf("get_text failed elapsed=%lld ms", atspi_elapsed_ms());
     g_object_unref(focus);
     return false;
   }
-  logf("AT-SPI: get_text bytes=%zu elapsed=%lld ms", std::strlen(full),
+  logf("get_text bytes=%zu elapsed=%lld ms", std::strlen(full),
        atspi_elapsed_ms());
 
   gint caret = atspi_text_get_caret_offset(text, &err);
   if (err) {
     g_clear_error(&err);
     g_free(full);
-    logf("AT-SPI: caret_offset failed elapsed=%lld ms", atspi_elapsed_ms());
+    logf("caret_offset failed elapsed=%lld ms", atspi_elapsed_ms());
     g_object_unref(focus);
     return false;
   }
-  logf("AT-SPI: caret_offset=%d elapsed=%lld ms", static_cast<int>(caret),
+  logf("caret_offset=%d elapsed=%lld ms", static_cast<int>(caret),
        atspi_elapsed_ms());
 
   glong span_start = 0;
@@ -2792,7 +2792,7 @@ bool try_pickup_atspi(bool *direct_done, std::string *inject_utf8,
     auto scripted =
         modore_script::pickup_span(std::string(full, full_bytes), caret_byte,
                                    app_id.c_str(), /*katakana*/ false);
-    logf("AT-SPI: script pickup probe elapsed=%lld ms", atspi_elapsed_ms());
+    logf("script pickup probe elapsed=%lld ms", atspi_elapsed_ms());
     if (scripted) {
       const std::size_t sb = std::min(scripted->first, full_bytes);
       const std::size_t eb = std::min(scripted->second, full_bytes);
@@ -2800,7 +2800,7 @@ bool try_pickup_atspi(bool *direct_done, std::string *inject_utf8,
         span_start = g_utf8_pointer_to_offset(full, full + sb);
         span_end = g_utf8_pointer_to_offset(full, full + eb);
         scripted_pickup = true;
-        logf("AT-SPI: script pickup span chars=[%ld..%ld] bytes=[%zu..%zu]",
+        logf("script pickup span chars=[%ld..%ld] bytes=[%zu..%zu]",
              static_cast<long>(span_start), static_cast<long>(span_end), sb,
              eb);
       }
@@ -2810,7 +2810,7 @@ bool try_pickup_atspi(bool *direct_done, std::string *inject_utf8,
   if (!scripted_pickup) {
     gint n_sel = atspi_text_get_n_selections(text, &err);
     g_clear_error(&err);
-    logf("AT-SPI: n_selections=%d elapsed=%lld ms", static_cast<int>(n_sel),
+    logf("n_selections=%d elapsed=%lld ms", static_cast<int>(n_sel),
          atspi_elapsed_ms());
     if (n_sel > 0) {
       AtspiRange *range = atspi_text_get_selection(text, 0, &err);
@@ -2818,18 +2818,18 @@ bool try_pickup_atspi(bool *direct_done, std::string *inject_utf8,
         span_start = range->start_offset;
         span_end = range->end_offset;
         g_free(range);
-        logf("AT-SPI: selection range [%ld..%ld] elapsed=%lld ms",
+        logf("selection range [%ld..%ld] elapsed=%lld ms",
              static_cast<long>(span_start), static_cast<long>(span_end),
              atspi_elapsed_ms());
       } else {
         g_clear_error(&err);
-        logf("AT-SPI: get_selection failed, falling back to word range "
+        logf("get_selection failed, falling back to word range "
              "elapsed=%lld ms",
              atspi_elapsed_ms());
         word_range_chars(full, caret, n_chars, &span_start, &span_end);
       }
     } else {
-      logf("AT-SPI: no selection, using word range elapsed=%lld ms",
+      logf("no selection, using word range elapsed=%lld ms",
            atspi_elapsed_ms());
       word_range_chars(full, caret, n_chars, &span_start, &span_end);
     }
@@ -2856,7 +2856,7 @@ bool try_pickup_atspi(bool *direct_done, std::string *inject_utf8,
       if (single_line) {
         span_start = 0;
         span_end = n_chars;
-        logf("AT-SPI: empty word span at caret=%ld but field has %ld chars — "
+        logf("empty word span at caret=%ld but field has %ld chars — "
              "using entire field "
              "(single-line input)",
              static_cast<long>(caret), static_cast<long>(n_chars));
@@ -2865,7 +2865,7 @@ bool try_pickup_atspi(bool *direct_done, std::string *inject_utf8,
   }
 
   if (span_start >= span_end) {
-    logf("AT-SPI: empty span (caret=%ld n_chars=%ld) — falling through",
+    logf("empty span (caret=%ld n_chars=%ld) — falling through",
          static_cast<long>(caret), static_cast<long>(n_chars));
     g_free(full);
     g_object_unref(focus);
@@ -2891,7 +2891,7 @@ bool try_pickup_atspi(bool *direct_done, std::string *inject_utf8,
   std::string converted;
   auto converted_with_candidates = mozc_convert_utf8_with_candidates(romaji);
   if (!converted_with_candidates.has_value()) {
-    logf("AT-SPI: convert failed elapsed=%lld ms", atspi_elapsed_ms());
+    logf("convert failed elapsed=%lld ms", atspi_elapsed_ms());
     g_object_unref(focus);
     return false;
   }
@@ -2900,8 +2900,7 @@ bool try_pickup_atspi(bool *direct_done, std::string *inject_utf8,
 
   AtspiEditableText *ed = atspi_accessible_get_editable_text_iface(focus);
   if (ed && atspi_accessible_is_editable_text(focus)) {
-    logf("AT-SPI: editable path mozc_convert done elapsed=%lld ms",
-         atspi_elapsed_ms());
+    logf("editable path mozc_convert done elapsed=%lld ms", atspi_elapsed_ms());
     log_text_preview("replacement", converted);
 
     // Script-driven replacement override. Mozc's top candidate is what the
@@ -2912,7 +2911,7 @@ bool try_pickup_atspi(bool *direct_done, std::string *inject_utf8,
       auto scripted = modore_script::replacement(
           app_id.c_str(), span_start_byte, span_end_byte, cands);
       if (scripted) {
-        logf("AT-SPI: script replacement override (was '%s', now '%s')",
+        logf("script replacement override (was '%s', now '%s')",
              converted.c_str(), scripted->c_str());
         converted = std::move(*scripted);
       }
@@ -2926,7 +2925,7 @@ bool try_pickup_atspi(bool *direct_done, std::string *inject_utf8,
         atspi_editable_text_delete_text(ed, span_start, span_end, &err);
     if (!ok1) {
       g_clear_error(&err);
-      logf("AT-SPI: delete_text failed elapsed=%lld ms", atspi_elapsed_ms());
+      logf("delete_text failed elapsed=%lld ms", atspi_elapsed_ms());
       g_object_unref(focus);
       return false;
     }
@@ -2935,7 +2934,7 @@ bool try_pickup_atspi(bool *direct_done, std::string *inject_utf8,
         &err);
     if (!ok2) {
       g_clear_error(&err);
-      logf("AT-SPI: insert_text failed elapsed=%lld ms", atspi_elapsed_ms());
+      logf("insert_text failed elapsed=%lld ms", atspi_elapsed_ms());
       g_object_unref(focus);
       return false;
     }
@@ -2946,12 +2945,11 @@ bool try_pickup_atspi(bool *direct_done, std::string *inject_utf8,
                                         static_cast<gssize>(converted.size())));
     if (!atspi_text_set_caret_offset(text, caret_after, &err)) {
       if (err) {
-        logf("AT-SPI: set_caret_offset(%d): %s", static_cast<int>(caret_after),
+        logf("set_caret_offset(%d): %s", static_cast<int>(caret_after),
              err->message);
         g_clear_error(&err);
       } else {
-        logf("AT-SPI: set_caret_offset(%d) failed",
-             static_cast<int>(caret_after));
+        logf("set_caret_offset(%d) failed", static_cast<int>(caret_after));
       }
     } else {
       g_clear_error(&err);
@@ -2970,15 +2968,15 @@ bool try_pickup_atspi(bool *direct_done, std::string *inject_utf8,
     session.last_touch = std::chrono::steady_clock::now();
     set_conversion_session(std::move(session));
     *direct_done = true;
-    logf("AT-SPI: editable path complete elapsed=%lld ms", atspi_elapsed_ms());
+    logf("editable path complete elapsed=%lld ms", atspi_elapsed_ms());
     g_object_unref(focus);
     return true;
   }
 
-  logf("AT-SPI: non-editable path mozc_convert start elapsed=%lld ms",
+  logf("non-editable path mozc_convert start elapsed=%lld ms",
        atspi_elapsed_ms());
   *inject_utf8 = converted;
-  logf("AT-SPI: non-editable path mozc_convert done elapsed=%lld ms",
+  logf("non-editable path mozc_convert done elapsed=%lld ms",
        atspi_elapsed_ms());
   log_text_preview("replacement", *inject_utf8);
   // On Wayland, set_selection frequently updates accessibility state without
@@ -2990,14 +2988,14 @@ bool try_pickup_atspi(bool *direct_done, std::string *inject_utf8,
                                  static_cast<gint>(span_end), &err);
     if (!sel_ok) {
       if (err) {
-        logf("AT-SPI: set_selection: %s", err->message);
+        logf("set_selection: %s", err->message);
         g_clear_error(&err);
       } else {
-        logf("AT-SPI: set_selection failed");
+        logf("set_selection failed");
       }
     }
   } else {
-    logf("AT-SPI: Wayland — skipping set_selection before inject");
+    logf("Wayland — skipping set_selection before inject");
   }
   g_object_unref(focus);
   if (pick_span_for_inject) {
@@ -3016,7 +3014,7 @@ bool try_pickup_atspi(bool *direct_done, std::string *inject_utf8,
   session.candidate_index = candidate_index;
   session.last_touch = std::chrono::steady_clock::now();
   set_conversion_session(std::move(session));
-  logf("AT-SPI: non-editable control — injecting conversion text elapsed=%lld "
+  logf("non-editable control — injecting conversion text elapsed=%lld "
        "ms",
        atspi_elapsed_ms());
   return true;
@@ -3147,10 +3145,10 @@ static bool try_cycle_active_conversion(Display *d) {
     log_text_preview("cycle from", from);
     log_text_preview("cycle to", to);
     if (residue_chars > 0) {
-      logf("cycle: configured hotkey may leak one glyph while modifiers are "
+      logf("configured hotkey may leak one glyph while modifiers are "
            "still held");
     }
-    logf("cycle: clipboard fallback clear %ld glyphs (%zu bytes from, %zu "
+    logf("clipboard fallback clear %ld glyphs (%zu bytes from, %zu "
          "bytes to)",
          static_cast<long>(glyphs), from.size(), to.size());
     fake_backspace_glyph_count(d, glyphs);
@@ -4360,8 +4358,8 @@ void do_pickup(Display *d) {
   // alive and the user hits the conversion chord again, step to the next
   // Mozc candidate instead of starting a fresh pickup.
   if (try_cycle_active_conversion(d)) {
-    logf("pickup: cycle complete");
-    logf("pickup: total elapsed %lld ms",
+    logf("cycle complete");
+    logf("total elapsed %lld ms",
          static_cast<long long>(
              std::chrono::duration_cast<std::chrono::milliseconds>(
                  std::chrono::steady_clock::now() - pickup_started)
@@ -4402,7 +4400,7 @@ void do_pickup(Display *d) {
     const auto atspi_started = std::chrono::steady_clock::now();
     if (try_pickup_atspi(&direct, &inject, &atspi_pick_span)) {
       const auto atspi_done = std::chrono::steady_clock::now();
-      logf("pickup: AT-SPI path completed in %lld ms",
+      logf("AT-SPI path completed in %lld ms",
            static_cast<long long>(
                std::chrono::duration_cast<std::chrono::milliseconds>(
                    atspi_done - atspi_started)
@@ -4410,7 +4408,7 @@ void do_pickup(Display *d) {
       if (direct) {
         MODORE_E2E_LOGF("do_pickup: AT-SPI direct editable replace done");
         logf("replaced via AT-SPI (editable)");
-        logf("pickup: total elapsed %lld ms",
+        logf("total elapsed %lld ms",
              static_cast<long long>(
                  std::chrono::duration_cast<std::chrono::milliseconds>(
                      std::chrono::steady_clock::now() - pickup_started)
@@ -4461,7 +4459,7 @@ void do_pickup(Display *d) {
                    .count()));
       return;
     }
-    logf("pickup: AT-SPI attempt took %lld ms and did not produce a span",
+    logf("AT-SPI attempt took %lld ms and did not produce a span",
          static_cast<long long>(
              std::chrono::duration_cast<std::chrono::milliseconds>(
                  std::chrono::steady_clock::now() - atspi_started)
@@ -4493,7 +4491,7 @@ void do_pickup(Display *d) {
     nap_after_compose_event(std::chrono::milliseconds(
         clipboard_timing_ms(g_clipboard_timings.pickup_start_delay_ms)));
   }
-  logf("pickup: start synthetic_keys=%s",
+  logf("start synthetic_keys=%s",
        g_wayland_uses_hypr_sendshortcut ? "hyprctl/sendkeystate" : "wtype");
   MODORE_E2E_LOGF("do_pickup: falling through to synthetic clipboard pickup");
   std::string clip_saved;
@@ -4506,7 +4504,7 @@ void do_pickup(Display *d) {
   const char *preclear_e = std::getenv("MODORE_PICKUP_CLEAR_CLIPBOARD");
   if (preclear_e && preclear_e[0] && std::strcmp(preclear_e, "0") != 0) {
     if (write_clipboard("")) {
-      logf("pickup: cleared CLIPBOARD baseline (saved %zu bytes for restore "
+      logf("cleared CLIPBOARD baseline (saved %zu bytes for restore "
            "after conversion)",
            clip_saved.size());
       if (wl_clipboard_available()) {
@@ -4530,7 +4528,7 @@ void do_pickup(Display *d) {
     nap_after_compose_event(std::chrono::milliseconds(restore_delay_ms));
   }
   MODORE_E2E_LOGF("do_pickup: restoring clipboard baseline after pickup");
-  logf("pickup: total elapsed %lld ms",
+  logf("total elapsed %lld ms",
        static_cast<long long>(
            std::chrono::duration_cast<std::chrono::milliseconds>(
                std::chrono::steady_clock::now() - pickup_started)

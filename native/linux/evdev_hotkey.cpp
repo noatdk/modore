@@ -485,14 +485,12 @@ static void monitor_loop(std::vector<EvdevDevice> devices, EvdevHotkeySpec spec,
           continue;
         }
         if (ev.value == 1 && hotkey_matches(mods, spec)) {
+          if (hotkey_armed) {
+            continue;
+          }
           hotkey_armed = true;
-          continue;
-        }
-        if (ev.value == 0 && hotkey_armed && hotkey_matches(mods, spec)) {
-          modore_log(
-              "hotkey",
-              "evdev hotkey matched on release (/dev/input event stream)");
-          hotkey_armed = false;
+          modore_log("hotkey",
+                     "evdev hotkey matched on press (/dev/input event stream)");
           on_trigger();
           continue;
         }
