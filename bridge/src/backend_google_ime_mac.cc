@@ -354,6 +354,18 @@ class GoogleImeSessionDriver final : public SessionDriver {
 
   void Finish() override {
     if (session_id_ != 0) {
+      // Send REVERT before deleting so the renderer process receives a
+      // "no candidate window" update and closes its window. Without this,
+      // the renderer can leave the window on screen after the session is gone.
+      mozc::commands::SessionCommand revert;
+      revert.set_type(mozc::commands::SessionCommand::REVERT);
+      mozc::commands::Input revert_input;
+      revert_input.set_id(session_id_);
+      revert_input.set_type(mozc::commands::Input::SEND_COMMAND);
+      *revert_input.mutable_command() = revert;
+      mozc::commands::Output ignored;
+      std::string ignored_error;
+      (void)CallInputWithContext(revert_input, context_, &ignored, &ignored_error);
       DeleteSessionBestEffort(session_id_);
       session_id_ = 0;
     }
