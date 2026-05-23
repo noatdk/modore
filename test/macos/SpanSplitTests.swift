@@ -69,6 +69,15 @@ struct SpanSplitTests {
         expectEqual(splitConvertibleASCIIWindow("tesutoテスト").prefix, "", "pickup window boundary prefix")
         expectEqual(splitConvertibleASCIIWindow("tesutoテスト").ascii, "tesuto", "pickup window boundary ascii")
         expectEqual(splitConvertibleASCIIWindow("tesutoテスト").suffix, "テスト", "pickup window boundary suffix")
+        // Space is a word boundary: only the word immediately before the kana suffix is the convertible island.
+        expectEqual(splitConvertibleASCIIWindow("通路 douroテスト").prefix, "通路 ", "pickup window space-bounded prefix")
+        expectEqual(splitConvertibleASCIIWindow("通路 douroテスト").ascii, "douro", "pickup window space-bounded ascii")
+        expectEqual(splitConvertibleASCIIWindow("通路 douroテスト").suffix, "テスト", "pickup window space-bounded suffix")
+
+        expectTuple(splitBeforeLastASCIIWord(" should show up plenty. douro"), (" should show up plenty. ", "douro"), "last word: strips english context")
+        expectTuple(splitBeforeLastASCIIWord("mi-douro"),                       ("",                          "mi-douro"), "last word: no space → unchanged")
+        expectTuple(splitBeforeLastASCIIWord(" koe"),                           (" ",                         "koe"),      "last word: leading space only")
+        expectTuple(splitBeforeLastASCIIWord("sen"),                            ("",                          "sen"),      "last word: plain word")
 
         // Trailing punctuation is kept separate so the pickup path can
         // normalize it to Japanese punctuation after conversion.

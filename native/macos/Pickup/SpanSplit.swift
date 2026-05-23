@@ -133,7 +133,7 @@ func splitConvertibleASCIIWindow(_ s: String) -> (prefix: String, ascii: String,
     }
 
     var asciiStart = suffixStart
-    while asciiStart > 0 && bytes[asciiStart - 1] < 0x80 {
+    while asciiStart > 0 && bytes[asciiStart - 1] < 0x80 && bytes[asciiStart - 1] > 0x20 {
         asciiStart -= 1
     }
     guard asciiStart < suffixStart else {
@@ -144,6 +144,22 @@ func splitConvertibleASCIIWindow(_ s: String) -> (prefix: String, ascii: String,
         utf8Range(s, start: 0, end: asciiStart),
         utf8Range(s, start: asciiStart, end: suffixStart),
         utf8Range(s, start: suffixStart, end: bytes.count)
+    )
+}
+
+/// Split at the last ASCII whitespace so the trailing word is isolated from
+/// any left-context that a line-left acquire may have included.
+/// `" should show up plenty. douro"` → `(" should show up plenty. ", "douro")`
+/// `"mi-douro"` → `("", "mi-douro")`, `"sen"` → `("", "sen")`.
+func splitBeforeLastASCIIWord(_ s: String) -> (prefix: String, word: String) {
+    let bytes = Array(s.utf8)
+    var i = bytes.count
+    while i > 0 && bytes[i - 1] > 0x20 {
+        i -= 1
+    }
+    return (
+        utf8Range(s, start: 0, end: i),
+        utf8Range(s, start: i, end: bytes.count)
     )
 }
 

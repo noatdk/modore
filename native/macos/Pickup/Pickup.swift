@@ -1146,11 +1146,12 @@ func runConversionOnAcquiredText(
     }
     Log.pickup("scripted acquire pick: \(pickedText)")
 
-    let (asciiPrefix, romajiTail, preservedSuffix) = splitConvertibleASCIIWindow(pickedText)
+    let (asciiPrefix, rawTail, preservedSuffix) = splitConvertibleASCIIWindow(pickedText)
+    let (contextPrefix, romajiTail) = splitBeforeLastASCIIWord(rawTail)
     let (romajiCore, romajiSuffix) = splitTrailingASCIIPunctuation(romajiTail)
     let convertedSuffix = convertTrailingASCIISuffix(romajiSuffix, request: request) + preservedSuffix
     if romajiCore.isEmpty {
-        let replacement = asciiPrefix + convertedSuffix
+        let replacement = asciiPrefix + contextPrefix + convertedSuffix
         guard replacement != pickedText else {
             Log.pickup("scripted acquire: no trailing romaji in \(pickedText)")
             return
@@ -1186,7 +1187,7 @@ func runConversionOnAcquiredText(
     }
     let (leadingJunk, romajiBody) = splitLeadingASCIIJunkBeforeLowercase(romajiCore)
     let (acronymHead, mozcInput) = splitAcronymHead(romajiBody)
-    let frozenPrefix = asciiPrefix + leadingJunk + acronymHead
+    let frozenPrefix = asciiPrefix + contextPrefix + leadingJunk + acronymHead
 
     guard let result = callBackend(mozcInput, request: request, wantCandidates: true) else {
         Log.pickup("scripted acquire: backend returned no result")
