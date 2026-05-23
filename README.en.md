@@ -8,14 +8,16 @@ Modeless Japanese IME pickup. Type romaji into any app, hit the conversion
 hotkey, and the word at the caret is replaced with its Mozc top-candidate
 conversion.
 
+HIGHLY EXPERIMENTAL. Feel free to report bugs and submit PRs, I will try to look at them.
+
 ## Status
 
 
-| Host    | State                                                              |
-| ------- | ------------------------------------------------------------------ |
-| macOS   | shipping; configurable hotkey, candidate cycling + Esc-undo + optional candidate panel |
-| Linux   | shipping; X11 grab + AT-SPI2 + Unix socket IPC + Wayland fallbacks + candidate cycling |
-| Windows | planned, not started                                               |
+| Host    | State                                                                                  |
+|----------|------------------------------------------------------------------------------------------|
+| macOS   | alpha; configurable hotkey, candidate cycling + Esc-undo + optional candidate panel    |
+| Linux   | alpha; X11 grab + AT-SPI2 + Unix socket IPC + Wayland fallbacks                        |
+| Windows | planned, not started                                                                    |
 
 
 Per-host feature matrix: [docs/PARITY.md](docs/PARITY.md). Update it in the
