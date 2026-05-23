@@ -170,3 +170,11 @@ modore.route_for_app = function(ctx, api)
   end
   return nil
 end
+
+modore.on_replacement = function(span, cands, api)
+  modore.log.info("chrome replacement hook entered")
+  if span == nil or cands == nil then
+    return nil
+  end
+  return api.default.replacement(span, cands)
+end

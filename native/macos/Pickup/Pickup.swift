@@ -67,7 +67,7 @@ func callBackend(
         if wantCandidates {
             let r = try MozcBridge.convertWithCandidates(span, target: request.target)
             return ConvertResult(
-                replacement: r.committed,
+                replacement: r.candidates.first?.value ?? r.committed,
                 cursorOffset: nil,
                 candidates: r.candidates)
         }
