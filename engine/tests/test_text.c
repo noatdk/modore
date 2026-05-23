@@ -35,6 +35,18 @@ int main(void) {
         char out[64] = {0};
         int rc = run_replacement_hook(
             "modore.on_replacement = function()\n"
+            "  local b = modore.text.word_bounds('tesutoテスト', 6)\n"
+            "  return b.start_byte .. ':' .. b.end_byte\n"
+            "end\n",
+            out, sizeof(out));
+        CHECK(rc == 1, "word_bounds ascii-kana boundary rc");
+        CHECK(strcmp(out, "0:6") == 0, "word_bounds prefers ascii before kana");
+    }
+
+    {
+        char out[64] = {0};
+        int rc = run_replacement_hook(
+            "modore.on_replacement = function()\n"
             "  local p, t = modore.text.split_trailing_ascii('対人sen')\n"
             "  return p .. '|' .. t\n"
             "end\n",

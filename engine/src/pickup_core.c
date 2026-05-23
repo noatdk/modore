@@ -138,6 +138,22 @@ int mdr_text_word_bounds(
         }
     }
 
+    if (caret > 0 && caret < len) {
+        size_t prev = utf8_prev(text, caret);
+        if (is_ascii_at(text, prev) && !is_ascii_at(text, caret)) {
+            size_t ascii_start = prev;
+            while (ascii_start > 0) {
+                size_t before = utf8_prev(text, ascii_start);
+                if (is_ascii_ws_at(text, before)) break;
+                if (!is_ascii_at(text, before)) break;
+                ascii_start = before;
+            }
+            out_bounds->start_byte = ascii_start;
+            out_bounds->end_byte = caret;
+            return 0;
+        }
+    }
+
     size_t start = caret;
     while (start > 0) {
         size_t prev = utf8_prev(text, start);

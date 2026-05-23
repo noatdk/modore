@@ -977,12 +977,12 @@ func doClipboardPickup(_ request: PickupRequest = .init()) {
     // Mirror the AX path's script-boundary split for the clipboard path:
     // Shift+Opt+Left in Discord/Sublime grabs the whole word including any
     // non-ASCII prefix (e.g. `対人sen` arrives as one blob), and the bridge
-    // sends each byte of UTF-8 to Mozc as a separate `key_code` — kanji
-    // come out as Latin-1 mojibake. Strip the non-ASCII prefix here, send
-    // only the trailing romaji to the bridge, then re-attach the prefix.
-    let (asciiPrefix, romajiTail) = splitTrailingASCII(pickedText)
+    // sends each byte of UTF-8 to Mozc as a separate `key_code`. Also handle
+    // mixed selections where the acquired token includes Japanese text after
+    // the caret-side ASCII run (`tesutoテスト` with the caret after `o`).
+    let (asciiPrefix, romajiTail, preservedSuffix) = splitConvertibleASCIIWindow(pickedText)
     let (romajiCore, romajiSuffix) = splitTrailingASCIIPunctuation(romajiTail)
-    let convertedSuffix = convertTrailingASCIISuffix(romajiSuffix, request: request)
+    let convertedSuffix = convertTrailingASCIISuffix(romajiSuffix, request: request) + preservedSuffix
     guard !romajiCore.isEmpty else {
         let replacement = clipboardPrefix + asciiPrefix + convertedSuffix
         guard replacement != clipboardSelection else {
@@ -1146,9 +1146,9 @@ func runConversionOnAcquiredText(
     }
     Log.pickup("scripted acquire pick: \(pickedText)")
 
-    let (asciiPrefix, romajiTail) = splitTrailingASCII(pickedText)
+    let (asciiPrefix, romajiTail, preservedSuffix) = splitConvertibleASCIIWindow(pickedText)
     let (romajiCore, romajiSuffix) = splitTrailingASCIIPunctuation(romajiTail)
-    let convertedSuffix = convertTrailingASCIISuffix(romajiSuffix, request: request)
+    let convertedSuffix = convertTrailingASCIISuffix(romajiSuffix, request: request) + preservedSuffix
     if romajiCore.isEmpty {
         let replacement = asciiPrefix + convertedSuffix
         guard replacement != pickedText else {
@@ -1355,9 +1355,9 @@ func doPickup(_ request: PickupRequest = .init()) {
         // user-made selection covering `対人sen` bypasses it. Without this
         // the bridge feeds Mozc UTF-8 bytes as Latin-1 codepoints and
         // mojibake comes back.
-        let (asciiPrefix, romajiTail) = splitTrailingASCII(spanText)
+        let (asciiPrefix, romajiTail, preservedSuffix) = splitConvertibleASCIIWindow(spanText)
         let (romajiCore, romajiSuffix) = splitTrailingASCIIPunctuation(romajiTail)
-        let convertedSuffix = convertTrailingASCIISuffix(romajiSuffix, request: request)
+        let convertedSuffix = convertTrailingASCIISuffix(romajiSuffix, request: request) + preservedSuffix
         let (leadingJunk, romajiBody) = splitLeadingASCIIJunkBeforeLowercase(romajiCore)
         guard !romajiCore.isEmpty else {
             let replacement = asciiPrefix + convertedSuffix

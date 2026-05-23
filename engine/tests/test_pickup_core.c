@@ -49,6 +49,9 @@ static void check_bounds(void) {
 
     const char* ascii_comma_jp = "abc,声";
     expect_bounds(ascii_comma_jp, 3, 0, 4, "ascii comma jp: caret before comma");
+
+    const char* ascii_then_kana = "tesutoテスト";
+    expect_bounds(ascii_then_kana, 6, 0, 6, "ascii kana boundary: caret after ascii");
 }
 
 static void check_trailing_ascii(void) {
