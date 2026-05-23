@@ -64,7 +64,7 @@ TEST_BRIDGING_HEADER := $(BUILD)/test-bridging-header.h
 # ship a SwiftPM manifest).
 TESTABLE_SRC := $(shell grep -lE '^// @testable' $(SRC) 2>/dev/null)
 TEST_FILES   := $(shell find ../../test/macos -name '*.swift' 2>/dev/null)
-TEST_BIN     := $(BUILD)/unit-tests
+TEST_BIN     := $(BUILD)/tests/unit-tests
 
 all: $(APP)
 
@@ -75,6 +75,7 @@ signing:
 	@bash scripts/setup-signing.sh
 
 $(APP): $(BIN) $(PLIST) $(BUNDLE_DYLIB) $(BUNDLE_ENGINE) $(BUNDLE_MODEL) $(BUNDLE_DICT) | signing
+	rm -f "$(APP)/Contents/MacOS/unit-tests"
 	# Re-sign the whole bundle. The dylib must be signed before the executable
 	# (codesign verifies inner content), but copying it in via $(BUNDLE_DYLIB)
 	# above is a clean-target dep, so by here it's already in place.
@@ -181,7 +182,7 @@ $(TEST_BRIDGING_HEADER): $(ENGINE_HEADER)
 $(TEST_BIN): $(TESTABLE_SRC) $(TEST_FILES) $(TEST_BRIDGING_HEADER) $(ENGINE_LIB)
 	@if [ -z "$(TEST_FILES)" ]; then echo "no test sources found under ../../test/macos"; exit 1; fi
 	@if [ -z "$(TESTABLE_SRC)" ]; then echo "no '// @testable' marked sources found under native/macos"; exit 1; fi
-	mkdir -p "$(BUILD)"
+	mkdir -p "$(dir $@)"
 	swiftc -O \
 		-import-objc-header "$(TEST_BRIDGING_HEADER)" \
 		-Xcc -I"$(ENGINE_SRC_DIR)/include" \

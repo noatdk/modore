@@ -64,6 +64,13 @@ var gStatusItem: ModoreStatusItem?
 /// the very first transition has somewhere to land.
 var gSecureInputMonitor: SecureInputMonitor?
 
+final class AppLifecycleDelegate: NSObject, NSApplicationDelegate {
+    func applicationWillTerminate(_ notification: Notification) {
+        MozcBridge.stopShellConvertServer()
+        MozcBridge.shutdown()
+    }
+}
+
 func describeSelf() {
     let bundle = Bundle.main
     Log.boot("pid=\(ProcessInfo.processInfo.processIdentifier)")
@@ -257,6 +264,8 @@ if let probeArg = CommandLine.arguments.first(where: { $0.hasPrefix("--probe-wor
 
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory)
+let appLifecycleDelegate = AppLifecycleDelegate()
+app.delegate = appLifecycleDelegate
 
 gDisabledLogNamespaces = ModoreConfig.loadDisabledLoggingNamespaces()
 Log.configureDisabledNamespaces(gDisabledLogNamespaces)
