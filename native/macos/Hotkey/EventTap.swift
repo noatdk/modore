@@ -69,7 +69,7 @@ let tapCallback: CGEventTapCallBack = { _, type, event, _ in
     // at the bottom of this callback would wipe the live session before
     // Carbon ever gets to cycle it — that was the "stuck on first
     // candidate" bug.
-        if keyCode == gConversionKeyCode {
+    if keyCode == gConversionKeyCode {
             if coreFlags == gConversionCoreFlags {
             if !gUsingCarbonHotkey {
                 kHotkeyTapQueue.async { handlePrimaryHotkeyTrigger() }
@@ -93,6 +93,8 @@ let tapCallback: CGEventTapCallBack = { _, type, event, _ in
                 return Unmanaged.passUnretained(event)
             }
     }
+
+    updateChromiumOmniboxTypedInputLog(for: event)
 
     // Any other keyDown that reaches this point — letters being typed,
     // backspace, arrow keys, Cmd+anything, an Esc when no session is in
