@@ -473,14 +473,14 @@ private func applyClassifierReload() {
                 }
                 return "\(FileManager.default.homeDirectoryForCurrentUser.path)/.config/modore"
             }()
-            let modelPath = "\(configDir)/classifier.mdl"
+            let modelPath = Classifier.configModelPath(configDir: configDir)
             if FileManager.default.fileExists(atPath: modelPath) {
                 if !Classifier.load(modelPath: modelPath) {
                     Log.config("[conversion] classifier = on but model failed to load — staying off")
                     gClassifierEnabled = false
                     return
                 }
-            } else if let bundled = Bundle.main.path(forResource: "classifier", ofType: "mdl") {
+            } else if let bundled = Classifier.bundledModelPath() {
                 if !Classifier.load(modelPath: bundled) {
                     Log.config("[conversion] classifier = on but bundle model failed to load — staying off")
                     gClassifierEnabled = false

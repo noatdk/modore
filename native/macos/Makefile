@@ -36,10 +36,11 @@ ENGINE_HEADER   := $(ENGINE_SRC_DIR)/include/modore_script.h
 ENGINE_SOURCES  := $(wildcard $(ENGINE_SRC_DIR)/src/*.c) \
                    $(wildcard $(ENGINE_SRC_DIR)/src/*.h) \
                    $(wildcard $(ENGINE_SRC_DIR)/include/*.h)
-CLASSIFIER_MODEL := $(ENGINE_SRC_DIR)/models/classifier.mdl
+CLASSIFIER_MODEL_NAME := classifier.mdl
+CLASSIFIER_MODEL := $(ENGINE_SRC_DIR)/models/$(CLASSIFIER_MODEL_NAME)
 CLASSIFIER_DICT  := $(ENGINE_SRC_DIR)/models/english_dict.txt
 BUNDLE_RESOURCES := $(APP)/Contents/Resources
-BUNDLE_MODEL     := $(BUNDLE_RESOURCES)/classifier.mdl
+BUNDLE_MODEL     := $(BUNDLE_RESOURCES)/$(CLASSIFIER_MODEL_NAME)
 BUNDLE_DICT      := $(BUNDLE_RESOURCES)/english_dict.txt
 SCRIPTING_CMAKE_FLAG := -DMODORE_SCRIPT_ENABLE_LUA=$(if $(filter 1,$(MODORE_ENABLE_SCRIPTING)),ON,OFF)
 

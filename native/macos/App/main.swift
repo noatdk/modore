@@ -415,7 +415,7 @@ if gClassifierEnabled {
         }
         return "\(FileManager.default.homeDirectoryForCurrentUser.path)/.config/modore"
     }()
-    let modelPath = "\(configDir)/classifier.mdl"
+    let modelPath = Classifier.configModelPath(configDir: configDir)
     if FileManager.default.fileExists(atPath: modelPath) {
         if Classifier.load(modelPath: modelPath) {
             Log.boot("ML classifier loaded from \(modelPath)")
@@ -423,7 +423,7 @@ if gClassifierEnabled {
             Log.boot("ML classifier: failed to load \(modelPath) — heuristic fallback")
             gClassifierEnabled = false
         }
-    } else if let bundled = Bundle.main.path(forResource: "classifier", ofType: "mdl") {
+    } else if let bundled = Classifier.bundledModelPath() {
         if Classifier.load(modelPath: bundled) {
             Log.boot("ML classifier loaded from bundle")
         } else {
