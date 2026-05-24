@@ -6,6 +6,8 @@
 import Cocoa
 import ApplicationServices
 
+private let kAXAutocompleteValueAttribute = "AXAutocompleteValue"
+
 struct FocusedField {
     let element: AXUIElement
     let value: String
@@ -13,6 +15,7 @@ struct FocusedField {
     let selEnd: Int
     let role: String
     let description: String
+    let autocomplete: String?
 }
 
 /// Electron's AX tree is gated behind a private attribute that assistive
@@ -130,14 +133,24 @@ func readFocusedField() -> FocusedField? {
     var descRef: CFTypeRef?
     _ = AXUIElementCopyAttributeValue(element, kAXDescriptionAttribute as CFString, &descRef)
     let desc = (descRef as? String) ?? ""
-    Log.ax("focused role=\(role) valueLen=\(s.utf16.count) sel=[\(selStart),\(selEnd)]")
+
+    var autocompleteRef: CFTypeRef?
+    let r4 = AXUIElementCopyAttributeValue(
+        element,
+        kAXAutocompleteValueAttribute as CFString,
+        &autocompleteRef
+    )
+    let autocomplete = (r4 == .success) ? (autocompleteRef as? String) : nil
+
+    Log.ax("focused role=\(role) valueLen=\(s.utf16.count) sel=[\(selStart),\(selEnd)] autocomplete=\(autocomplete ?? "-")")
     return FocusedField(
         element: element,
         value: s,
         selStart: selStart,
         selEnd: selEnd,
         role: role,
-        description: desc)
+        description: desc,
+        autocomplete: autocomplete)
 }
 
 func replaceRange(in element: AXUIElement, start: Int, end: Int, replacement: String) -> Bool {

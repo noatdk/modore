@@ -661,6 +661,18 @@ private func isChromiumOmnibox(
         && desc == "Address and search bar"
 }
 
+private func chromiumOmniboxAutocompletePrefixRange(
+    field: FocusedField,
+    appId: String?
+) -> (start: Int, end: Int)? {
+    guard isChromiumOmnibox(field: field, appId: appId) else { return nil }
+    guard field.autocomplete == "both" else { return nil }
+    guard field.selStart > 0,
+          field.selEnd == field.value.utf16.count,
+          field.selStart <= field.selEnd else { return nil }
+    return (0, field.selStart)
+}
+
 private func postUnicodeOverAXSelection(
     in element: AXUIElement,
     start: Int,
@@ -678,12 +690,7 @@ private func postUnicodeOverAXSelection(
     return true
 }
 
-/// Chromium omnibox needs a stricter first attempt than the generic AX
-/// path. Try a direct AX replacement first so Chromium can keep its typed
-/// input model aligned; if that fails, fall back to the existing
-/// selected-Unicode path that has the best chance of syncing the live
-/// omnibox state.
-private func replaceChromiumOmnibox(
+private func replaceChromiumOmniboxAutocompletePrefix(
     field: FocusedField,
     start: Int,
     end: Int,
@@ -691,8 +698,12 @@ private func replaceChromiumOmnibox(
     replacement: String,
     sessionSeed: (candidates: [MozcBridge.Candidate], currentIndex: Int)
 ) -> Bool {
-    Log.pickup("Chromium omnibox: trying AX replace before fallback")
-    if replaceRange(in: field.element, start: start, end: end, replacement: replacement) {
+    Log.pickup("Chromium omnibox: trying typed-input sync first")
+    if postUnicodeOverAXSelection(
+        in: field.element,
+        start: start,
+        end: end,
+        replacement: replacement) {
         let session = ConversionSession(
             backing: .ax(element: field.element, spanStart: start),
             originalReading: originalReading,
@@ -705,18 +716,64 @@ private func replaceChromiumOmnibox(
         }
         return true
     }
-    Log.pickup("Chromium omnibox: AX replace failed; falling back to typed-input sync")
-    if !postUnicodeOverAXSelection(
+    Log.pickup("Chromium omnibox: typed-input sync failed; collapsing autocomplete and retyping prefix")
+    postKey(kVK_LeftArrow)
+    for _ in 0..<(end - start) {
+        postKey(kVK_Backspace)
+    }
+    postUnicode(replacement)
+    let frontmost = FrontmostApp.describe()
+    let session = ConversionSession(
+        backing: .clipboard(
+            frontmostBundleId: frontmost?.bundleID,
+            frontmostPid: frontmost?.pid ?? 0),
+        originalReading: originalReading,
+        candidates: sessionSeed.candidates,
+        candidateIndex: sessionSeed.currentIndex,
+        timestamp: Date())
+    ConversionSessionStore.set(session)
+    if gCandidatePanelMode == .onConvert {
+        CandidatePanel.shared.show(session: session)
+    }
+    return true
+}
+
+/// Chromium omnibox needs a stricter first attempt than the generic AX
+/// path. The live suggestion model is more reliable when we drive the
+/// selected text as typed input, so prefer that path first and only
+/// fall back to a keystroke-driven replace if the AX selection write
+/// itself fails.
+private func replaceChromiumOmnibox(
+    field: FocusedField,
+    start: Int,
+    end: Int,
+    originalReading: String,
+    replacement: String,
+    sessionSeed: (candidates: [MozcBridge.Candidate], currentIndex: Int)
+) -> Bool {
+    if postUnicodeOverAXSelection(
         in: field.element,
         start: start,
         end: end,
         replacement: replacement) {
-        keystrokeReplaceSpan(
-            caret: (start: field.selStart, end: field.selEnd),
-            spanEnd: end,
-            spanLen: end - start,
-            replacement: replacement)
+        let session = ConversionSession(
+            backing: .ax(element: field.element, spanStart: start),
+            originalReading: originalReading,
+            candidates: sessionSeed.candidates,
+            candidateIndex: sessionSeed.currentIndex,
+            timestamp: Date())
+        ConversionSessionStore.set(session)
+        if gCandidatePanelMode == .onConvert {
+            CandidatePanel.shared.show(session: session)
+        }
+        return true
     }
+    Log.pickup("Chromium omnibox: typed-input sync failed; falling back to keystroke retype")
+    keystrokeReplaceSpan(
+        caret: (start: field.selStart, end: field.selEnd),
+        spanEnd: end,
+        spanLen: end - start,
+        replacement: replacement)
     let frontmost = FrontmostApp.describe()
     let session = ConversionSession(
         backing: .clipboard(
@@ -743,6 +800,20 @@ private func applyFieldReplacement(
     replacement: String,
     sessionSeed: (candidates: [MozcBridge.Candidate], currentIndex: Int)
 ) -> Bool {
+    if route != .clipboard,
+       route != .keystroke,
+       let autocompletePrefix = chromiumOmniboxAutocompletePrefixRange(
+        field: field,
+        appId: appId
+    ), start == autocompletePrefix.start, end == autocompletePrefix.end {
+        return replaceChromiumOmniboxAutocompletePrefix(
+            field: field,
+            start: start,
+            end: end,
+            originalReading: originalReading,
+            replacement: replacement,
+            sessionSeed: sessionSeed)
+    }
     switch route {
     case .selectionSync:
         if postUnicodeOverAXSelection(
@@ -1354,11 +1425,19 @@ func doPickup(_ request: PickupRequest = .init()) {
         return
     }
 
-    guard let spanText = sliceUTF16(field.value, start: start, end: end) else {
+    let (pickupStart, pickupEnd) = chromiumOmniboxAutocompletePrefixRange(
+        field: field,
+        appId: appId
+    ) ?? (start, end)
+    if pickupStart != start || pickupEnd != end {
+        Log.pickup("Chromium omnibox inline autocomplete detected; using prefix [\(pickupStart)..\(pickupEnd)] instead of selected suffix [\(start)..\(end)]")
+    }
+
+    guard let spanText = sliceUTF16(field.value, start: pickupStart, end: pickupEnd) else {
         Log.pickup("empty span; nothing to convert")
         return
     }
-        Log.pickup("pick [\(start)..\(end)] \(spanText)")
+        Log.pickup("pick [\(pickupStart)..\(pickupEnd)] \(spanText)")
 
         // Strip any non-ASCII prefix before handing off to Mozc — same
         // reason as the clipboard path. `wordBounds` already does this on
@@ -1377,8 +1456,8 @@ func doPickup(_ request: PickupRequest = .init()) {
                 return
             }
             Log.pickup("punctuation-only pickup -> \(replacement)")
-            let scriptSpanStart = field.value.utf8ByteOffset(forUTF16Offset: start)
-            let scriptSpanEnd   = field.value.utf8ByteOffset(forUTF16Offset: end)
+            let scriptSpanStart = field.value.utf8ByteOffset(forUTF16Offset: pickupStart)
+            let scriptSpanEnd   = field.value.utf8ByteOffset(forUTF16Offset: pickupEnd)
             let scriptSpan = mdr_span_t(
                 span_start_byte: size_t(scriptSpanStart),
                 span_end_byte: size_t(scriptSpanEnd),
@@ -1398,8 +1477,8 @@ func doPickup(_ request: PickupRequest = .init()) {
                 route: route,
                 field: field,
                 appId: appId,
-                start: start,
-                end: end,
+                start: pickupStart,
+                end: pickupEnd,
                 originalReading: spanText,
                 replacement: finalReplacement,
                 sessionSeed: sessionSeed)
@@ -1413,8 +1492,8 @@ func doPickup(_ request: PickupRequest = .init()) {
                 asciiPrefix + leadingJunk + $0.value + convertedSuffix
             }
 
-            let scriptSpanStart = field.value.utf8ByteOffset(forUTF16Offset: start)
-            let scriptSpanEnd   = field.value.utf8ByteOffset(forUTF16Offset: end)
+            let scriptSpanStart = field.value.utf8ByteOffset(forUTF16Offset: pickupStart)
+            let scriptSpanEnd   = field.value.utf8ByteOffset(forUTF16Offset: pickupEnd)
             let scriptSpan = mdr_span_t(
                 span_start_byte: size_t(scriptSpanStart),
                 span_end_byte: size_t(scriptSpanEnd),
@@ -1434,8 +1513,8 @@ func doPickup(_ request: PickupRequest = .init()) {
                 route: route,
                 field: field,
                 appId: appId,
-                start: start,
-                end: end,
+                start: pickupStart,
+                end: pickupEnd,
                 originalReading: spanText,
                 replacement: replacement,
                 sessionSeed: sessionSeed)
@@ -1472,8 +1551,8 @@ func doPickup(_ request: PickupRequest = .init()) {
         // Script overrides for replacement text and candidate list. Both
         // are independently optional. `replacement` is what gets written
         // immediately; `snapshotCandidates` is what cycle steps through.
-        let scriptSpanStart = field.value.utf8ByteOffset(forUTF16Offset: start)
-        let scriptSpanEnd   = field.value.utf8ByteOffset(forUTF16Offset: end)
+        let scriptSpanStart = field.value.utf8ByteOffset(forUTF16Offset: pickupStart)
+        let scriptSpanEnd   = field.value.utf8ByteOffset(forUTF16Offset: pickupEnd)
         let scriptSpan = mdr_span_t(
             span_start_byte: size_t(scriptSpanStart),
             span_end_byte: size_t(scriptSpanEnd),
@@ -1494,8 +1573,8 @@ func doPickup(_ request: PickupRequest = .init()) {
             route: route,
             field: field,
             appId: appId,
-            start: start,
-            end: end,
+            start: pickupStart,
+            end: pickupEnd,
             originalReading: spanText,
             replacement: replacement,
             sessionSeed: sessionSeed)
