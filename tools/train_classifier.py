@@ -57,7 +57,8 @@ TECH_DICT_FILES: list[Path] = [
     DATA_DIR / "software-tools.txt",
     DATA_DIR / "computing-acronyms.txt",
 ]
-DEFAULT_OUTPUT = REPO_ROOT / "engine/models/classifier.mdl"
+MODEL_FILENAME = "classifier.mdl"
+DEFAULT_OUTPUT = REPO_ROOT / "engine/models" / MODEL_FILENAME
 DICT_OUTPUT = REPO_ROOT / "engine/models/english_dict.txt"
 CACHE_DIR = DATA_DIR / "cache"
 TRAINING_DATA_VERSION = 7
@@ -172,6 +173,43 @@ def romaji_coverage(text: str) -> list[bool]:
         else:
             i += 1
     return covered
+
+
+def _romaji_fully_covered(text: str) -> bool:
+    return bool(text) and all(romaji_coverage(text))
+
+
+def _has_strong_romaji_marker(text: str) -> bool:
+    markers = (
+        "sh", "ch", "ts", "ty", "sy", "zy", "jy", "dy", "fy", "vy",
+        "kw", "gw", "wh", "nn", "kk", "ss", "tt", "pp", "cc", "jj",
+        "mm", "rr", "yy", "ww", "xx", "ll",
+    )
+    return any(marker in text for marker in markers)
+
+
+def _forced_ascii_prefix_len(run: str) -> int:
+    """Return the length of a lowercase ASCII prefix that should be forced
+    to ASCII, leaving a romaji-parseable suffix to be scored as a fresh
+    segment.
+
+    We only split lowercase runs here. Uppercase / digit / symbol handling
+    already has a hard rule in the classifier, so this pass is for the
+    problematic lowercase-only cases such as `vrtyatto` or
+    `dockerdetukutta`.
+    """
+
+    if len(run) < 5 or _romaji_fully_covered(run):
+        return 0
+
+    for cut in range(1, min(4, len(run) - 4)):
+        prefix = run[:cut]
+        suffix = run[cut:]
+        if (_romaji_fully_covered(suffix)
+                and not _romaji_fully_covered(prefix)
+                and _has_strong_romaji_marker(suffix)):
+            return cut
+    return 0
 
 
 # ---------------------------------------------------------------------------
@@ -1261,7 +1299,7 @@ def save_dict(words: list[str], path: Path) -> None:
 def save_model(path: Path, bias: float, weights: np.ndarray) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Rolling backup: if classifier.mdl already exists, rename it with a
+    # Rolling backup: if the output model already exists, rename it with a
     # timestamp before overwriting so we never lose a previous model.
     if path.exists():
         import datetime
@@ -1348,20 +1386,47 @@ def segment_test(bias: float, weights: np.ndarray, text: str) -> str:
 
     validity = romaji_coverage(text)
     labels: list[int] = []
-    for pos in range(len(text)):
+    pos = 0
+    while pos < len(text):
         if not ("a" <= text[pos] <= "z"):
             if text[pos] == "-" and labels and labels[-1] == 1:
                 labels.append(1)
             else:
                 labels.append(0)
+            pos += 1
             continue
-        history = labels if labels else None
-        idxs = extract_feature_indices(text, pos, validity, history)
-        ia = np.array(idxs, dtype=np.int32)
-        ia = np.where(ia == -1, N_BUCKETS, ia)
-        score = bias + w[ia].sum()
-        pred = 1.0 / (1.0 + np.exp(-np.clip(score, -500, 500)))
-        labels.append(1 if pred >= THRESHOLD else 0)
+
+        run_end = pos + 1
+        while run_end < len(text) and ("a" <= text[run_end] <= "z"):
+            run_end += 1
+        run = text[pos:run_end]
+        split_at = _forced_ascii_prefix_len(run)
+
+        if split_at > 0:
+            labels.extend([0] * split_at)
+            suffix_labels: list[int] = []
+            suffix_text = text[pos + split_at : run_end]
+            for local_pos, _ in enumerate(suffix_text):
+                idxs = extract_feature_indices(
+                    suffix_text, local_pos, validity[pos + split_at : run_end], suffix_labels
+                )
+                ia = np.array(idxs, dtype=np.int32)
+                ia = np.where(ia == -1, N_BUCKETS, ia)
+                score = bias + w[ia].sum()
+                pred = 1.0 / (1.0 + np.exp(-np.clip(score, -500, 500)))
+                lbl = 1 if pred >= THRESHOLD else 0
+                labels.append(lbl)
+                suffix_labels.append(lbl)
+        else:
+            for p in range(pos, run_end):
+                history = labels if labels else None
+                idxs = extract_feature_indices(text, p, validity, history)
+                ia = np.array(idxs, dtype=np.int32)
+                ia = np.where(ia == -1, N_BUCKETS, ia)
+                score = bias + w[ia].sum()
+                pred = 1.0 / (1.0 + np.exp(-np.clip(score, -500, 500)))
+                labels.append(1 if pred >= THRESHOLD else 0)
+        pos = run_end
 
     # Smooth short runs
     i = 0
@@ -1582,6 +1647,7 @@ def main():
         # --- ASCII + particle + romaji (core boundary cases) ---
         "korehapythondesu",
         "dockerdetsukuru",
+        "dockerdetukutta",
         "reactnitsuite",
         "pythondesagyousuru",
         "linaborisu",
@@ -1591,6 +1657,7 @@ def main():
         "areha8Bytedesu",
         "APIkaitou",
         "HTTP2senkou",
+        "vrtyatto",
         # --- doubled consonants (っ) ---
         "APIwotukutte",
         "tukuttemita",

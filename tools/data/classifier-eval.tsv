@@ -3,6 +3,7 @@
 must	dockerdetukuru	A:docker|R:detukuru	docker + 出てくる
 must	dockerdetukutte	A:docker|R:detukutte	docker + 出てくって
 must	dockerdetsukuru	A:docker|R:detsukuru	docker + でする
+must	dockerdetukutta	A:docker|R:detukutta	docker + でつくった
 must	configwoijitte	A:config|R:woijitte	config + をいじって
 must	korehapythondesu	R:koreha|A:python|R:desu	これは python です
 must	pythondesagyousuru	A:python|R:desagyousuru	python で作業する
@@ -18,6 +19,8 @@ must	branchwokiru	A:branch|R:wokiru	branch を切る
 must	cachewokesu	A:cache|R:wokesu	cache を消す
 must	filegakienai	A:file|R:gakienai	file が消えない
 must	APIwoyobu	A:API|R:woyobu	API を呼ぶ
+must	le	R:le	Mozc shorthand
+target	ltu	R:ltu	Mozc small-tsu shorthand
 must	GitHubnitsuitehanasu	A:GitHub|R:nitsuitehanasu	GitHub について話す
 must	CIgatooranai	A:CI|R:gatooranai	CI が通らない
 must	DBnitsunagaranai	A:DB|R:nitsunagaranai	DB につながらない
@@ -39,11 +42,13 @@ target	PostgreSQLnitsunagu	A:PostgreSQL|R:nitsunagu	PostgreSQL につなぐ
 target	servergaugokanai	A:server|R:gaugokanai	server が動かない
 target	bugwonaoshita	A:bug|R:wonaoshita	bug を直した
 target	HTTP2senkou	A:HTTP2|R:senkou	HTTP2 先行
+must	vrtyatto	A:vr|R:tyatto	VR チャット
 target	R&Diraisho	A:R&D|R:iraisho	R&D 依頼書
 target	gitdecommitshita	A:git|R:de|A:commit|R:shita	git で commit した
 target	nodejsdeugokanai	A:nodejs|R:deugokanai	nodejs で動かない
 target	awsnoEC2dedeployshita	A:aws|R:no|A:EC2|R:de|A:deploy|R:shita	aws の EC2 で deploy した
 target	macOSnoupdategaatta	A:macOS|R:no|A:update|R:gaatta	macOS の update があった
+must	update	A:update	English word should stay ASCII
 target	PRwomergeshita	A:PR|R:womerge|R:shita	PR を merge した
 target	EC2dedeploysuru	A:EC2|R:de|A:deploy|R:suru	EC2 で deploy する
 target	OAuthdeninshousuru	A:OAuth|R:deninshousuru	OAuth で認証する

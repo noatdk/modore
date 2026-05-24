@@ -14,7 +14,8 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CASES = REPO_ROOT / "tools/data/classifier-eval.tsv"
-DEFAULT_MODEL = REPO_ROOT / "engine/models/classifier.mdl"
+MODEL_FILENAME = "classifier.mdl"
+DEFAULT_MODEL = REPO_ROOT / "engine/models" / MODEL_FILENAME
 DEFAULT_DICT = REPO_ROOT / "engine/models/english_dict.txt"
 
 

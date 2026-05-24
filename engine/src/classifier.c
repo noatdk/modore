@@ -173,6 +173,62 @@ static void romaji_coverage(const char* text, size_t len, uint8_t* covered) {
     }
 }
 
+static int is_lower_ascii(char c) {
+    return c >= 'a' && c <= 'z';
+}
+
+static int romaji_fully_covered(const char* text, size_t len) {
+    if (len == 0) return 0;
+    uint8_t* covered = (uint8_t*)malloc(len);
+    if (!covered) return 0;
+    romaji_coverage(text, len, covered);
+    int ok = 1;
+    for (size_t i = 0; i < len; i++) {
+        if (!covered[i]) {
+            ok = 0;
+            break;
+        }
+    }
+    free(covered);
+    return ok;
+}
+
+static int has_strong_romaji_marker(const char* text, size_t len) {
+    static const char* const markers[] = {
+        "sh", "ch", "ts", "ty", "sy", "zy", "jy", "dy", "fy", "vy",
+        "kw", "gw", "wh", "nn", "kk", "ss", "tt", "pp", "cc", "jj",
+        "mm", "rr", "yy", "ww", "xx", "ll", NULL,
+    };
+    for (const char* const* m = markers; *m; m++) {
+        size_t mlen = strlen(*m);
+        if (mlen > len) continue;
+        for (size_t i = 0; i + mlen <= len; i++) {
+            if (memcmp(text + i, *m, mlen) == 0)
+                return 1;
+        }
+    }
+    return 0;
+}
+
+/* Return the length of a lowercase ASCII prefix that should be forced to
+ * ASCII, leaving a romaji-parseable suffix to be scored as a fresh segment.
+ * Returns 0 if no split is needed. */
+static size_t forced_ascii_prefix_len(const char* run, size_t run_len) {
+    if (run_len < 5) return 0;
+    if (romaji_fully_covered(run, run_len)) return 0;
+
+    for (size_t cut = 1; cut <= 3 && cut + 5 <= run_len; cut++) {
+        size_t prefix_len = cut;
+        size_t suffix_len = run_len - cut;
+        if (romaji_fully_covered(run + cut, suffix_len) &&
+            !romaji_fully_covered(run, prefix_len) &&
+            has_strong_romaji_marker(run + cut, suffix_len)) {
+            return cut;
+        }
+    }
+    return 0;
+}
+
 /* Forward declarations for dictionary lookup (defined after model I/O). */
 static int dict_contains(const mdr_cls_t* cls,
                          const char* word, size_t wlen);
@@ -435,21 +491,50 @@ int mdr_cls_classify(const mdr_cls_t* cls,
     romaji_coverage(text, len, validity);
 
     /* Auto-regressive: classify left-to-right, feeding previous labels
-     * as history features for the next position. */
-    for (size_t i = 0; i < len; i++) {
+     * as history features for the next position. Lowercase ASCII runs with
+     * a forced ASCII prefix are split into two passes so the romaji suffix
+     * is scored as a fresh segment. */
+    for (size_t i = 0; i < len;) {
         char c = text[i];
-        /* Hard rule: non-lowercase is always ASCII, except '-' after
-         * romaji which represents chouon (ー) in Japanese input. */
-        if (c < 'a' || c > 'z') {
+
+        /* Non-lowercase is always ASCII, except '-' after romaji which
+         * represents chouon (ー) in Japanese input. */
+        if (!is_lower_ascii(c)) {
             if (c == '-' && i > 0 && out_labels[i - 1] == 1)
                 out_labels[i] = 1;
             else
                 out_labels[i] = 0;
+            i++;
             continue;
         }
-        double s = score_position(cls, text, len, i, validity,
-                                  out_labels, i);
-        out_labels[i] = (sigmoid(s) >= MDR_CLS_THRESHOLD) ? 1 : 0;
+
+        size_t run_start = i;
+        while (i < len && is_lower_ascii(text[i])) i++;
+        size_t run_len = i - run_start;
+        size_t split_len = forced_ascii_prefix_len(text + run_start, run_len);
+
+        if (split_len > 0) {
+            for (size_t k = run_start; k < run_start + split_len; k++)
+                out_labels[k] = 0;
+
+            size_t suffix_start = run_start + split_len;
+            const char* suffix_text = text + suffix_start;
+            size_t suffix_len = run_len - split_len;
+            for (size_t pos = 0; pos < suffix_len; pos++) {
+                double s = score_position(cls, suffix_text, suffix_len, pos,
+                                          validity + suffix_start,
+                                          out_labels + suffix_start, pos);
+                out_labels[suffix_start + pos] =
+                    (sigmoid(s) >= MDR_CLS_THRESHOLD) ? 1 : 0;
+            }
+            continue;
+        }
+
+        for (size_t pos = run_start; pos < run_start + run_len; pos++) {
+            double s = score_position(cls, text, len, pos, validity,
+                                      out_labels, pos);
+            out_labels[pos] = (sigmoid(s) >= MDR_CLS_THRESHOLD) ? 1 : 0;
+        }
     }
 
     free(validity);
