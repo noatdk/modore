@@ -1189,16 +1189,26 @@ func runConversionOnAcquiredText(
     let (acronymHead, mozcInput) = splitAcronymHead(romajiBody)
     let frozenPrefix = asciiPrefix + contextPrefix + leadingJunk + acronymHead
 
-    guard let result = callBackend(mozcInput, request: request, wantCandidates: true) else {
-        Log.pickup("scripted acquire: backend returned no result")
-        return
-    }
-    let baseReplacement = frozenPrefix + result.replacement + convertedSuffix
-    let baseCandidates: [MozcBridge.Candidate] = result.candidates.isEmpty
-        ? [candidateFromValue(baseReplacement)]
-        : mapCandidateValues(result.candidates) {
+    let baseReplacement: String
+    let baseCandidates: [MozcBridge.Candidate]
+    if gClassifierEnabled,
+       let segResult = classifierSegmentedConvert(mozcInput, request: request) {
+        baseReplacement = frozenPrefix + segResult.replacement + convertedSuffix
+        baseCandidates = mapCandidateValues(segResult.candidates) {
             frozenPrefix + $0.value + convertedSuffix
         }
+    } else {
+        guard let result = callBackend(mozcInput, request: request, wantCandidates: true) else {
+            Log.pickup("scripted acquire: backend returned no result")
+            return
+        }
+        baseReplacement = frozenPrefix + result.replacement + convertedSuffix
+        baseCandidates = result.candidates.isEmpty
+            ? [candidateFromValue(baseReplacement)]
+            : mapCandidateValues(result.candidates) {
+                frozenPrefix + $0.value + convertedSuffix
+            }
+    }
 
     let scriptSpan = mdr_span_t(span_start_byte: 0, span_end_byte: 0,
                                 romaji: nil, romaji_len: 0)
