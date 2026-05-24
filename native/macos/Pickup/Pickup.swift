@@ -1402,7 +1402,8 @@ func doPickup(_ request: PickupRequest = .init()) {
     var pickupStart = start
     var pickupEnd = end
     var dropAutocompleteTail = false
-    if isChromiumOmnibox(field: field, appId: appId),
+    if field.selStart != field.selEnd,
+       isChromiumOmnibox(field: field, appId: appId),
        let typed = chromiumOmniboxTypedInputSnapshot() {
         if typed.utf16.count > 0,
            !chromiumOmniboxSelectionMatchesTypedInput(
