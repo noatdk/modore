@@ -637,12 +637,6 @@ private func postClipboardReplacement(_ replacement: String, deleteBeforeInsert:
     postUnicode(replacement)
 }
 
-private let kChromiumOmniboxBundleIDs: Set<String> = [
-    "com.google.Chrome",
-    "com.google.Chrome.canary",
-    "org.chromium.Chromium",
-]
-
 private func axStringAttr(_ element: AXUIElement, _ attr: String) -> String? {
     var ref: CFTypeRef?
     let err = AXUIElementCopyAttributeValue(element, attr as CFString, &ref)
@@ -650,30 +644,7 @@ private func axStringAttr(_ element: AXUIElement, _ attr: String) -> String? {
     return ref as? String
 }
 
-private func isChromiumOmnibox(
-    field: FocusedField,
-    appId: String?
-) -> Bool {
-    guard let appId, kChromiumOmniboxBundleIDs.contains(appId) else { return false }
-    let role = axStringAttr(field.element, kAXRoleAttribute as String)
-    let desc = axStringAttr(field.element, kAXDescriptionAttribute as String)
-    return role == kAXTextFieldRole as String
-        && desc == "Address and search bar"
-}
-
-private func chromiumOmniboxAutocompletePrefixRange(
-    field: FocusedField,
-    appId: String?
-) -> (start: Int, end: Int)? {
-    guard isChromiumOmnibox(field: field, appId: appId) else { return nil }
-    guard field.autocomplete == "both" else { return nil }
-    guard field.selStart > 0,
-          field.selEnd == field.value.utf16.count,
-          field.selStart <= field.selEnd else { return nil }
-    return (0, field.selStart)
-}
-
-private func postUnicodeOverAXSelection(
+func postUnicodeOverAXSelection(
     in element: AXUIElement,
     start: Int,
     end: Int,
@@ -687,54 +658,6 @@ private func postUnicodeOverAXSelection(
         rangeValue)
     guard rc == .success else { return false }
     postUnicode(replacement)
-    return true
-}
-
-private func replaceChromiumOmniboxAutocompletePrefix(
-    field: FocusedField,
-    start: Int,
-    end: Int,
-    originalReading: String,
-    replacement: String,
-    sessionSeed: (candidates: [MozcBridge.Candidate], currentIndex: Int)
-) -> Bool {
-    Log.pickup("Chromium omnibox: trying typed-input sync first")
-    if postUnicodeOverAXSelection(
-        in: field.element,
-        start: start,
-        end: end,
-        replacement: replacement) {
-        let session = ConversionSession(
-            backing: .ax(element: field.element, spanStart: start),
-            originalReading: originalReading,
-            candidates: sessionSeed.candidates,
-            candidateIndex: sessionSeed.currentIndex,
-            timestamp: Date())
-        ConversionSessionStore.set(session)
-        if gCandidatePanelMode == .onConvert {
-            CandidatePanel.shared.show(session: session)
-        }
-        return true
-    }
-    Log.pickup("Chromium omnibox: typed-input sync failed; collapsing autocomplete and retyping prefix")
-    postKey(kVK_LeftArrow)
-    for _ in 0..<(end - start) {
-        postKey(kVK_Backspace)
-    }
-    postUnicode(replacement)
-    let frontmost = FrontmostApp.describe()
-    let session = ConversionSession(
-        backing: .clipboard(
-            frontmostBundleId: frontmost?.bundleID,
-            frontmostPid: frontmost?.pid ?? 0),
-        originalReading: originalReading,
-        candidates: sessionSeed.candidates,
-        candidateIndex: sessionSeed.currentIndex,
-        timestamp: Date())
-    ConversionSessionStore.set(session)
-    if gCandidatePanelMode == .onConvert {
-        CandidatePanel.shared.show(session: session)
-    }
     return true
 }
 
@@ -798,22 +721,73 @@ private func applyFieldReplacement(
     end: Int,
     originalReading: String,
     replacement: String,
-    sessionSeed: (candidates: [MozcBridge.Candidate], currentIndex: Int)
+    sessionSeed: (candidates: [MozcBridge.Candidate], currentIndex: Int),
+    dropAutocompleteTail: Bool = false
 ) -> Bool {
-    if route != .clipboard,
-       route != .keystroke,
-       let autocompletePrefix = chromiumOmniboxAutocompletePrefixRange(
-        field: field,
-        appId: appId
-    ), start == autocompletePrefix.start, end == autocompletePrefix.end {
-        return replaceChromiumOmniboxAutocompletePrefix(
-            field: field,
-            start: start,
-            end: end,
-            originalReading: originalReading,
-            replacement: replacement,
-            sessionSeed: sessionSeed)
+    if dropAutocompleteTail, isChromiumOmnibox(field: field, appId: appId) {
+        let fullEnd = field.value.utf16.count
+        switch route {
+        case .selectionSync, .ax:
+            if postUnicodeOverAXSelection(
+                in: field.element,
+                start: 0,
+                end: fullEnd,
+                replacement: replacement) {
+                let session = ConversionSession(
+                    backing: .ax(element: field.element, spanStart: 0),
+                    originalReading: originalReading,
+                    candidates: sessionSeed.candidates,
+                    candidateIndex: sessionSeed.currentIndex,
+                    timestamp: Date())
+                ConversionSessionStore.set(session)
+                if gCandidatePanelMode == .onConvert {
+                    CandidatePanel.shared.show(session: session)
+                }
+                return true
+            }
+            Log.pickup("Chromium omnibox: full-field replace failed; falling back to keystroke retype")
+            keystrokeReplaceSpan(
+                caret: (start: field.selStart, end: field.selEnd),
+                spanEnd: fullEnd,
+                spanLen: fullEnd,
+                replacement: replacement)
+            let frontmost = FrontmostApp.describe()
+            let session = ConversionSession(
+                backing: .clipboard(
+                    frontmostBundleId: frontmost?.bundleID,
+                    frontmostPid: frontmost?.pid ?? 0),
+                originalReading: originalReading,
+                candidates: sessionSeed.candidates,
+                candidateIndex: sessionSeed.currentIndex,
+                timestamp: Date())
+            ConversionSessionStore.set(session)
+            if gCandidatePanelMode == .onConvert {
+                CandidatePanel.shared.show(session: session)
+            }
+            return true
+        case .keystroke, .clipboard:
+            keystrokeReplaceSpan(
+                caret: (start: field.selStart, end: field.selEnd),
+                spanEnd: fullEnd,
+                spanLen: fullEnd,
+                replacement: replacement)
+            let frontmost = FrontmostApp.describe()
+            let session = ConversionSession(
+                backing: .clipboard(
+                    frontmostBundleId: frontmost?.bundleID,
+                    frontmostPid: frontmost?.pid ?? 0),
+                originalReading: originalReading,
+                candidates: sessionSeed.candidates,
+                candidateIndex: sessionSeed.currentIndex,
+                timestamp: Date())
+            ConversionSessionStore.set(session)
+            if gCandidatePanelMode == .onConvert {
+                CandidatePanel.shared.show(session: session)
+            }
+            return true
+        }
     }
+
     switch route {
     case .selectionSync:
         if postUnicodeOverAXSelection(
@@ -1425,12 +1399,21 @@ func doPickup(_ request: PickupRequest = .init()) {
         return
     }
 
-    let (pickupStart, pickupEnd) = chromiumOmniboxAutocompletePrefixRange(
-        field: field,
-        appId: appId
-    ) ?? (start, end)
-    if pickupStart != start || pickupEnd != end {
-        Log.pickup("Chromium omnibox inline autocomplete detected; using prefix [\(pickupStart)..\(pickupEnd)] instead of selected suffix [\(start)..\(end)]")
+    var pickupStart = start
+    var pickupEnd = end
+    var dropAutocompleteTail = false
+    if isChromiumOmnibox(field: field, appId: appId),
+       let typed = chromiumOmniboxTypedInputSnapshot() {
+        if typed.utf16.count > 0,
+           !chromiumOmniboxSelectionMatchesTypedInput(
+            field: field,
+            start: start,
+            end: end) {
+            pickupStart = 0
+            pickupEnd = start
+            dropAutocompleteTail = true
+            Log.pickup("Chromium omnibox typed-input log detected; using prefix [\(pickupStart)..\(pickupEnd)] instead of selected suffix [\(start)..\(end)]")
+        }
     }
 
     guard let spanText = sliceUTF16(field.value, start: pickupStart, end: pickupEnd) else {
@@ -1481,7 +1464,8 @@ func doPickup(_ request: PickupRequest = .init()) {
                 end: pickupEnd,
                 originalReading: spanText,
                 replacement: finalReplacement,
-                sessionSeed: sessionSeed)
+                sessionSeed: sessionSeed,
+                dropAutocompleteTail: dropAutocompleteTail)
             return
         }
 
@@ -1509,15 +1493,16 @@ func doPickup(_ request: PickupRequest = .init()) {
             let sessionSeed = normalizeCommittedCandidateState(
                 replacement: replacement,
                 candidates: snapshotCandidates)
-            _ = applyFieldReplacement(
-                route: route,
-                field: field,
-                appId: appId,
-                start: pickupStart,
-                end: pickupEnd,
-                originalReading: spanText,
-                replacement: replacement,
-                sessionSeed: sessionSeed)
+        _ = applyFieldReplacement(
+            route: route,
+            field: field,
+            appId: appId,
+            start: pickupStart,
+            end: pickupEnd,
+            originalReading: spanText,
+            replacement: replacement,
+            sessionSeed: sessionSeed,
+            dropAutocompleteTail: dropAutocompleteTail)
             return
         }
 
@@ -1577,6 +1562,7 @@ func doPickup(_ request: PickupRequest = .init()) {
             end: pickupEnd,
             originalReading: spanText,
             replacement: replacement,
-            sessionSeed: sessionSeed)
+            sessionSeed: sessionSeed,
+            dropAutocompleteTail: dropAutocompleteTail)
         return
 }

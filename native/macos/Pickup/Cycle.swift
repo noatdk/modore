@@ -171,6 +171,15 @@ private func cycleOnAX(
         if verbose { Log.cycle("fell through: focus changed since conversion\(FrontmostApp.logSuffix())") }
         return false
     }
+    let appId = FrontmostApp.describe()?.bundleID
+    if field.autocomplete == "both",
+       isChromiumOmnibox(field: field, appId: appId) {
+        return cycleChromiumOmnibox(
+            snap,
+            field: field,
+            to: next,
+            verbose: verbose)
+    }
     let currentText = snap.currentText
     let currentLen = currentText.utf16.count
     let spanEnd = spanStart + currentLen
@@ -186,6 +195,47 @@ private func cycleOnAX(
         if verbose { Log.cycle("AX replace failed\(FrontmostApp.logSuffix())") }
         return false
     }
+    return true
+}
+
+/// Chromium omnibox with inline autocomplete needs full-value commits on
+/// cycle as well, otherwise the preserved suggestion tail keeps the search
+/// model anchored to the old query until the user types another key.
+private func cycleChromiumOmnibox(
+    _ snap: ConversionSession,
+    field: FocusedField,
+    to next: String,
+    verbose: Bool
+) -> Bool {
+    let currentText = snap.currentText
+    let prefixLen = currentText.utf16.count
+    guard let fieldPrefix = sliceUTF16(field.value, start: 0, end: prefixLen),
+          fieldPrefix == currentText else {
+        if verbose {
+            Log.cycle("fell through: Chromium omnibox prefix changed (was '\(currentText)', is '\(sliceUTF16(field.value, start: 0, end: min(prefixLen, field.value.utf16.count)) ?? "?")')\(FrontmostApp.logSuffix())")
+        }
+        return false
+    }
+
+    let fullEnd = field.value.utf16.count
+    if postUnicodeOverAXSelection(
+        in: field.element,
+        start: 0,
+        end: fullEnd,
+        replacement: next) {
+        return true
+    }
+    if replaceRange(in: field.element, start: 0, end: fullEnd, replacement: next) {
+        return true
+    }
+    if verbose {
+        Log.cycle("Chromium omnibox: full-field cycle AX replace failed; falling back to keystroke retype\(FrontmostApp.logSuffix())")
+    }
+    keystrokeReplaceSpan(
+        caret: (start: field.selStart, end: field.selEnd),
+        spanEnd: fullEnd,
+        spanLen: fullEnd,
+        replacement: next)
     return true
 }
 
