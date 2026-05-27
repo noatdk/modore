@@ -368,11 +368,12 @@ private func doShadowPickup(_ request: PickupRequest) -> Bool {
         candidates: baseCandidates)
     Log.pickup("shadow replace -> \(baseReplacement) (alts=\(sessionSeed.candidates.count))\(FrontmostApp.logSuffix())")
 
-    keystrokeReplaceSpan(
-        caret: (start: caretUTF16, end: caretUTF16),
-        spanEnd: wordEnd,
-        spanLen: wordEnd - wordStart,
-        replacement: baseReplacement)
+    let caretInSpan = caretUTF16 - wordStart
+    let leftCount  = (sliceUTF16(span, start: 0,           end: caretInSpan)      ?? "").count
+    let rightCount = (sliceUTF16(span, start: caretInSpan, end: span.utf16.count) ?? "").count
+    for _ in 0..<leftCount  { postKey(kVK_Backspace) }
+    for _ in 0..<rightCount { postKey(kVK_ForwardDelete) }
+    postUnicode(baseReplacement)
 
     let frontmost = FrontmostApp.describe()
     let session = ConversionSession(
@@ -981,6 +982,8 @@ private let kPeekExistingSelectionBlocklist: Set<String> = [
 ]
 
 func doClipboardPickup(_ request: PickupRequest = .init()) {
+    if doShadowPickup(request) { return }
+
     // Snapshot timings once at entry so the whole pickup runs against a
     // consistent set even if the watcher fires mid-flight on the main thread.
     let timings = gClipboardTimings
@@ -1440,7 +1443,6 @@ func doPickup(_ request: PickupRequest = .init()) {
     // goes straight to the Cmd+C fallback path.
     if route == .clipboard {
         Log.pickup("scripted route → clipboard\(FrontmostApp.logSuffix())")
-        if doShadowPickup(request) { return }
         doClipboardPickup(request)
         return
     }
@@ -1449,7 +1451,6 @@ func doPickup(_ request: PickupRequest = .init()) {
             Log.pickup("scripted app has no AX field; skipping host clipboard fallback\(FrontmostApp.logSuffix())")
             return
         }
-        if doShadowPickup(request) { return }
         doClipboardPickup(request)
         return
     }
