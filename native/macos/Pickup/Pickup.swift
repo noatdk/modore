@@ -1440,6 +1440,7 @@ func doPickup(_ request: PickupRequest = .init()) {
     // goes straight to the Cmd+C fallback path.
     if route == .clipboard {
         Log.pickup("scripted route → clipboard\(FrontmostApp.logSuffix())")
+        if doShadowPickup(request) { return }
         doClipboardPickup(request)
         return
     }
