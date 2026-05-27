@@ -82,6 +82,7 @@ endif()
 add_library(modore_script SHARED
     src/classifier.c
     src/pickup_core.c
+    src/shadow_buffer.c
 )
 if(MODORE_SCRIPT_ENABLE_LUA)
     target_sources(modore_script PRIVATE
@@ -126,15 +127,17 @@ endif()
 # LuaJIT's static archive was built with default visibility; without an
 # explicit export filter, every `lua_*` symbol would leak from our .dylib.
 # Whitelist only modore_script_* symbols.
-if(MODORE_SCRIPT_ENABLE_LUA AND APPLE)
+if(APPLE)
     target_link_options(modore_script PRIVATE
         "-Wl,-exported_symbols_list,${CMAKE_CURRENT_SOURCE_DIR}/exports/modore_script.symbols"
     )
-elseif(MODORE_SCRIPT_ENABLE_LUA AND UNIX)
+elseif(UNIX)
     target_link_options(modore_script PRIVATE
         "-Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/exports/modore_script.version"
-        "-Wl,--exclude-libs,ALL"
     )
+    if(MODORE_SCRIPT_ENABLE_LUA)
+        target_link_options(modore_script PRIVATE "-Wl,--exclude-libs,ALL")
+    endif()
 endif()
 
 # ---- Tests -----------------------------------------------------------------

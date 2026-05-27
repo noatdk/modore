@@ -20,3 +20,15 @@ _mdr_text_split_trailing_ascii
 _mdr_text_split_trailing_ascii_punctuation
 _mdr_text_split_acronym_head
 _mdr_text_normalize_pickup_suffix
+_mdr_shadow_create
+_mdr_shadow_destroy
+_mdr_shadow_insert
+_mdr_shadow_backspace
+_mdr_shadow_forward_delete
+_mdr_shadow_move
+_mdr_shadow_word_jump
+_mdr_shadow_line_jump
+_mdr_shadow_reset
+_mdr_shadow_is_valid
+_mdr_shadow_text
+_mdr_shadow_cursor_byte
