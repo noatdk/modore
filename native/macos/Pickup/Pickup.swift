@@ -319,6 +319,77 @@ private func normalizeCommittedCandidateState(
     return (normalized, 0)
 }
 
+// MARK: - Shadow-buffer pickup (zero-latency fallback before clipboard)
+
+private func doShadowPickup(_ request: PickupRequest) -> Bool {
+    guard let snap = gShadowBuffer.takeSnapshot() else { return false }
+    let (shadowText, cursorByte) = snap
+
+    let caretUTF16 = shadowText.utf16Offset(forUTF8Byte: cursorByte)
+    guard caretUTF16 >= 0 else {
+        Log.pickup("shadow: caret-offset failed (cursor \(cursorByte) mid-sequence)")
+        return false
+    }
+    let (wordStart, wordEnd) = wordBounds(shadowText, caret: caretUTF16)
+    guard wordStart < wordEnd,
+          let span = sliceUTF16(shadowText, start: wordStart, end: wordEnd) else {
+        Log.pickup("shadow: empty span; nothing to convert")
+        return false
+    }
+
+    Log.pickup("shadow pick [\(wordStart)..\(wordEnd)] \(span)")
+
+    let (asciiPrefix, romajiTail, preservedSuffix) = splitConvertibleASCIIWindow(span)
+    let (romajiCore, romajiSuffix) = splitTrailingASCIIPunctuation(romajiTail)
+    let convertedSuffix = convertTrailingASCIISuffix(romajiSuffix, request: request) + preservedSuffix
+    guard !romajiCore.isEmpty else {
+        Log.pickup("shadow: nothing to convert (no romaji in \(span))")
+        return false
+    }
+    let (leadingJunk, romajiBody) = splitLeadingASCIIJunkBeforeLowercase(romajiCore)
+    let (acronymHead, mozcInput) = splitAcronymHead(romajiBody)
+    guard mozcInput.first?.isLowercase == true else {
+        Log.pickup("shadow: skipping: no romaji after acronym split (\(mozcInput))")
+        return false
+    }
+
+    let frozenPrefix = asciiPrefix + leadingJunk + acronymHead
+    guard let result = callBackend(mozcInput, request: request, wantCandidates: true) else {
+        Log.pickup("shadow: backend returned no result")
+        return false
+    }
+
+    let baseReplacement = frozenPrefix + result.replacement + convertedSuffix
+    let baseCandidates: [MozcBridge.Candidate] = result.candidates.isEmpty
+        ? [candidateFromValue(baseReplacement)]
+        : mapCandidateValues(result.candidates) { frozenPrefix + $0.value + convertedSuffix }
+    let sessionSeed = normalizeCommittedCandidateState(
+        replacement: baseReplacement,
+        candidates: baseCandidates)
+    Log.pickup("shadow replace -> \(baseReplacement) (alts=\(sessionSeed.candidates.count))\(FrontmostApp.logSuffix())")
+
+    keystrokeReplaceSpan(
+        caret: (start: caretUTF16, end: caretUTF16),
+        spanEnd: wordEnd,
+        spanLen: wordEnd - wordStart,
+        replacement: baseReplacement)
+
+    let frontmost = FrontmostApp.describe()
+    let session = ConversionSession(
+        backing: .clipboard(
+            frontmostBundleId: frontmost?.bundleID,
+            frontmostPid: frontmost?.pid ?? 0),
+        originalReading: span,
+        candidates: sessionSeed.candidates,
+        candidateIndex: sessionSeed.currentIndex,
+        timestamp: Date())
+    ConversionSessionStore.set(session)
+    if gCandidatePanelMode == .onConvert {
+        CandidatePanel.shared.show(session: session)
+    }
+    return true
+}
+
 // MARK: - Clipboard-based fallback (works in any app that supports Cmd+C / Cmd+V)
 
 /// Heuristic: a Cmd+C result that contains a newline or is huge is almost
@@ -1377,6 +1448,7 @@ func doPickup(_ request: PickupRequest = .init()) {
             Log.pickup("scripted app has no AX field; skipping host clipboard fallback\(FrontmostApp.logSuffix())")
             return
         }
+        if doShadowPickup(request) { return }
         doClipboardPickup(request)
         return
     }
