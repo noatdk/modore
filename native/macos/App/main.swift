@@ -302,6 +302,9 @@ Log.config(gCandidatePanelDurationMs == 0
     ? "candidate panel duration: no auto-hide (sticks for session)"
     : "candidate panel duration: \(gCandidatePanelDurationMs)ms")
 
+gDebugOverlayEnabled = ModoreConfig.loadDebugOverlay()
+if gDebugOverlayEnabled { Log.config("debug overlay: on") }
+
 Log.config("mozc backend: \(MOZC_BACKEND.displayName)")
 
 gBridgeRuntime = ModoreConfig.loadBridgeRuntime()

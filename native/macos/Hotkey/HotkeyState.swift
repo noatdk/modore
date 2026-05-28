@@ -407,6 +407,20 @@ func applyCandidatePanelDurationReload() {
     }
 }
 
+/// Current `[debug] overlay` setting. When true the DebugOverlay panel is
+/// updated on every keyDown via the EventTap callback. Default false.
+var gDebugOverlayEnabled: Bool = false
+
+func applyDebugOverlayReload() {
+    let next = ModoreConfig.loadDebugOverlay()
+    if next == gDebugOverlayEnabled { return }
+    gDebugOverlayEnabled = next
+    Log.config("debug overlay: \(next ? "on" : "off")")
+    if !next {
+        DebugOverlay.shared.hide()
+    }
+}
+
 /// Single entry point for the config watcher — reloads every section.
 func applyConfigReload() {
     applyLoggingReload()
@@ -422,6 +436,7 @@ func applyConfigReload() {
     applyCandidatePanelReload()
     applyCandidatePanelDurationReload()
     applyClassifierReload()
+    applyDebugOverlayReload()
 }
 
 /// Reload `[logging] disabled` before any other section so subsequent reload

@@ -93,6 +93,39 @@ final class ShadowBufferHost {
         }
     }
 
+    // Build a snapshot of the current shadow buffer state as labeled rows for
+    // the debug overlay. Does NOT reset the buffer. Safe from any queue.
+    func debugRows() -> [DebugRow] {
+        lock.lock()
+        defer { lock.unlock() }
+        let valid = mdr_shadow_is_valid(ptr) != 0
+        var len = 0
+        let text: String
+        let cursor: Int
+        if valid, let raw = mdr_shadow_text(ptr, &len) {
+            text = String(cString: raw)
+            cursor = Int(mdr_shadow_cursor_byte(ptr))
+        } else {
+            text = ""
+            cursor = 0
+        }
+        let visual = Self.cursorVisual(text: text, cursorByte: cursor)
+        return [
+            DebugRow(label: "valid",  value: valid ? "yes" : "no"),
+            DebugRow(label: "text",   value: text.isEmpty ? "(empty)" : text),
+            DebugRow(label: "cursor", value: "\(cursor)B"),
+            DebugRow(label: "view",   value: visual.isEmpty ? "(empty)" : visual),
+        ]
+    }
+
+    private static func cursorVisual(text: String, cursorByte: Int) -> String {
+        let bytes = Array(text.utf8)
+        guard cursorByte <= bytes.count else { return text + "‸" }
+        let before = String(bytes: Array(bytes[..<cursorByte]), encoding: .utf8) ?? ""
+        let after  = String(bytes: Array(bytes[cursorByte...]), encoding: .utf8) ?? ""
+        return before + "‸" + after
+    }
+
     // Atomically returns (text, cursorByteOffset) and resets the buffer.
     // Returns nil when the buffer has no accumulated content.
     func takeSnapshot() -> (text: String, cursorByte: Int)? {

@@ -906,4 +906,17 @@ enum ModoreConfig {
 
         return nil
     }
+
+    // MARK: - Debug overlay
+
+    /// Parse `[debug] overlay`. Default `false` — the overlay is dev-only
+    /// and must be explicitly enabled. Accepts on/yes/true/1.
+    static func loadDebugOverlay() -> Bool {
+        var enabled = false
+        _ = forEachKeyValue(configFileURL()) { section, key, value in
+            guard section == "debug" && key == "overlay" else { return }
+            enabled = ["on", "yes", "true", "1"].contains(value.lowercased())
+        }
+        return enabled
+    }
 }

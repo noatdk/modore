@@ -429,6 +429,14 @@ final class ModoreStatusItem: NSObject {
         alert.runModal()
     }
 
+    /// Screen-coordinate frame of the status-item button (AppKit, bottom-left
+    /// origin). Used to anchor the debug overlay just below the menu-bar icon.
+    /// Returns nil if the button's backing window isn't on screen yet.
+    var buttonScreenFrame: NSRect? {
+        guard let button = item.button, let window = button.window else { return nil }
+        return window.convertToScreen(button.frame)
+    }
+
     @objc private func handleRevealConfig() {
         let url = ModoreConfig.configFileURL()
         if FileManager.default.fileExists(atPath: url.path) {

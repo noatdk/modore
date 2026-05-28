@@ -96,6 +96,9 @@ let tapCallback: CGEventTapCallBack = { _, type, event, _ in
 
     updateChromiumOmniboxTypedInputLog(for: event)
     gShadowBuffer.feed(event)
+    if gDebugOverlayEnabled, let frame = gStatusItem?.buttonScreenFrame {
+        DebugOverlay.shared.update(rows: gShadowBuffer.debugRows(), anchoredBelow: frame)
+    }
 
     // Any other keyDown that reaches this point — letters being typed,
     // backspace, arrow keys, Cmd+anything, an Esc when no session is in
