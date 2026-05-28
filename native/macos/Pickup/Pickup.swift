@@ -945,8 +945,13 @@ private func applyFieldReplacement(
         }
         Log.pickup("AX write rejected; trying shadow pickup for [\(start)..\(end)] \(originalReading)\(FrontmostApp.logSuffix())")
         if gShadowBufferEnabled, doShadowPickup(request) { return true }
+        // replaceRange rolls back the AX selection to its pre-write state.
+        // Pass the actual AX cursor (field.sel*) so keystrokeReplaceSpan knows
+        // whether to collapse a selection (RightArrow → correct end) or skip
+        // navigation entirely (cursor already at end — avoids RightArrow overshooting
+        // to end+1 in Chrome contenteditable at block-element boundaries).
         keystrokeReplaceSpan(
-            caret: (start: start, end: end),
+            caret: (start: field.selStart, end: field.selEnd),
             spanEnd: end,
             spanLen: end - start,
             replacement: replacement)
