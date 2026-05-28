@@ -177,6 +177,7 @@ private func cycleOnAX(
         return cycleChromiumOmnibox(
             snap,
             field: field,
+            spanStart: spanStart,
             to: next,
             verbose: verbose)
     }
@@ -201,31 +202,39 @@ private func cycleOnAX(
 /// Chromium omnibox with inline autocomplete needs full-value commits on
 /// cycle as well, otherwise the preserved suggestion tail keeps the search
 /// model anchored to the old query until the user types another key.
+///
+/// spanStart is the word-start offset recorded at conversion time. The
+/// converted word may not be at position 0 when the user has built a
+/// multi-word omnibox query across successive conversions.
 private func cycleChromiumOmnibox(
     _ snap: ConversionSession,
     field: FocusedField,
+    spanStart: Int,
     to next: String,
     verbose: Bool
 ) -> Bool {
     let currentText = snap.currentText
-    let prefixLen = currentText.utf16.count
-    guard let fieldPrefix = sliceUTF16(field.value, start: 0, end: prefixLen),
-          fieldPrefix == currentText else {
+    let spanEnd = spanStart + currentText.utf16.count
+    guard let textAtSpan = sliceUTF16(field.value, start: spanStart, end: spanEnd),
+          textAtSpan == currentText else {
         if verbose {
-            Log.cycle("fell through: Chromium omnibox prefix changed (was '\(currentText)', is '\(sliceUTF16(field.value, start: 0, end: min(prefixLen, field.value.utf16.count)) ?? "?")')\(FrontmostApp.logSuffix())")
+            let actual = sliceUTF16(field.value, start: spanStart, end: min(spanEnd, field.value.utf16.count)) ?? "?"
+            Log.cycle("fell through: Chromium omnibox span changed (was '\(currentText)', is '\(actual)')\(FrontmostApp.logSuffix())")
         }
         return false
     }
 
+    let fieldPrefix = sliceUTF16(field.value, start: 0, end: spanStart) ?? ""
+    let replacement = fieldPrefix + next
     let fullEnd = field.value.utf16.count
     if postUnicodeOverAXSelection(
         in: field.element,
         start: 0,
         end: fullEnd,
-        replacement: next) {
+        replacement: replacement) {
         return true
     }
-    if replaceRange(in: field.element, start: 0, end: fullEnd, replacement: next) {
+    if replaceRange(in: field.element, start: 0, end: fullEnd, replacement: replacement) {
         return true
     }
     if verbose {
@@ -235,7 +244,7 @@ private func cycleChromiumOmnibox(
         caret: (start: field.selStart, end: field.selEnd),
         spanEnd: fullEnd,
         spanLen: fullEnd,
-        replacement: next)
+        replacement: replacement)
     return true
 }
 
