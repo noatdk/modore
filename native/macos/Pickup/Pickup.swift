@@ -794,7 +794,8 @@ private func applyFieldReplacement(
     originalReading: String,
     replacement: String,
     sessionSeed: (candidates: [MozcBridge.Candidate], currentIndex: Int),
-    dropAutocompleteTail: Bool = false
+    dropAutocompleteTail: Bool = false,
+    request: PickupRequest = .init()
 ) -> Bool {
     if dropAutocompleteTail, isChromiumOmnibox(field: field, appId: appId) {
         let fullEnd = field.value.utf16.count
@@ -942,7 +943,8 @@ private func applyFieldReplacement(
             }
             return true
         }
-        Log.pickup("AX write rejected; using backspace-retype for [\(start)..\(end)] \(originalReading)\(FrontmostApp.logSuffix())")
+        Log.pickup("AX write rejected; trying shadow pickup for [\(start)..\(end)] \(originalReading)\(FrontmostApp.logSuffix())")
+        if gShadowBufferEnabled, doShadowPickup(request) { return true }
         keystrokeReplaceSpan(
             caret: (start: start, end: end),
             spanEnd: end,
@@ -982,7 +984,7 @@ private let kPeekExistingSelectionBlocklist: Set<String> = [
 ]
 
 func doClipboardPickup(_ request: PickupRequest = .init()) {
-    if doShadowPickup(request) { return }
+    if gShadowBufferEnabled, doShadowPickup(request) { return }
 
     // Snapshot timings once at entry so the whole pickup runs against a
     // consistent set even if the watcher fires mid-flight on the main thread.
@@ -1540,7 +1542,8 @@ func doPickup(_ request: PickupRequest = .init()) {
                 originalReading: spanText,
                 replacement: finalReplacement,
                 sessionSeed: sessionSeed,
-                dropAutocompleteTail: dropAutocompleteTail)
+                dropAutocompleteTail: dropAutocompleteTail,
+                request: request)
             return
         }
 
@@ -1577,7 +1580,8 @@ func doPickup(_ request: PickupRequest = .init()) {
             originalReading: spanText,
             replacement: replacement,
             sessionSeed: sessionSeed,
-            dropAutocompleteTail: dropAutocompleteTail)
+            dropAutocompleteTail: dropAutocompleteTail,
+            request: request)
             return
         }
 
@@ -1638,6 +1642,7 @@ func doPickup(_ request: PickupRequest = .init()) {
             originalReading: spanText,
             replacement: replacement,
             sessionSeed: sessionSeed,
-            dropAutocompleteTail: dropAutocompleteTail)
+            dropAutocompleteTail: dropAutocompleteTail,
+            request: request)
         return
 }

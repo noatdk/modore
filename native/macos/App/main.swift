@@ -408,6 +408,10 @@ do {
     Log.shell("convert server disabled: \(String(describing: error))")
 }
 
+// Shadow buffer pickup. Opt-in via `[conversion] shadow_buffer = on` in modore.conf.
+gShadowBufferEnabled = ModoreConfig.loadShadowBufferEnabled()
+Log.boot("shadow buffer: \(gShadowBufferEnabled ? "on" : "off (set [conversion] shadow_buffer = on to enable)")")
+
 // ML classifier for romaji/ASCII segmentation. Opt-in via
 // `[conversion] classifier = on` in modore.conf.
 gClassifierEnabled = ModoreConfig.loadClassifierEnabled()

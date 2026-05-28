@@ -100,6 +100,10 @@ var gCandidatePanelMode: ModoreConfig.CandidatePanelMode = .none
 /// race-free.
 var gCandidatePanelDurationMs: Int = ModoreConfig.defaultCandidatePanelDurationMs
 
+/// When true the shadow buffer tracks keystrokes for zero-latency text
+/// pickup. Opt-in via `[conversion] shadow_buffer = on`. Default false.
+var gShadowBufferEnabled: Bool = false
+
 /// When true, the ML n-gram classifier is used for romaji/ASCII segmentation
 /// instead of the heuristic `splitAcronymHead`. Opt-in via
 /// `[conversion] classifier = on` in the config file.
@@ -435,6 +439,7 @@ func applyConfigReload() {
     applyClipboardTimingsReload()
     applyCandidatePanelReload()
     applyCandidatePanelDurationReload()
+    applyShadowBufferReload()
     applyClassifierReload()
     applyDebugOverlayReload()
 }
@@ -474,6 +479,13 @@ func applyBridgeRuntimeReloadNotice() {
     applyBridgeRuntimeEnv(next)
     Log.config("bridge candidate_mixing_mode=\(next.candidateMixingMode) (applies on next bridge init)")
     Log.config("bridge trace_raw_candidates=\(next.traceRawCandidates ? "on" : "off") (applies on next bridge init)")
+}
+
+private func applyShadowBufferReload() {
+    let next = ModoreConfig.loadShadowBufferEnabled()
+    if next == gShadowBufferEnabled { return }
+    gShadowBufferEnabled = next
+    Log.config("shadow buffer: \(next ? "on" : "off")")
 }
 
 private func applyClassifierReload() {

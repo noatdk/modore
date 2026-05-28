@@ -309,6 +309,33 @@ enum ModoreConfig {
         var restoreClipboardDelayMs: Int = 50
     }
 
+
+    /// Parse `[conversion] shadow_buffer`. Wrapper that logs issues.
+    /// Default `false` — the shadow buffer is opt-in; omitting the key
+    /// keeps the existing clipboard/AX-only pickup chain.
+    static func loadShadowBufferEnabled() -> Bool {
+        let (v, issues) = parseShadowBufferEnabled()
+        for issue in issues { Log.config(issue) }
+        return v
+    }
+
+    static func parseShadowBufferEnabled() -> (Bool, [String]) {
+        var enabled = false
+        var issues: [String] = []
+        let url = configFileURL()
+        _ = forEachKeyValue(url) { section, key, value in
+            guard section == "conversion" && key == "shadow_buffer" else { return }
+            switch value.lowercased() {
+            case "on", "true", "1", "yes":
+                enabled = true
+            case "off", "false", "0", "no", "":
+                enabled = false
+            default:
+                issues.append("ignoring [conversion] shadow_buffer=\(value) (expected on|off)")
+            }
+        }
+        return (enabled, issues)
+    }
     /// Parse `[conversion] classifier`. Wrapper that logs issues.
     /// Default `false` — the ML classifier is opt-in; omitting the key
     /// keeps the existing heuristic pipeline (splitAcronymHead).

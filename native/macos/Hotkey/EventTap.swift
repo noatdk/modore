@@ -95,7 +95,7 @@ let tapCallback: CGEventTapCallBack = { _, type, event, _ in
     }
 
     updateChromiumOmniboxTypedInputLog(for: event)
-    gShadowBuffer.feed(event)
+    if gShadowBufferEnabled { gShadowBuffer.feed(event) }
     if gDebugOverlayEnabled, let frame = gStatusItem?.buttonScreenFrame {
         DebugOverlay.shared.update(rows: gShadowBuffer.debugRows(), anchoredBelow: frame)
     }
