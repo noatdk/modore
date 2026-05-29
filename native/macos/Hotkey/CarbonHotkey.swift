@@ -50,14 +50,19 @@ final class CarbonHotkey {
     }
 
     deinit {
-        for slot in slots.values {
-            UnregisterEventHotKey(slot.ref)
-        }
-        slots.removeAll()
+        // Remove the event handler first. Its callback dereferences `self`
+        // through an unretained opaque pointer (see installHandler), so the
+        // callback source must be gone before we tear down the rest of the
+        // instance — otherwise an in-flight/queued kEventHotKeyPressed could
+        // dispatch into a half-destroyed object. Then release the hotkeys.
         if let h = handlerRef {
             RemoveEventHandler(h)
             handlerRef = nil
         }
+        for slot in slots.values {
+            UnregisterEventHotKey(slot.ref)
+        }
+        slots.removeAll()
     }
 
     /// Register (or re-register) a chord under a given role name.
