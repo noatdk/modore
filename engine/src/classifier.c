@@ -801,10 +801,42 @@ static void refine_boundaries(const mdr_cls_t* cls,
 
 /* ----- Segmentation ---------------------------------------------------- */
 
-/* Dictionary post-processing: force ASCII for segments that look like
- * English words — longer than 4 chars and containing non-romaji
- * substrings. Mirrors the paper's "Non-Japanese Dictionary" heuristic. */
-static void dict_force_ascii(const char* text, size_t len,
+/* Length of the longest dictionary-word prefix of `run` that is safe to
+ * force to ASCII. Requires ≥5 chars: a 4-char (2-kana) lowercase string is
+ * usually a common Japanese word — これ/それ/まで (kore/sore/made) all sit in
+ * the English word list as homographs and must not be peeled — whereas a 5+
+ * char run matching a dictionary word is almost always genuinely English.
+ * Also rejects a prefix that is exactly a particle. Returns 0 if none. */
+static size_t dict_word_prefix_len(const mdr_cls_t* cls,
+                                   const char* run, size_t run_len) {
+    if (!cls->dict_words || cls->dict_count == 0) return 0;
+
+    char lower[64];
+    size_t n = run_len < sizeof(lower) ? run_len : sizeof(lower);
+    for (size_t k = 0; k < n; k++)
+        lower[k] = (run[k] >= 'A' && run[k] <= 'Z')
+                   ? (char)(run[k] + 32) : run[k];
+
+    size_t best = 0;
+    for (size_t plen = 5; plen <= n; plen++) {
+        if (dict_contains(cls, lower, plen) &&
+            particle_prefix_len(lower, plen) != plen)
+            best = plen;
+    }
+    return best;
+}
+
+/* Dictionary post-processing: force ASCII for romaji segments that are
+ * really English. Two cases:
+ *   1. The run contains an impossible-romaji substring (the paper's
+ *      "Non-Japanese Dictionary" heuristic) — force the whole run.
+ *   2. The run is fully valid romaji yet *begins* with a dictionary word
+ *      (e.g. "database"=だたばせ, "token"=とけん). The classifier defaults
+ *      such runs to romaji because every position parses; peel the leading
+ *      English word off and leave the remainder (a particle/verb tail) as
+ *      romaji. Only when a romaji remainder follows, to avoid converting a
+ *      standalone romaji word that merely happens to be in the dictionary. */
+static void dict_force_ascii(const mdr_cls_t* cls, const char* text, size_t len,
                              uint8_t* labels) {
     uint8_t* validity = (uint8_t*)malloc(len);
     if (!validity) return;
@@ -820,6 +852,12 @@ static void dict_force_ascii(const char* text, size_t len,
                                           validity + seg_start)) {
                 for (size_t j = seg_start; j < i; j++)
                     labels[j] = 0;
+            } else {
+                size_t pfx = dict_word_prefix_len(cls, text + seg_start, seg_len);
+                if (pfx > 0 && pfx < seg_len) {
+                    for (size_t j = seg_start; j < seg_start + pfx; j++)
+                        labels[j] = 0;
+                }
             }
         }
         seg_start = i;
@@ -847,7 +885,7 @@ int mdr_cls_segment(const mdr_cls_t* cls,
 
     /* 3) Dictionary post-processing: force ASCII on romaji segments
      * that contain non-romaji substrings (English words). */
-    dict_force_ascii(text, len, labels);
+    dict_force_ascii(cls, text, len, labels);
 
     /* Re-smooth after dictionary overrides */
     smooth_labels(labels, len, 2);
