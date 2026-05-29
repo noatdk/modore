@@ -1,0 +1,29 @@
+# tier	text	expected	note
+# Held-out generalization set for the romaji/ASCII classifier.
+#
+# IMPORTANT: train_classifier.py must NEVER load this file. It loads only
+# classifier-eval.tsv (by name) as training anchors, so every string here is
+# unseen by the model. These cases reuse the *patterns* of classifier-eval.tsv
+# with fresh vocabulary, so eval_classifier.py --heldout measures whether the
+# model generalizes rather than whether it memorized the anchors.
+#
+# Reported informationally (does not gate the build). expected format:
+# A:literal|R:literal, A = keep ASCII, R = convert romaji.
+must	kafkawotukau	A:kafka|R:wotukau	kafka を使う
+must	rediswokesu	A:redis|R:wokesu	redis を消す
+must	nginxgaochita	A:nginx|R:gaochita	nginx が落ちた
+must	lambdawoyobu	A:lambda|R:woyobu	lambda を呼ぶ
+must	databasenitsunagu	A:database|R:nitsunagu	database につなぐ
+must	terminalwohiraku	A:terminal|R:wohiraku	terminal を開く
+must	tokengakireta	A:token|R:gakireta	token が切れた
+must	vimdehenshuu	A:vim|R:dehenshuu	vim で編集
+must	kafkanitsuite	A:kafka|R:nitsuite	kafka について
+must	gitwopush	A:git|R:wo|A:push	git を push
+must	logwokaku	A:log|R:wokaku	log を書く
+must	queuenitsumu	A:queue|R:nitsumu	queue に積む
+target	routerwosaikidou	A:router|R:wosaikidou	router を再起動
+target	korehaserverdesu	R:koreha|A:server|R:desu	これは server です
+target	konobranchwomiru	R:kono|A:branch|R:womiru	この branch を見る
+target	eslintgaokoru	A:eslint|R:gaokoru	eslint が怒る
+target	S3karadownloadsuru	A:S3|R:kara|A:download|R:suru	S3 から download する
+target	webpackwobuildshite	A:webpack|R:wo|A:build|R:shite	webpack を build して

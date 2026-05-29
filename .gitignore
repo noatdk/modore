@@ -28,6 +28,7 @@ tools/data/
 !tools/data/
 tools/data/*
 !tools/data/classifier-eval.tsv
+!tools/data/classifier-eval-heldout.tsv
 engine/models/*.mdl
 engine/models/english_dict.txt
 
