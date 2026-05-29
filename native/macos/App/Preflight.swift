@@ -8,8 +8,9 @@ import Foundation
 /// Run preflight config validation, print a human-readable report to stdout,
 /// and exit. Exit code: 0 on a healthy load (including "no config, defaults
 /// will be used"), 1 if the file contains a `[conversion] hotkey` that
-/// doesn't parse, 2 if any `[clipboard]`, `katakana_modifier`, or
-/// `katakana_modifier_behavior` / `[logging] disabled` value is rejected.
+/// doesn't parse, 2 if any `[clipboard]`, `katakana_modifier`,
+/// `katakana_modifier_behavior`, `[logging] disabled`, or `[shell]` value
+/// is rejected.
 func runConfigCheck() -> Never {
     let url = ModoreConfig.configFileURL()
     print("config path: \(url.path)")
@@ -178,6 +179,24 @@ func runConfigCheck() -> Never {
         print("                \(issue)")
     }
     if !issues.isEmpty && exit_code == 0 {
+        exit_code = 2
+    }
+
+    let (shellWindow, shellWindowIssues) = ModoreConfig.parseShellCandidateWindow()
+    print("  [shell]       candidate_window=\(shellWindow ? "on" : "off")")
+    for issue in shellWindowIssues {
+        print("                \(issue)")
+    }
+    if !shellWindowIssues.isEmpty && exit_code == 0 {
+        exit_code = 2
+    }
+
+    let (shellPicker, shellPickerIssues) = ModoreConfig.parseShellPicker()
+    print("  [shell]       picker=\(shellPicker.displayName)")
+    for issue in shellPickerIssues {
+        print("                \(issue)")
+    }
+    if !shellPickerIssues.isEmpty && exit_code == 0 {
         exit_code = 2
     }
 

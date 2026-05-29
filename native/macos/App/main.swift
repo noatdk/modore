@@ -135,7 +135,13 @@ if CommandLine.arguments.contains("--print-shell-bootstrap") {
     do {
         let hotkey = ModoreConfig.loadConversionHotkey().displayName
         let hostPath = Bundle.main.executablePath
-        Log.shell("printing bootstrap hotkey=\(hotkey) host=\(hostPath ?? "?")")
+        // Shell knobs reach the bridge's snippet renderer via env, the same
+        // way bridge runtime tuning does (see applyBridgeRuntimeEnv).
+        let picker = ModoreConfig.loadShellPicker()
+        let candidateWindow = ModoreConfig.loadShellCandidateWindow()
+        setenv("MODORE_SHELL_CFG_PICKER", picker.displayName, 1)
+        setenv("MODORE_SHELL_CFG_CANDIDATE_WINDOW", candidateWindow ? "1" : "0", 1)
+        Log.shell("printing bootstrap hotkey=\(hotkey) host=\(hostPath ?? "?") picker=\(picker.displayName) candidate_window=\(candidateWindow)")
         let bootstrap = try MozcBridge.shellBootstrap(
             hotkeyDisplayName: hotkey,
             hostExecutablePath: hostPath)

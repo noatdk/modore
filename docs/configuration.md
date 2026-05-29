@@ -35,6 +35,12 @@ restore_clipboard_delay_ms = 50
 # Comma-separated roots; "all" suppresses every built-in namespace.
 [logging]
 disabled = ax,pickup,scripting
+
+# Available: macOS
+# Shell-native conversion (zsh/bash/fish). Omit for defaults.
+[shell]
+candidate_window = on
+picker = auto
 ```
 
 A copy-pasteable starter ships at [`modore.conf.example`](../modore.conf.example).
@@ -301,6 +307,44 @@ change, or `undo_window_ms` expiry). Valid range: `0..30000`.
 `[config]` log line; the previous value stays in effect.
 `--check-config` reports the resolved value and exits `2` on a
 rejected value.
+
+## `[shell] candidate_window`
+
+**Available**: macOS (zsh only)
+
+Controls the inline candidate strip the zsh widgets draw below the prompt
+while cycling (`Ctrl-X Ctrl-J` / `Ctrl-X Ctrl-K`). Default `on`.
+
+| Value | Effect                                                              |
+| ----- | ------------------------------------------------------------------- |
+| `on`  | Default. zsh draws the candidate list, current pick bracketed.      |
+| `off` | No strip; conversion and cycling still work, just without the list. |
+
+bash and fish never draw the strip regardless — readline and fish expose
+no below-buffer region. See [`shell-integration.md`](shell-integration.md).
+
+**Validation**: unknown values are ignored with a `[config]` log line;
+`--check-config` reports the resolved value and exits `2` on rejection.
+
+## `[shell] picker`
+
+**Available**: macOS
+
+Default picker for the candidate chooser (`Ctrl-X Ctrl-L`). Default `auto`.
+
+| Value     | Effect                                                            |
+| --------- | ----------------------------------------------------------------- |
+| `auto`    | Default. Probe `fzf`, then `gum`, then a built-in numbered prompt. |
+| `fzf`     | Force `fzf`.                                                       |
+| `gum`     | Force `gum`.                                                       |
+| `numeric` | Force the built-in numbered prompt (no dependency).               |
+
+The runtime `MODORE_SHELL_PICKER` env var overrides this per shell. The
+value is baked into the snippet, so it applies to shells started after the
+change (open a new shell or re-source the bootstrap).
+
+**Validation**: unknown values are ignored with a `[config]` log line;
+`--check-config` reports the resolved value and exits `2` on rejection.
 
 ## Preflight: `modore-host --check-config`
 

@@ -8,6 +8,8 @@
 //   [bridge]     ...                    — launch-time knobs for bridge/env-gated backend tweaks
 //   [logging]    disabled=...           — comma-separated namespaces to suppress
 //   [clipboard]  *_ms=<integer>         — fallback-path timings (macOS only)
+//   [shell]      candidate_window=...   — zsh inline candidate strip on|off
+//   [shell]      picker=...             — chooser picker auto|fzf|gum|numeric
 
 import Carbon
 import Foundation
@@ -267,6 +269,26 @@ enum ModoreConfig {
             case .none:      return "none"
             case .onCycle:   return "on_cycle"
             case .onConvert: return "on_convert"
+            }
+        }
+    }
+
+    /// Which picker the shell candidate chooser (`Ctrl-X Ctrl-L`) launches.
+    /// `auto` probes for `fzf`, then `gum`, then a built-in numbered prompt.
+    /// The runtime `MODORE_SHELL_PICKER` env var still overrides this per
+    /// shell. `displayName` doubles as the wire value baked into the snippet.
+    enum ShellPicker: Equatable {
+        case auto
+        case fzf
+        case gum
+        case numeric
+
+        var displayName: String {
+            switch self {
+            case .auto:    return "auto"
+            case .fzf:     return "fzf"
+            case .gum:     return "gum"
+            case .numeric: return "numeric"
             }
         }
     }
@@ -702,6 +724,64 @@ enum ModoreConfig {
             n = parsed
         }
         return (n, issues)
+    }
+
+    /// Parse `[shell] candidate_window`. Wrapper that logs issues.
+    static func loadShellCandidateWindow() -> Bool {
+        let (v, issues) = parseShellCandidateWindow()
+        for issue in issues { Log.config(issue) }
+        return v
+    }
+
+    /// Same parse as `loadShellCandidateWindow()` but returns issues
+    /// separately. Default `true` — zsh draws the inline candidate strip
+    /// below the prompt while cycling. `off` suppresses it (bash/fish never
+    /// draw it regardless, since readline/fish expose no below-buffer region).
+    static func parseShellCandidateWindow() -> (Bool, [String]) {
+        var enabled = true
+        var issues: [String] = []
+        let url = configFileURL()
+        _ = forEachKeyValue(url) { section, key, value in
+            guard section == "shell" && key == "candidate_window" else { return }
+            switch value.lowercased() {
+            case "on", "true", "1", "yes", "":
+                enabled = true
+            case "off", "false", "0", "no":
+                enabled = false
+            default:
+                issues.append("ignoring [shell] candidate_window=\(value) (expected on|off)")
+            }
+        }
+        return (enabled, issues)
+    }
+
+    /// Parse `[shell] picker`. Wrapper that logs issues.
+    static func loadShellPicker() -> ShellPicker {
+        let (p, issues) = parseShellPicker()
+        for issue in issues { Log.config(issue) }
+        return p
+    }
+
+    /// Same parse as `loadShellPicker()` but returns issues separately.
+    /// Default `.auto` (probe fzf → gum → built-in numbered prompt). Baked
+    /// into the snippet as the chooser's default; the runtime
+    /// `MODORE_SHELL_PICKER` env var still overrides it per invocation.
+    static func parseShellPicker() -> (ShellPicker, [String]) {
+        var picker: ShellPicker = .auto
+        var issues: [String] = []
+        let url = configFileURL()
+        _ = forEachKeyValue(url) { section, key, value in
+            guard section == "shell" && key == "picker" else { return }
+            switch value.lowercased() {
+            case "auto", "": picker = .auto
+            case "fzf":      picker = .fzf
+            case "gum":      picker = .gum
+            case "numeric":  picker = .numeric
+            default:
+                issues.append("ignoring [shell] picker=\(value) (expected auto|fzf|gum|numeric)")
+            }
+        }
+        return (picker, issues)
     }
 
     /// Parse `~/.config/modore/modore.conf` for `[conversion] undo_window_ms`.
