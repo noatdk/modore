@@ -20,6 +20,7 @@
 
 #include "mozc_bridge.h"
 
+#include <atomic>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -33,7 +34,9 @@ thread_local std::string g_last_error;
 
 std::mutex g_init_mutex;
 std::mutex g_convert_mutex;
-bool g_initialized = false;
+// Read on the convert paths and written by init/shutdown under different
+// mutexes; atomic so that cross-mutex read/write is not a data race.
+std::atomic<bool> g_initialized{false};
 std::unique_ptr<modore::mozc_bridge::Backend> g_backend;
 
 extern "C" void mozc_bridge_set_error(const char *msg) {
@@ -104,12 +107,16 @@ extern "C" int mozc_bridge_convert_with_candidates_ex(
     int max_candidates,
     int *out_candidate_count,
     unsigned int flags) {
+    // Hold g_convert_mutex across the g_backend check *and* use. shutdown
+    // takes the same lock before resetting g_backend, so the backend can't be
+    // destroyed between the null-check and the call (UAF on the macOS
+    // terminate-vs-convert race).
+    std::lock_guard<std::mutex> lock(g_convert_mutex);
     if (!g_initialized || !g_backend) {
         mozc_bridge_set_error("mozc_bridge_init has not been called");
         return -1;
     }
     std::string error;
-    std::lock_guard<std::mutex> lock(g_convert_mutex);
     const int rc = g_backend->ConvertWithCandidatesEx(
         romaji, romaji_len,
         commit_buf, commit_cap, commit_len,
@@ -141,12 +148,14 @@ extern "C" int mozc_bridge_convert_with_candidate_details_ex(
     int max_candidates,
     int *out_candidate_count,
     unsigned int flags) {
+    // See mozc_bridge_convert_with_candidates_ex: g_backend check + use are
+    // both under g_convert_mutex to stay exclusive with shutdown's reset.
+    std::lock_guard<std::mutex> lock(g_convert_mutex);
     if (!g_initialized || !g_backend) {
         mozc_bridge_set_error("mozc_bridge_init has not been called");
         return -1;
     }
     std::string error;
-    std::lock_guard<std::mutex> lock(g_convert_mutex);
     const int rc = g_backend->ConvertWithCandidateDetailsEx(
         romaji, romaji_len,
         commit_buf, commit_cap, commit_len,
@@ -166,7 +175,14 @@ extern "C" int mozc_bridge_convert_with_candidate_details_ex(
 }
 
 extern "C" void mozc_bridge_shutdown(void) {
-    std::lock_guard<std::mutex> lock(g_init_mutex);
+    std::lock_guard<std::mutex> init_lock(g_init_mutex);
+    // Block any in-flight conversion before destroying the backend. The
+    // convert paths hold g_convert_mutex across their g_backend check + use,
+    // so acquiring it here can't free the backend out from under a running
+    // conversion. Lock order is init→convert; convert paths take only the
+    // convert mutex and init takes only the init mutex, so there's no
+    // inversion / deadlock.
+    std::lock_guard<std::mutex> convert_lock(g_convert_mutex);
     g_backend.reset();
     g_initialized = false;
     mozc_bridge_clear_error();
