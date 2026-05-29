@@ -288,6 +288,21 @@ class GoogleImeSessionDriver final : public SessionDriver {
       : request_(BuildDefaultRequest()),
         context_(BuildDefaultContext()) {}
 
+  ~GoogleImeSessionDriver() override {
+    // Net for Begin()'s partial-failure window: RunConvertFlow only calls
+    // Finish() on its in-body paths, so if Begin() creates the session
+    // (CREATE_SESSION ok) but then fails at SET_REQUEST, the flow returns
+    // -1 before Finish() and the external IME session would leak until its
+    // own timeout. Finish() guards on session_id_ and zeroes it, so the
+    // normal end-of-flow call already cleaned up — this is a no-op on the
+    // success path. Destructors are noexcept; never let an IPC/protobuf
+    // exception escape during unwinding.
+    try {
+      Finish();
+    } catch (...) {
+    }
+  }
+
   bool Begin(mozc::commands::Output *out, std::string *error) override {
     mozc::commands::Input create;
     create.set_type(mozc::commands::Input::CREATE_SESSION);
