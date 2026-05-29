@@ -104,10 +104,18 @@ def load_lib(path: Path):
 
 def segment(lib, handle: int, text: str) -> tuple[tuple[str, str], ...]:
     raw = text.encode("ascii")
-    out = (Segment * 32)()
-    n = lib.mdr_cls_segment(handle, raw, len(raw), out, len(out))
+    # A run can't be shorter than one byte, so len(raw) segments is the hard
+    # ceiling; +1 lets us detect a full buffer (would mean the engine wrote
+    # more runs than bytes — impossible, so a real bug rather than truncation).
+    capacity = max(len(raw) + 1, 1)
+    out = (Segment * capacity)()
+    n = lib.mdr_cls_segment(handle, raw, len(raw), out, capacity)
     if n < 0:
         raise RuntimeError(f"mdr_cls_segment failed for {text!r}")
+    if n == capacity:
+        raise RuntimeError(
+            f"mdr_cls_segment filled the {capacity}-slot buffer for {text!r} "
+            "— output truncated")
     result: list[tuple[str, str]] = []
     for i in range(n):
         kind = "R" if out[i].is_romaji else "A"

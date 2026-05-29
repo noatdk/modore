@@ -61,7 +61,7 @@ MODEL_FILENAME = "classifier.mdl"
 DEFAULT_OUTPUT = REPO_ROOT / "engine/models" / MODEL_FILENAME
 DICT_OUTPUT = REPO_ROOT / "engine/models/english_dict.txt"
 CACHE_DIR = DATA_DIR / "cache"
-TRAINING_DATA_VERSION = 7
+TRAINING_DATA_VERSION = 8
 
 # ---------------------------------------------------------------------------
 # Model hyper-parameters (must match mdr_classifier.h / classifier.c)
@@ -978,7 +978,7 @@ def build_training_arrays(
     sentence_data: list[list[tuple[str, bool]]] | None = None,
     mixed_text_data: list[tuple[str, list[int]]] | None = None,
     hard_cases: list[HardCase] | None = None,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, int]:
     ascii_tokens = list(english_words)
     ascii_tokens.extend(_ABBREVS)
     for _ in range(200):
@@ -1052,6 +1052,12 @@ def build_training_arrays(
             print(f"    {seq_i + 1}/{n_sequences} sequences, "
                   f"{len(all_labels):,} examples")
 
+    # Everything appended past this point is curated hard-case material
+    # (heavily repeated deterministic duplicates). Record the boundary so
+    # train() can keep every one of these rows out of the validation split —
+    # otherwise a duplicate lands in both folds and inflates val_acc.
+    hard_start = len(all_labels)
+
     if hard_cases:
         must_cases = [(text, labels) for tier, text, labels in hard_cases
                       if tier == "must"]
@@ -1092,35 +1098,46 @@ def build_training_arrays(
 
     features = np.array(all_indices, dtype=np.int32)
     labels = np.array(all_labels, dtype=np.int8)
-    return features, labels
+    return features, labels, hard_start
 
 
 def _cache_key(n_sequences: int, seed: int, n_romaji: int, n_english: int,
-               n_sentences: int = 0, n_hard_cases: int = 0) -> str:
-    """Deterministic cache filename from parameters that affect the arrays."""
+               n_sentences: int = 0, n_mixed: int = 0,
+               n_hard_cases: int = 0) -> str:
+    """Deterministic cache filename from parameters that affect the arrays.
+
+    Sentence and mixed-text counts are keyed separately: folding them into one
+    sum let two different corpus compositions (e.g. more sentences / fewer
+    mixed docs) collide on the same key and reuse a stale cache.
+    """
     import hashlib
     h = hashlib.sha1(
         f"v{TRAINING_DATA_VERSION}:seq={n_sequences}:seed={seed}:rom={n_romaji}:eng={n_english}"
-        f":snt={n_sentences}:hard={n_hard_cases}"
+        f":snt={n_sentences}:mix={n_mixed}:hard={n_hard_cases}"
         f":nb={N_BUCKETS}:ng={NGRAM_MAX}:w={WINDOW}".encode()
     ).hexdigest()[:12]
     return f"train_{h}.npz"
 
 
 def save_cache(
-    path: Path, features: np.ndarray, labels: np.ndarray
+    path: Path, features: np.ndarray, labels: np.ndarray, hard_start: int
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(path, features=features, labels=labels)
+    np.savez_compressed(path, features=features, labels=labels,
+                        hard_start=np.int64(hard_start))
     size_mb = path.stat().st_size / (1024 * 1024)
     print(f"  Cache saved to {path} ({size_mb:.1f} MB)")
 
 
-def load_cache(path: Path) -> tuple[np.ndarray, np.ndarray] | None:
+def load_cache(path: Path) -> tuple[np.ndarray, np.ndarray, int] | None:
     if not path.exists():
         return None
     data = np.load(path)
-    return data["features"], data["labels"]
+    # Older caches predate hard_start; treat them as having no forced-train
+    # block (the version bump invalidates them, so this is just belt-and-braces).
+    hard_start = int(data["hard_start"]) if "hard_start" in data.files \
+        else int(data["labels"].shape[0])
+    return data["features"], data["labels"], hard_start
 
 
 # ---------------------------------------------------------------------------
@@ -1207,6 +1224,7 @@ def _train_svm(
 def train(
     features: np.ndarray,
     labels: np.ndarray,
+    hard_start: int | None = None,
     lr: float = 0.05,
     n_epochs: int = 20,
     batch_size: int = 4096,
@@ -1216,9 +1234,20 @@ def train(
     n_examples = features.shape[0]
     weights = np.zeros(N_BUCKETS + 1, dtype=np.float64)
 
-    perm = np.random.permutation(n_examples)
-    split = int(n_examples * 0.9)
-    train_idx, val_idx = perm[:split], perm[split:]
+    # Curated hard-case rows are deterministic duplicates injected as training
+    # anchors. If any copy lands in the validation fold, val_acc is inflated and
+    # biases best_weights selection toward the oversampled cases — true
+    # train/val leakage, not just same-distribution overlap. Split only the
+    # regular rows 90/10 and force every hard-case row into train.
+    if hard_start is not None and 0 < hard_start < n_examples:
+        perm = np.random.permutation(hard_start)
+        split = int(hard_start * 0.9)
+        train_idx = np.concatenate([perm[:split], np.arange(hard_start, n_examples)])
+        val_idx = perm[split:]
+    else:
+        perm = np.random.permutation(n_examples)
+        split = int(n_examples * 0.9)
+        train_idx, val_idx = perm[:split], perm[split:]
 
     features = features.copy()
     features[features == -1] = N_BUCKETS
@@ -1308,6 +1337,9 @@ def save_model(path: Path, bias: float, weights: np.ndarray) -> None:
         path.rename(backup)
         print(f"  Previous model backed up to {backup.name}")
 
+    # Little-endian on the wire. classifier.c reads these fields raw with no
+    # byte-swap and #errors on big-endian builds, so the "<" formats below are
+    # load-bearing — keep them explicit.
     with open(path, "wb") as f:
         f.write(MAGIC)
         f.write(struct.pack("<I", VERSION))
@@ -1585,11 +1617,12 @@ def main():
     n_mix = len(mixed_text_data)
     n_hard = len(hard_cases)
     cache_name = _cache_key(args.sequences, args.seed, n_rom, n_asc,
-                            n_snt + n_mix, n_hard)
+                            n_snt, n_mix, n_hard)
     cache_path = CACHE_DIR / cache_name
 
     features: np.ndarray
     labels: np.ndarray
+    hard_start: int
 
     def _build():
         print(f"Building training arrays ({args.sequences} sequences)...")
@@ -1603,20 +1636,20 @@ def main():
     if not args.no_cache:
         cached = load_cache(cache_path)
         if cached is not None:
-            features, labels = cached
+            features, labels, hard_start = cached
             nr = (labels == 1).sum()
             na = (labels == 0).sum()
             print(f"  Loaded from cache: {len(labels):,} examples "
                   f"(romaji={nr:,}, ascii={na:,})")
         else:
-            features, labels = _build()
-            save_cache(cache_path, features, labels)
+            features, labels, hard_start = _build()
+            save_cache(cache_path, features, labels, hard_start)
             nr = (labels == 1).sum()
             na = (labels == 0).sum()
             print(f"  {len(labels):,} examples (romaji={nr:,}, ascii={na:,})")
     else:
-        features, labels = _build()
-        save_cache(cache_path, features, labels)
+        features, labels, hard_start = _build()
+        save_cache(cache_path, features, labels, hard_start)
         nr = (labels == 1).sum()
         na = (labels == 0).sum()
         print(f"  {len(labels):,} examples (romaji={nr:,}, ascii={na:,})")
@@ -1625,7 +1658,7 @@ def main():
     loss_type = "hinge" if args.svm else "log"
     print(f"Training ({args.epochs} epochs, batch={args.batch_size})...")
     bias, weights = train(
-        features, labels,
+        features, labels, hard_start=hard_start,
         lr=args.lr, n_epochs=args.epochs, batch_size=args.batch_size,
         loss=loss_type)
 
