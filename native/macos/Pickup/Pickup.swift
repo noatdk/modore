@@ -371,6 +371,17 @@ private func doShadowPickup(_ request: PickupRequest) -> Bool {
     let caretInSpan = caretUTF16 - wordStart
     let leftCount  = (sliceUTF16(span, start: 0,           end: caretInSpan)      ?? "").count
     let rightCount = (sliceUTF16(span, start: caretInSpan, end: span.utf16.count) ?? "").count
+    // Keystroke deletes operate on whole graphemes. For ASCII romaji (the
+    // common shadow span) grapheme == scalar == UTF-16 unit, so the caret
+    // always lands on a boundary and the left/right split is exact. If a
+    // non-ASCII grapheme straddles the caret, both slices count the split
+    // grapheme and leftCount+rightCount over-counts the span — the extra
+    // Backspace would eat a neighbouring character. Defer to the
+    // Unicode-safe clipboard path in that case.
+    guard leftCount + rightCount == span.count else {
+        Log.pickup("shadow: caret mid-grapheme in \(span); deferring to clipboard")
+        return false
+    }
     for _ in 0..<leftCount  { postKey(kVK_Backspace) }
     for _ in 0..<rightCount { postKey(kVK_ForwardDelete) }
     postUnicode(baseReplacement)
