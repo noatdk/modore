@@ -1095,9 +1095,14 @@ func doClipboardPickup(_ request: PickupRequest = .init()) {
     pickedText = clipboardTarget
 
     Log.clipboard("pick: \(pickedText)")
+    // Backspace deletes one *grapheme* per press, so the count must be the
+    // grapheme-cluster count — not UTF-16 units. A supplementary-plane char
+    // (emoji: 1 grapheme = 2 UTF-16 units) would otherwise fire an extra
+    // Backspace and eat a preceding character. Matches undoOnClipboard /
+    // cycleClipboard, which already use .count.
     let deleteBeforeInsertCount = (deletePickedBeforeInsert ||
         (didForceSelect && (frontmostBundleID.map(kPeekExistingSelectionBlocklist.contains) ?? false)))
-        ? pickedText.utf16.count
+        ? pickedText.count
         : 0
 
     // Mirror the AX path's script-boundary split for the clipboard path:
