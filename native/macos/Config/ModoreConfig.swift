@@ -427,6 +427,11 @@ enum ModoreConfig {
                 default:
                     issues.append("ignoring [bridge] trace_raw_candidates=\(value) (expected on|off)")
                 }
+            case "mozc_backend":
+                // Valid [bridge] key, but consumed by parseMozcBackend (it can
+                // also live under [conversion]). Recognize it here so this
+                // parser doesn't flag it as unknown.
+                break
             default:
                 issues.append("ignoring [bridge] \(key)=\(value) (unknown key)")
             }
