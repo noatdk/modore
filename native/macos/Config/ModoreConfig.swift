@@ -791,8 +791,15 @@ enum ModoreConfig {
         handler: (_ section: String, _ key: String, _ value: String) -> Void
     ) -> Bool {
         guard let data = try? Data(contentsOf: url),
-              let text = String(data: data, encoding: .utf8) else {
+              var text = String(data: data, encoding: .utf8) else {
             return false
+        }
+        // Strip a leading UTF-8 BOM (U+FEFF): Swift's UTF-8 decoder keeps it,
+        // and it isn't a whitespace character, so without this the first line
+        // stays "\u{FEFF}[section]", fails the hasPrefix("[") check, and the
+        // opening [section] header (plus its keys) is silently dropped.
+        if text.hasPrefix("\u{FEFF}") {
+            text.removeFirst()
         }
         var section = ""
         for raw in text.split(whereSeparator: \.isNewline) {
