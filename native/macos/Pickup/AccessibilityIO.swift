@@ -6,6 +6,30 @@
 import Cocoa
 import ApplicationServices
 
+private let kAXAutocompleteValueAttribute = "AXAutocompleteValue"
+private let gAXFocusLogQueue = DispatchQueue(label: "local.modore.ax-focus-log")
+private let gAXFocusLogDelay: DispatchTimeInterval = .milliseconds(80)
+private let gAXFocusLogLock = NSLock()
+private var gAXFocusPendingWorkItem: DispatchWorkItem?
+
+private struct AXFocusBurstSample {
+    let role: String
+    let valueLen: Int
+    let selStart: Int
+    let selEnd: Int
+    let autocomplete: String?
+}
+
+private struct AXFocusBurst {
+    var count: Int = 0
+    var first: AXFocusBurstSample?
+    var last: AXFocusBurstSample?
+    var maxValueLen: Int = 0
+    var maxSelEnd: Int = 0
+}
+
+private var gAXFocusBurst = AXFocusBurst()
+
 struct FocusedField {
     let element: AXUIElement
     let value: String
@@ -13,6 +37,7 @@ struct FocusedField {
     let selEnd: Int
     let role: String
     let description: String
+    let autocomplete: String?
 }
 
 /// Electron's AX tree is gated behind a private attribute that assistive
@@ -130,14 +155,58 @@ func readFocusedField() -> FocusedField? {
     var descRef: CFTypeRef?
     _ = AXUIElementCopyAttributeValue(element, kAXDescriptionAttribute as CFString, &descRef)
     let desc = (descRef as? String) ?? ""
-    Log.ax("focused role=\(role) valueLen=\(s.utf16.count) sel=[\(selStart),\(selEnd)]")
+
+    var autocompleteRef: CFTypeRef?
+    let r4 = AXUIElementCopyAttributeValue(
+        element,
+        kAXAutocompleteValueAttribute as CFString,
+        &autocompleteRef
+    )
+    let autocomplete = (r4 == .success) ? (autocompleteRef as? String) : nil
+
+    let sample = AXFocusBurstSample(
+        role: role,
+        valueLen: s.utf16.count,
+        selStart: selStart,
+        selEnd: selEnd,
+        autocomplete: autocomplete)
+    gAXFocusLogLock.lock()
+    if gAXFocusBurst.count == 0 {
+        gAXFocusBurst.first = sample
+        gAXFocusBurst.maxValueLen = sample.valueLen
+        gAXFocusBurst.maxSelEnd = sample.selEnd
+    }
+    gAXFocusBurst.count += 1
+    gAXFocusBurst.last = sample
+    gAXFocusBurst.maxValueLen = max(gAXFocusBurst.maxValueLen, sample.valueLen)
+    gAXFocusBurst.maxSelEnd = max(gAXFocusBurst.maxSelEnd, sample.selEnd)
+    gAXFocusPendingWorkItem?.cancel()
+    let workItem = DispatchWorkItem {
+        gAXFocusLogLock.lock()
+        let burst = gAXFocusBurst
+        gAXFocusBurst = AXFocusBurst()
+        gAXFocusPendingWorkItem = nil
+        gAXFocusLogLock.unlock()
+
+        guard let first = burst.first, let last = burst.last else { return }
+        let autocomplete = last.autocomplete ?? "-"
+        if burst.count == 1 {
+            Log.ax("focused role=\(last.role) valueLen=\(last.valueLen) sel=[\(last.selStart),\(last.selEnd)] autocomplete=\(autocomplete)")
+            return
+        }
+        Log.ax("focused burst x\(burst.count) role=\(first.role) valueLen \(first.valueLen)→\(last.valueLen) peak=\(burst.maxValueLen) sel [\(first.selStart),\(first.selEnd)]→[\(last.selStart),\(last.selEnd)] peakSelEnd=\(burst.maxSelEnd) autocomplete=\(autocomplete)")
+    }
+    gAXFocusPendingWorkItem = workItem
+    gAXFocusLogLock.unlock()
+    gAXFocusLogQueue.asyncAfter(deadline: .now() + gAXFocusLogDelay, execute: workItem)
     return FocusedField(
         element: element,
         value: s,
         selStart: selStart,
         selEnd: selEnd,
         role: role,
-        description: desc)
+        description: desc,
+        autocomplete: autocomplete)
 }
 
 func replaceRange(in element: AXUIElement, start: Int, end: Int, replacement: String) -> Bool {

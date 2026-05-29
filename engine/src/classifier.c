@@ -21,6 +21,20 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* The on-disk model stores its little-endian fields with a fixed layout and
+ * this reader does no byte-swapping. All current targets are little-endian;
+ * fail the build loudly on a big-endian target rather than load garbage. */
+#if defined(__BYTE_ORDER__) && defined(__ORDER_BIG_ENDIAN__) && \
+    __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+#error "classifier model format is little-endian; big-endian targets need byte-swap"
+#endif
+
+/* Stack buffer size for a single type n-gram in score_position; also the
+ * largest ngram_max a model file may declare. */
+#define MDR_CLS_NGRAM_BUF 16
+/* Upper bound on the model's offset window — sanity cap, not a buffer limit. */
+#define MDR_CLS_MAX_WINDOW 64
+
 /* ----- Model structure (opaque to callers) ----------------------------- */
 
 struct mdr_cls {
@@ -114,11 +128,23 @@ static const char* const ROMAJI_TABLE[] = {
 };
 #define ROMAJI_TABLE_SIZE (sizeof(ROMAJI_TABLE) / sizeof(ROMAJI_TABLE[0]))
 
+/* Exact lookup of s[0..slen) in the sorted ROMAJI_TABLE. s need not be
+ * NUL-terminated. Binary search relies on the table being strcmp-sorted
+ * (asserted by tools/, verified at review time). */
 static int romaji_table_match(const char* s, size_t slen) {
-    for (size_t i = 0; i < ROMAJI_TABLE_SIZE; i++) {
-        size_t rlen = strlen(ROMAJI_TABLE[i]);
-        if (rlen == slen && memcmp(ROMAJI_TABLE[i], s, slen) == 0)
-            return 1;
+    size_t lo = 0, hi = ROMAJI_TABLE_SIZE;
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        const char* entry = ROMAJI_TABLE[mid];
+        int cmp = strncmp(entry, s, slen);
+        if (cmp == 0) {
+            /* entry matches the first slen bytes; exact only if it ends here.
+             * A longer entry sorts after s, so search the lower half. */
+            if (entry[slen] == '\0') return 1;
+            cmp = 1;
+        }
+        if (cmp < 0) lo = mid + 1;
+        else          hi = mid;
     }
     return 0;
 }
@@ -173,6 +199,62 @@ static void romaji_coverage(const char* text, size_t len, uint8_t* covered) {
     }
 }
 
+static int is_lower_ascii(char c) {
+    return c >= 'a' && c <= 'z';
+}
+
+static int romaji_fully_covered(const char* text, size_t len) {
+    if (len == 0) return 0;
+    uint8_t* covered = (uint8_t*)malloc(len);
+    if (!covered) return 0;
+    romaji_coverage(text, len, covered);
+    int ok = 1;
+    for (size_t i = 0; i < len; i++) {
+        if (!covered[i]) {
+            ok = 0;
+            break;
+        }
+    }
+    free(covered);
+    return ok;
+}
+
+static int has_strong_romaji_marker(const char* text, size_t len) {
+    static const char* const markers[] = {
+        "sh", "ch", "ts", "ty", "sy", "zy", "jy", "dy", "fy", "vy",
+        "kw", "gw", "wh", "nn", "kk", "ss", "tt", "pp", "cc", "jj",
+        "mm", "rr", "yy", "ww", "xx", "ll", NULL,
+    };
+    for (const char* const* m = markers; *m; m++) {
+        size_t mlen = strlen(*m);
+        if (mlen > len) continue;
+        for (size_t i = 0; i + mlen <= len; i++) {
+            if (memcmp(text + i, *m, mlen) == 0)
+                return 1;
+        }
+    }
+    return 0;
+}
+
+/* Return the length of a lowercase ASCII prefix that should be forced to
+ * ASCII, leaving a romaji-parseable suffix to be scored as a fresh segment.
+ * Returns 0 if no split is needed. */
+static size_t forced_ascii_prefix_len(const char* run, size_t run_len) {
+    if (run_len < 5) return 0;
+    if (romaji_fully_covered(run, run_len)) return 0;
+
+    for (size_t cut = 1; cut <= 3 && cut + 5 <= run_len; cut++) {
+        size_t prefix_len = cut;
+        size_t suffix_len = run_len - cut;
+        if (romaji_fully_covered(run + cut, suffix_len) &&
+            !romaji_fully_covered(run, prefix_len) &&
+            has_strong_romaji_marker(run + cut, suffix_len)) {
+            return cut;
+        }
+    }
+    return 0;
+}
+
 /* Forward declarations for dictionary lookup (defined after model I/O). */
 static int dict_contains(const mdr_cls_t* cls,
                          const char* word, size_t wlen);
@@ -199,8 +281,9 @@ static double score_position(const mdr_cls_t* cls,
             uint32_t h = hash_feature('S', off, text + start, n, cls->n_buckets);
             score += cls->weights[h];
 
-            /* Type n-gram */
-            char tgram[16];
+            /* Type n-gram. n <= ngram_max, which mdr_cls_load caps at
+             * MDR_CLS_NGRAM_BUF, so this write can never overflow. */
+            char tgram[MDR_CLS_NGRAM_BUF];
             for (int j = 0; j < n; j++)
                 tgram[j] = char_type(text[start + j]);
             h = hash_feature('T', off, tgram, n, cls->n_buckets);
@@ -298,6 +381,16 @@ mdr_cls_t* mdr_cls_load(const char* path) {
         return NULL;
     }
     if (version != MDR_CLS_VERSION || n_buckets == 0 || n_buckets > 1000000) {
+        fclose(f);
+        return NULL;
+    }
+    /* score_position writes a type n-gram of length ngram_max into a fixed
+     * 16-byte stack buffer (tgram[16]); a model claiming ngram_max > 16 would
+     * overflow it. window only bounds the offset loop, but an absurd value is
+     * pure wasted work per position — cap it too. The bundled model can be
+     * overridden by a user-writable file, so this is a real trust boundary. */
+    if (ngram_max == 0 || ngram_max > MDR_CLS_NGRAM_BUF ||
+        window > MDR_CLS_MAX_WINDOW) {
         fclose(f);
         return NULL;
     }
@@ -435,21 +528,50 @@ int mdr_cls_classify(const mdr_cls_t* cls,
     romaji_coverage(text, len, validity);
 
     /* Auto-regressive: classify left-to-right, feeding previous labels
-     * as history features for the next position. */
-    for (size_t i = 0; i < len; i++) {
+     * as history features for the next position. Lowercase ASCII runs with
+     * a forced ASCII prefix are split into two passes so the romaji suffix
+     * is scored as a fresh segment. */
+    for (size_t i = 0; i < len;) {
         char c = text[i];
-        /* Hard rule: non-lowercase is always ASCII, except '-' after
-         * romaji which represents chouon (ー) in Japanese input. */
-        if (c < 'a' || c > 'z') {
+
+        /* Non-lowercase is always ASCII, except '-' after romaji which
+         * represents chouon (ー) in Japanese input. */
+        if (!is_lower_ascii(c)) {
             if (c == '-' && i > 0 && out_labels[i - 1] == 1)
                 out_labels[i] = 1;
             else
                 out_labels[i] = 0;
+            i++;
             continue;
         }
-        double s = score_position(cls, text, len, i, validity,
-                                  out_labels, i);
-        out_labels[i] = (sigmoid(s) >= MDR_CLS_THRESHOLD) ? 1 : 0;
+
+        size_t run_start = i;
+        while (i < len && is_lower_ascii(text[i])) i++;
+        size_t run_len = i - run_start;
+        size_t split_len = forced_ascii_prefix_len(text + run_start, run_len);
+
+        if (split_len > 0) {
+            for (size_t k = run_start; k < run_start + split_len; k++)
+                out_labels[k] = 0;
+
+            size_t suffix_start = run_start + split_len;
+            const char* suffix_text = text + suffix_start;
+            size_t suffix_len = run_len - split_len;
+            for (size_t pos = 0; pos < suffix_len; pos++) {
+                double s = score_position(cls, suffix_text, suffix_len, pos,
+                                          validity + suffix_start,
+                                          out_labels + suffix_start, pos);
+                out_labels[suffix_start + pos] =
+                    (sigmoid(s) >= MDR_CLS_THRESHOLD) ? 1 : 0;
+            }
+            continue;
+        }
+
+        for (size_t pos = run_start; pos < run_start + run_len; pos++) {
+            double s = score_position(cls, text, len, pos, validity,
+                                      out_labels, pos);
+            out_labels[pos] = (sigmoid(s) >= MDR_CLS_THRESHOLD) ? 1 : 0;
+        }
     }
 
     free(validity);
@@ -679,10 +801,42 @@ static void refine_boundaries(const mdr_cls_t* cls,
 
 /* ----- Segmentation ---------------------------------------------------- */
 
-/* Dictionary post-processing: force ASCII for segments that look like
- * English words — longer than 4 chars and containing non-romaji
- * substrings. Mirrors the paper's "Non-Japanese Dictionary" heuristic. */
-static void dict_force_ascii(const char* text, size_t len,
+/* Length of the longest dictionary-word prefix of `run` that is safe to
+ * force to ASCII. Requires ≥5 chars: a 4-char (2-kana) lowercase string is
+ * usually a common Japanese word — これ/それ/まで (kore/sore/made) all sit in
+ * the English word list as homographs and must not be peeled — whereas a 5+
+ * char run matching a dictionary word is almost always genuinely English.
+ * Also rejects a prefix that is exactly a particle. Returns 0 if none. */
+static size_t dict_word_prefix_len(const mdr_cls_t* cls,
+                                   const char* run, size_t run_len) {
+    if (!cls->dict_words || cls->dict_count == 0) return 0;
+
+    char lower[64];
+    size_t n = run_len < sizeof(lower) ? run_len : sizeof(lower);
+    for (size_t k = 0; k < n; k++)
+        lower[k] = (run[k] >= 'A' && run[k] <= 'Z')
+                   ? (char)(run[k] + 32) : run[k];
+
+    size_t best = 0;
+    for (size_t plen = 5; plen <= n; plen++) {
+        if (dict_contains(cls, lower, plen) &&
+            particle_prefix_len(lower, plen) != plen)
+            best = plen;
+    }
+    return best;
+}
+
+/* Dictionary post-processing: force ASCII for romaji segments that are
+ * really English. Two cases:
+ *   1. The run contains an impossible-romaji substring (the paper's
+ *      "Non-Japanese Dictionary" heuristic) — force the whole run.
+ *   2. The run is fully valid romaji yet *begins* with a dictionary word
+ *      (e.g. "database"=だたばせ, "token"=とけん). The classifier defaults
+ *      such runs to romaji because every position parses; peel the leading
+ *      English word off and leave the remainder (a particle/verb tail) as
+ *      romaji. Only when a romaji remainder follows, to avoid converting a
+ *      standalone romaji word that merely happens to be in the dictionary. */
+static void dict_force_ascii(const mdr_cls_t* cls, const char* text, size_t len,
                              uint8_t* labels) {
     uint8_t* validity = (uint8_t*)malloc(len);
     if (!validity) return;
@@ -698,6 +852,12 @@ static void dict_force_ascii(const char* text, size_t len,
                                           validity + seg_start)) {
                 for (size_t j = seg_start; j < i; j++)
                     labels[j] = 0;
+            } else {
+                size_t pfx = dict_word_prefix_len(cls, text + seg_start, seg_len);
+                if (pfx > 0 && pfx < seg_len) {
+                    for (size_t j = seg_start; j < seg_start + pfx; j++)
+                        labels[j] = 0;
+                }
             }
         }
         seg_start = i;
@@ -725,7 +885,7 @@ int mdr_cls_segment(const mdr_cls_t* cls,
 
     /* 3) Dictionary post-processing: force ASCII on romaji segments
      * that contain non-romaji substrings (English words). */
-    dict_force_ascii(text, len, labels);
+    dict_force_ascii(cls, text, len, labels);
 
     /* Re-smooth after dictionary overrides */
     smooth_labels(labels, len, 2);

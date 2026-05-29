@@ -22,10 +22,6 @@
 import ApplicationServices
 import Cocoa
 
-/// `kVK_Escape` (0x35) — Carbon constant repeated here so this file does
-/// not have to import Carbon for one number.
-let kVK_Escape: CGKeyCode = 0x35
-
 /// Worker-queue entry point. The tap callback has already consumed the
 /// user's Esc; this function decides whether to revert the conversion or
 /// re-inject the Esc so the focused app still gets it.

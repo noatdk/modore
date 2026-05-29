@@ -23,7 +23,7 @@ mozc_backend = built-in
 candidate_mixing_mode = 0
 trace_raw_candidates = off
 
-# Available: macOS
+# Available: macOS, Linux
 # Knobs for the clipboard fallback path. Omit for defaults.
 [clipboard]
 pre_copy_delay_ms = 20
@@ -53,7 +53,7 @@ modifier).
 `F1`–`F12`, `Space`, arrows, `Return`, `Tab`, etc. On Linux any name
 understood by `XStringToKeysym(3)` also works.
 
-**Default**: `Cmd+Semicolon` on macOS, `Super+Semicolon` on Linux. Applied
+**Default**: `Cmd+Semicolon` on macOS, `Ctrl+Semicolon` on Linux. Applied
 when the file is missing or the `hotkey` key is absent.
 
 **Validation**: a malformed `hotkey` value logs a warning and falls back
@@ -252,6 +252,11 @@ tuning knob, so leaving it fixed keeps the fast-path predictable.
 values are ignored with a `[config]` log line and the previous default
 stays in effect. Unknown keys in `[clipboard]` are logged and ignored.
 
+On Linux, the same section also reloads the Wayland pickup/cycle timing
+knobs live. The extra Linux-only keys are documented in
+[`docs/linux.md`](linux.md) and the host logs the resolved timing values
+whenever `modore.conf` changes.
+
 ## `[ui] candidate_panel`
 
 **Available**: macOS
@@ -380,14 +385,16 @@ labels every line for humans.
 
 ## Auto-reload
 
-**Available**: macOS
+**Available**: macOS, Linux
 
 Edits to `modore.conf` are picked up live — no restart needed. The
 watcher applies a 300 ms quiet-window debounce, so multi-event saves
 (atomic-rename editors like Vim, VSCode, JetBrains) land as a single
 reload. Most `[conversion]` and `[clipboard]` keys reload immediately;
 bridge launch-time knobs are re-parsed for logging but only take effect
-on the next bridge init.
+on the next bridge init. On Linux, the watcher also hot-reloads the
+Wayland clipboard timing values so you can tune paste delays without
+rebuilding.
 
 | Edit                                    | Behavior                                                                  |
 | --------------------------------------- | ------------------------------------------------------------------------- |
@@ -411,8 +418,9 @@ If the config file doesn't exist at startup, the watcher polls for it
 once a second and arms as soon as it appears. There's no need to restart
 the host after creating the file for the first time.
 
-Linux auto-reload is on the parity list ([`PARITY.md`](PARITY.md)) but
-not implemented yet.
+Linux auto-reload now covers the `[clipboard]` timing keys; the hotkey
+still takes effect on the next start because the Linux hotkey grab is
+bound at startup.
 
 ## Process supervision
 

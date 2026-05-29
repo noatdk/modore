@@ -64,6 +64,13 @@ var gStatusItem: ModoreStatusItem?
 /// the very first transition has somewhere to land.
 var gSecureInputMonitor: SecureInputMonitor?
 
+final class AppLifecycleDelegate: NSObject, NSApplicationDelegate {
+    func applicationWillTerminate(_ notification: Notification) {
+        MozcBridge.stopShellConvertServer()
+        MozcBridge.shutdown()
+    }
+}
+
 func describeSelf() {
     let bundle = Bundle.main
     Log.boot("pid=\(ProcessInfo.processInfo.processIdentifier)")
@@ -344,6 +351,8 @@ if let probeArg = CommandLine.arguments.first(where: { $0.hasPrefix("--probe-wor
 
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory)
+let appLifecycleDelegate = AppLifecycleDelegate()
+app.delegate = appLifecycleDelegate
 
 gDisabledLogNamespaces = ModoreConfig.loadDisabledLoggingNamespaces()
 Log.configureDisabledNamespaces(gDisabledLogNamespaces)
@@ -379,6 +388,9 @@ gCandidatePanelDurationMs = ModoreConfig.loadCandidatePanelDurationMs()
 Log.config(gCandidatePanelDurationMs == 0
     ? "candidate panel duration: no auto-hide (sticks for session)"
     : "candidate panel duration: \(gCandidatePanelDurationMs)ms")
+
+gDebugOverlayEnabled = ModoreConfig.loadDebugOverlay()
+if gDebugOverlayEnabled { Log.config("debug overlay: on") }
 
 Log.config("mozc backend: \(MOZC_BACKEND.displayName)")
 
@@ -483,6 +495,10 @@ do {
     Log.shell("convert server disabled: \(String(describing: error))")
 }
 
+// Shadow buffer pickup. Opt-in via `[conversion] shadow_buffer = on` in modore.conf.
+gShadowBufferEnabled = ModoreConfig.loadShadowBufferEnabled()
+Log.boot("shadow buffer: \(gShadowBufferEnabled ? "on" : "off (set [conversion] shadow_buffer = on to enable)")")
+
 // ML classifier for romaji/ASCII segmentation. Opt-in via
 // `[conversion] classifier = on` in modore.conf.
 gClassifierEnabled = ModoreConfig.loadClassifierEnabled()
@@ -493,7 +509,7 @@ if gClassifierEnabled {
         }
         return "\(FileManager.default.homeDirectoryForCurrentUser.path)/.config/modore"
     }()
-    let modelPath = "\(configDir)/classifier.mdl"
+    let modelPath = Classifier.configModelPath(configDir: configDir)
     if FileManager.default.fileExists(atPath: modelPath) {
         if Classifier.load(modelPath: modelPath) {
             Log.boot("ML classifier loaded from \(modelPath)")
@@ -501,7 +517,7 @@ if gClassifierEnabled {
             Log.boot("ML classifier: failed to load \(modelPath) — heuristic fallback")
             gClassifierEnabled = false
         }
-    } else if let bundled = Bundle.main.path(forResource: "classifier", ofType: "mdl") {
+    } else if let bundled = Classifier.bundledModelPath() {
         if Classifier.load(modelPath: bundled) {
             Log.boot("ML classifier loaded from bundle")
         } else {

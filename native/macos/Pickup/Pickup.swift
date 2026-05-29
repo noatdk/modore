@@ -67,7 +67,7 @@ func callBackend(
         if wantCandidates {
             let r = try MozcBridge.convertWithCandidates(span, target: request.target)
             return ConvertResult(
-                replacement: r.committed,
+                replacement: r.candidates.first?.value ?? r.committed,
                 cursorOffset: nil,
                 candidates: r.candidates)
         }
@@ -317,6 +317,89 @@ private func normalizeCommittedCandidateState(
     var normalized = candidates
     normalized.insert(candidateFromValue(replacement), at: 0)
     return (normalized, 0)
+}
+
+// MARK: - Shadow-buffer pickup (zero-latency fallback before clipboard)
+
+private func doShadowPickup(_ request: PickupRequest) -> Bool {
+    guard let snap = gShadowBuffer.takeSnapshot() else { return false }
+    let (shadowText, cursorByte) = snap
+
+    let caretUTF16 = shadowText.utf16Offset(forUTF8Byte: cursorByte)
+    guard caretUTF16 >= 0 else {
+        Log.pickup("shadow: caret-offset failed (cursor \(cursorByte) mid-sequence)")
+        return false
+    }
+    let (wordStart, wordEnd) = wordBounds(shadowText, caret: caretUTF16)
+    guard wordStart < wordEnd,
+          let span = sliceUTF16(shadowText, start: wordStart, end: wordEnd) else {
+        Log.pickup("shadow: empty span; nothing to convert")
+        return false
+    }
+
+    Log.pickup("shadow pick [\(wordStart)..\(wordEnd)] \(span)")
+
+    let (asciiPrefix, romajiTail, preservedSuffix) = splitConvertibleASCIIWindow(span)
+    let (romajiCore, romajiSuffix) = splitTrailingASCIIPunctuation(romajiTail)
+    let convertedSuffix = convertTrailingASCIISuffix(romajiSuffix, request: request) + preservedSuffix
+    guard !romajiCore.isEmpty else {
+        Log.pickup("shadow: nothing to convert (no romaji in \(span))")
+        return false
+    }
+    let (leadingJunk, romajiBody) = splitLeadingASCIIJunkBeforeLowercase(romajiCore)
+    let (acronymHead, mozcInput) = splitAcronymHead(romajiBody)
+    guard mozcInput.first?.isLowercase == true else {
+        Log.pickup("shadow: skipping: no romaji after acronym split (\(mozcInput))")
+        return false
+    }
+
+    let frozenPrefix = asciiPrefix + leadingJunk + acronymHead
+    guard let result = callBackend(mozcInput, request: request, wantCandidates: true) else {
+        Log.pickup("shadow: backend returned no result")
+        return false
+    }
+
+    let baseReplacement = frozenPrefix + result.replacement + convertedSuffix
+    let baseCandidates: [MozcBridge.Candidate] = result.candidates.isEmpty
+        ? [candidateFromValue(baseReplacement)]
+        : mapCandidateValues(result.candidates) { frozenPrefix + $0.value + convertedSuffix }
+    let sessionSeed = normalizeCommittedCandidateState(
+        replacement: baseReplacement,
+        candidates: baseCandidates)
+    Log.pickup("shadow replace -> \(baseReplacement) (alts=\(sessionSeed.candidates.count))\(FrontmostApp.logSuffix())")
+
+    let caretInSpan = caretUTF16 - wordStart
+    let leftCount  = (sliceUTF16(span, start: 0,           end: caretInSpan)      ?? "").count
+    let rightCount = (sliceUTF16(span, start: caretInSpan, end: span.utf16.count) ?? "").count
+    // Keystroke deletes operate on whole graphemes. For ASCII romaji (the
+    // common shadow span) grapheme == scalar == UTF-16 unit, so the caret
+    // always lands on a boundary and the left/right split is exact. If a
+    // non-ASCII grapheme straddles the caret, both slices count the split
+    // grapheme and leftCount+rightCount over-counts the span — the extra
+    // Backspace would eat a neighbouring character. Defer to the
+    // Unicode-safe clipboard path in that case.
+    guard leftCount + rightCount == span.count else {
+        Log.pickup("shadow: caret mid-grapheme in \(span); deferring to clipboard")
+        return false
+    }
+    for _ in 0..<leftCount  { postKey(kVK_Backspace) }
+    for _ in 0..<rightCount { postKey(kVK_ForwardDelete) }
+    postUnicode(baseReplacement)
+
+    let frontmost = FrontmostApp.describe()
+    let session = ConversionSession(
+        backing: .clipboard(
+            frontmostBundleId: frontmost?.bundleID,
+            frontmostPid: frontmost?.pid ?? 0),
+        originalReading: span,
+        candidates: sessionSeed.candidates,
+        candidateIndex: sessionSeed.currentIndex,
+        timestamp: Date())
+    ConversionSessionStore.set(session)
+    if gCandidatePanelMode == .onConvert {
+        CandidatePanel.shared.show(session: session)
+    }
+    return true
 }
 
 // MARK: - Clipboard-based fallback (works in any app that supports Cmd+C / Cmd+V)
@@ -637,12 +720,6 @@ private func postClipboardReplacement(_ replacement: String, deleteBeforeInsert:
     postUnicode(replacement)
 }
 
-private let kChromiumOmniboxBundleIDs: Set<String> = [
-    "com.google.Chrome",
-    "com.google.Chrome.canary",
-    "org.chromium.Chromium",
-]
-
 private func axStringAttr(_ element: AXUIElement, _ attr: String) -> String? {
     var ref: CFTypeRef?
     let err = AXUIElementCopyAttributeValue(element, attr as CFString, &ref)
@@ -650,18 +727,7 @@ private func axStringAttr(_ element: AXUIElement, _ attr: String) -> String? {
     return ref as? String
 }
 
-private func isChromiumOmnibox(
-    field: FocusedField,
-    appId: String?
-) -> Bool {
-    guard let appId, kChromiumOmniboxBundleIDs.contains(appId) else { return false }
-    let role = axStringAttr(field.element, kAXRoleAttribute as String)
-    let desc = axStringAttr(field.element, kAXDescriptionAttribute as String)
-    return role == kAXTextFieldRole as String
-        && desc == "Address and search bar"
-}
-
-private func postUnicodeOverAXSelection(
+func postUnicodeOverAXSelection(
     in element: AXUIElement,
     start: Int,
     end: Int,
@@ -679,10 +745,10 @@ private func postUnicodeOverAXSelection(
 }
 
 /// Chromium omnibox needs a stricter first attempt than the generic AX
-/// path. Try a direct AX replacement first so Chromium can keep its typed
-/// input model aligned; if that fails, fall back to the existing
-/// selected-Unicode path that has the best chance of syncing the live
-/// omnibox state.
+/// path. The live suggestion model is more reliable when we drive the
+/// selected text as typed input, so prefer that path first and only
+/// fall back to a keystroke-driven replace if the AX selection write
+/// itself fails.
 private func replaceChromiumOmnibox(
     field: FocusedField,
     start: Int,
@@ -691,8 +757,11 @@ private func replaceChromiumOmnibox(
     replacement: String,
     sessionSeed: (candidates: [MozcBridge.Candidate], currentIndex: Int)
 ) -> Bool {
-    Log.pickup("Chromium omnibox: trying AX replace before fallback")
-    if replaceRange(in: field.element, start: start, end: end, replacement: replacement) {
+    if postUnicodeOverAXSelection(
+        in: field.element,
+        start: start,
+        end: end,
+        replacement: replacement) {
         let session = ConversionSession(
             backing: .ax(element: field.element, spanStart: start),
             originalReading: originalReading,
@@ -705,18 +774,12 @@ private func replaceChromiumOmnibox(
         }
         return true
     }
-    Log.pickup("Chromium omnibox: AX replace failed; falling back to typed-input sync")
-    if !postUnicodeOverAXSelection(
-        in: field.element,
-        start: start,
-        end: end,
-        replacement: replacement) {
-        keystrokeReplaceSpan(
-            caret: (start: field.selStart, end: field.selEnd),
-            spanEnd: end,
-            spanLen: end - start,
-            replacement: replacement)
-    }
+    Log.pickup("Chromium omnibox: typed-input sync failed; falling back to keystroke retype")
+    keystrokeReplaceSpan(
+        caret: (start: field.selStart, end: field.selEnd),
+        spanEnd: end,
+        spanLen: end - start,
+        replacement: replacement)
     let frontmost = FrontmostApp.describe()
     let session = ConversionSession(
         backing: .clipboard(
@@ -741,8 +804,74 @@ private func applyFieldReplacement(
     end: Int,
     originalReading: String,
     replacement: String,
-    sessionSeed: (candidates: [MozcBridge.Candidate], currentIndex: Int)
+    sessionSeed: (candidates: [MozcBridge.Candidate], currentIndex: Int),
+    dropAutocompleteTail: Bool = false,
+    request: PickupRequest = .init()
 ) -> Bool {
+    if dropAutocompleteTail, isChromiumOmnibox(field: field, appId: appId) {
+        let fullEnd = field.value.utf16.count
+        switch route {
+        case .selectionSync, .ax:
+            if postUnicodeOverAXSelection(
+                in: field.element,
+                start: 0,
+                end: fullEnd,
+                replacement: replacement) {
+                let session = ConversionSession(
+                    backing: .ax(element: field.element, spanStart: 0),
+                    originalReading: originalReading,
+                    candidates: sessionSeed.candidates,
+                    candidateIndex: sessionSeed.currentIndex,
+                    timestamp: Date())
+                ConversionSessionStore.set(session)
+                if gCandidatePanelMode == .onConvert {
+                    CandidatePanel.shared.show(session: session)
+                }
+                return true
+            }
+            Log.pickup("Chromium omnibox: full-field replace failed; falling back to keystroke retype")
+            keystrokeReplaceSpan(
+                caret: (start: field.selStart, end: field.selEnd),
+                spanEnd: fullEnd,
+                spanLen: fullEnd,
+                replacement: replacement)
+            let frontmost = FrontmostApp.describe()
+            let session = ConversionSession(
+                backing: .clipboard(
+                    frontmostBundleId: frontmost?.bundleID,
+                    frontmostPid: frontmost?.pid ?? 0),
+                originalReading: originalReading,
+                candidates: sessionSeed.candidates,
+                candidateIndex: sessionSeed.currentIndex,
+                timestamp: Date())
+            ConversionSessionStore.set(session)
+            if gCandidatePanelMode == .onConvert {
+                CandidatePanel.shared.show(session: session)
+            }
+            return true
+        case .keystroke, .clipboard:
+            keystrokeReplaceSpan(
+                caret: (start: field.selStart, end: field.selEnd),
+                spanEnd: fullEnd,
+                spanLen: fullEnd,
+                replacement: replacement)
+            let frontmost = FrontmostApp.describe()
+            let session = ConversionSession(
+                backing: .clipboard(
+                    frontmostBundleId: frontmost?.bundleID,
+                    frontmostPid: frontmost?.pid ?? 0),
+                originalReading: originalReading,
+                candidates: sessionSeed.candidates,
+                candidateIndex: sessionSeed.currentIndex,
+                timestamp: Date())
+            ConversionSessionStore.set(session)
+            if gCandidatePanelMode == .onConvert {
+                CandidatePanel.shared.show(session: session)
+            }
+            return true
+        }
+    }
+
     switch route {
     case .selectionSync:
         if postUnicodeOverAXSelection(
@@ -825,9 +954,15 @@ private func applyFieldReplacement(
             }
             return true
         }
-        Log.pickup("AX write rejected; using backspace-retype for [\(start)..\(end)] \(originalReading)\(FrontmostApp.logSuffix())")
+        Log.pickup("AX write rejected; trying shadow pickup for [\(start)..\(end)] \(originalReading)\(FrontmostApp.logSuffix())")
+        if gShadowBufferEnabled, doShadowPickup(request) { return true }
+        // replaceRange rolls back the AX selection to its pre-write state.
+        // Pass the actual AX cursor (field.sel*) so keystrokeReplaceSpan knows
+        // whether to collapse a selection (RightArrow → correct end) or skip
+        // navigation entirely (cursor already at end — avoids RightArrow overshooting
+        // to end+1 in Chrome contenteditable at block-element boundaries).
         keystrokeReplaceSpan(
-            caret: (start: start, end: end),
+            caret: (start: field.selStart, end: field.selEnd),
             spanEnd: end,
             spanLen: end - start,
             replacement: replacement)
@@ -865,6 +1000,8 @@ private let kPeekExistingSelectionBlocklist: Set<String> = [
 ]
 
 func doClipboardPickup(_ request: PickupRequest = .init()) {
+    if gShadowBufferEnabled, doShadowPickup(request) { return }
+
     // Snapshot timings once at entry so the whole pickup runs against a
     // consistent set even if the watcher fires mid-flight on the main thread.
     let timings = gClipboardTimings
@@ -969,20 +1106,25 @@ func doClipboardPickup(_ request: PickupRequest = .init()) {
     pickedText = clipboardTarget
 
     Log.clipboard("pick: \(pickedText)")
+    // Backspace deletes one *grapheme* per press, so the count must be the
+    // grapheme-cluster count — not UTF-16 units. A supplementary-plane char
+    // (emoji: 1 grapheme = 2 UTF-16 units) would otherwise fire an extra
+    // Backspace and eat a preceding character. Matches undoOnClipboard /
+    // cycleClipboard, which already use .count.
     let deleteBeforeInsertCount = (deletePickedBeforeInsert ||
         (didForceSelect && (frontmostBundleID.map(kPeekExistingSelectionBlocklist.contains) ?? false)))
-        ? pickedText.utf16.count
+        ? pickedText.count
         : 0
 
     // Mirror the AX path's script-boundary split for the clipboard path:
     // Shift+Opt+Left in Discord/Sublime grabs the whole word including any
     // non-ASCII prefix (e.g. `対人sen` arrives as one blob), and the bridge
-    // sends each byte of UTF-8 to Mozc as a separate `key_code` — kanji
-    // come out as Latin-1 mojibake. Strip the non-ASCII prefix here, send
-    // only the trailing romaji to the bridge, then re-attach the prefix.
-    let (asciiPrefix, romajiTail) = splitTrailingASCII(pickedText)
+    // sends each byte of UTF-8 to Mozc as a separate `key_code`. Also handle
+    // mixed selections where the acquired token includes Japanese text after
+    // the caret-side ASCII run (`tesutoテスト` with the caret after `o`).
+    let (asciiPrefix, romajiTail, preservedSuffix) = splitConvertibleASCIIWindow(pickedText)
     let (romajiCore, romajiSuffix) = splitTrailingASCIIPunctuation(romajiTail)
-    let convertedSuffix = convertTrailingASCIISuffix(romajiSuffix, request: request)
+    let convertedSuffix = convertTrailingASCIISuffix(romajiSuffix, request: request) + preservedSuffix
     guard !romajiCore.isEmpty else {
         let replacement = clipboardPrefix + asciiPrefix + convertedSuffix
         guard replacement != clipboardSelection else {
@@ -1146,11 +1288,12 @@ func runConversionOnAcquiredText(
     }
     Log.pickup("scripted acquire pick: \(pickedText)")
 
-    let (asciiPrefix, romajiTail) = splitTrailingASCII(pickedText)
+    let (asciiPrefix, rawTail, preservedSuffix) = splitConvertibleASCIIWindow(pickedText)
+    let (contextPrefix, romajiTail) = splitBeforeLastASCIIWord(rawTail)
     let (romajiCore, romajiSuffix) = splitTrailingASCIIPunctuation(romajiTail)
-    let convertedSuffix = convertTrailingASCIISuffix(romajiSuffix, request: request)
+    let convertedSuffix = convertTrailingASCIISuffix(romajiSuffix, request: request) + preservedSuffix
     if romajiCore.isEmpty {
-        let replacement = asciiPrefix + convertedSuffix
+        let replacement = asciiPrefix + contextPrefix + convertedSuffix
         guard replacement != pickedText else {
             Log.pickup("scripted acquire: no trailing romaji in \(pickedText)")
             return
@@ -1186,18 +1329,28 @@ func runConversionOnAcquiredText(
     }
     let (leadingJunk, romajiBody) = splitLeadingASCIIJunkBeforeLowercase(romajiCore)
     let (acronymHead, mozcInput) = splitAcronymHead(romajiBody)
-    let frozenPrefix = asciiPrefix + leadingJunk + acronymHead
+    let frozenPrefix = asciiPrefix + contextPrefix + leadingJunk + acronymHead
 
-    guard let result = callBackend(mozcInput, request: request, wantCandidates: true) else {
-        Log.pickup("scripted acquire: backend returned no result")
-        return
-    }
-    let baseReplacement = frozenPrefix + result.replacement + convertedSuffix
-    let baseCandidates: [MozcBridge.Candidate] = result.candidates.isEmpty
-        ? [candidateFromValue(baseReplacement)]
-        : mapCandidateValues(result.candidates) {
+    let baseReplacement: String
+    let baseCandidates: [MozcBridge.Candidate]
+    if gClassifierEnabled,
+       let segResult = classifierSegmentedConvert(mozcInput, request: request) {
+        baseReplacement = frozenPrefix + segResult.replacement + convertedSuffix
+        baseCandidates = mapCandidateValues(segResult.candidates) {
             frozenPrefix + $0.value + convertedSuffix
         }
+    } else {
+        guard let result = callBackend(mozcInput, request: request, wantCandidates: true) else {
+            Log.pickup("scripted acquire: backend returned no result")
+            return
+        }
+        baseReplacement = frozenPrefix + result.replacement + convertedSuffix
+        baseCandidates = result.candidates.isEmpty
+            ? [candidateFromValue(baseReplacement)]
+            : mapCandidateValues(result.candidates) {
+                frozenPrefix + $0.value + convertedSuffix
+            }
+    }
 
     let scriptSpan = mdr_span_t(span_start_byte: 0, span_end_byte: 0,
                                 romaji: nil, romaji_len: 0)
@@ -1343,11 +1496,29 @@ func doPickup(_ request: PickupRequest = .init()) {
         return
     }
 
-    guard let spanText = sliceUTF16(field.value, start: start, end: end) else {
+    var pickupStart = start
+    var pickupEnd = end
+    var dropAutocompleteTail = false
+    if field.selStart != field.selEnd,
+       isChromiumOmnibox(field: field, appId: appId),
+       let typed = chromiumOmniboxTypedInputSnapshot() {
+        if typed.utf16.count > 0,
+           !chromiumOmniboxSelectionMatchesTypedInput(
+            field: field,
+            start: start,
+            end: end) {
+            pickupStart = 0
+            pickupEnd = start
+            dropAutocompleteTail = true
+            Log.pickup("Chromium omnibox typed-input log detected; using prefix [\(pickupStart)..\(pickupEnd)] instead of selected suffix [\(start)..\(end)]")
+        }
+    }
+
+    guard let spanText = sliceUTF16(field.value, start: pickupStart, end: pickupEnd) else {
         Log.pickup("empty span; nothing to convert")
         return
     }
-        Log.pickup("pick [\(start)..\(end)] \(spanText)")
+        Log.pickup("pick [\(pickupStart)..\(pickupEnd)] \(spanText)")
 
         // Strip any non-ASCII prefix before handing off to Mozc — same
         // reason as the clipboard path. `wordBounds` already does this on
@@ -1355,9 +1526,9 @@ func doPickup(_ request: PickupRequest = .init()) {
         // user-made selection covering `対人sen` bypasses it. Without this
         // the bridge feeds Mozc UTF-8 bytes as Latin-1 codepoints and
         // mojibake comes back.
-        let (asciiPrefix, romajiTail) = splitTrailingASCII(spanText)
+        let (asciiPrefix, romajiTail, preservedSuffix) = splitConvertibleASCIIWindow(spanText)
         let (romajiCore, romajiSuffix) = splitTrailingASCIIPunctuation(romajiTail)
-        let convertedSuffix = convertTrailingASCIISuffix(romajiSuffix, request: request)
+        let convertedSuffix = convertTrailingASCIISuffix(romajiSuffix, request: request) + preservedSuffix
         let (leadingJunk, romajiBody) = splitLeadingASCIIJunkBeforeLowercase(romajiCore)
         guard !romajiCore.isEmpty else {
             let replacement = asciiPrefix + convertedSuffix
@@ -1366,8 +1537,8 @@ func doPickup(_ request: PickupRequest = .init()) {
                 return
             }
             Log.pickup("punctuation-only pickup -> \(replacement)")
-            let scriptSpanStart = field.value.utf8ByteOffset(forUTF16Offset: start)
-            let scriptSpanEnd   = field.value.utf8ByteOffset(forUTF16Offset: end)
+            let scriptSpanStart = field.value.utf8ByteOffset(forUTF16Offset: pickupStart)
+            let scriptSpanEnd   = field.value.utf8ByteOffset(forUTF16Offset: pickupEnd)
             let scriptSpan = mdr_span_t(
                 span_start_byte: size_t(scriptSpanStart),
                 span_end_byte: size_t(scriptSpanEnd),
@@ -1387,11 +1558,13 @@ func doPickup(_ request: PickupRequest = .init()) {
                 route: route,
                 field: field,
                 appId: appId,
-                start: start,
-                end: end,
+                start: pickupStart,
+                end: pickupEnd,
                 originalReading: spanText,
                 replacement: finalReplacement,
-                sessionSeed: sessionSeed)
+                sessionSeed: sessionSeed,
+                dropAutocompleteTail: dropAutocompleteTail,
+                request: request)
             return
         }
 
@@ -1402,8 +1575,8 @@ func doPickup(_ request: PickupRequest = .init()) {
                 asciiPrefix + leadingJunk + $0.value + convertedSuffix
             }
 
-            let scriptSpanStart = field.value.utf8ByteOffset(forUTF16Offset: start)
-            let scriptSpanEnd   = field.value.utf8ByteOffset(forUTF16Offset: end)
+            let scriptSpanStart = field.value.utf8ByteOffset(forUTF16Offset: pickupStart)
+            let scriptSpanEnd   = field.value.utf8ByteOffset(forUTF16Offset: pickupEnd)
             let scriptSpan = mdr_span_t(
                 span_start_byte: size_t(scriptSpanStart),
                 span_end_byte: size_t(scriptSpanEnd),
@@ -1419,15 +1592,17 @@ func doPickup(_ request: PickupRequest = .init()) {
             let sessionSeed = normalizeCommittedCandidateState(
                 replacement: replacement,
                 candidates: snapshotCandidates)
-            _ = applyFieldReplacement(
-                route: route,
-                field: field,
-                appId: appId,
-                start: start,
-                end: end,
-                originalReading: spanText,
-                replacement: replacement,
-                sessionSeed: sessionSeed)
+        _ = applyFieldReplacement(
+            route: route,
+            field: field,
+            appId: appId,
+            start: pickupStart,
+            end: pickupEnd,
+            originalReading: spanText,
+            replacement: replacement,
+            sessionSeed: sessionSeed,
+            dropAutocompleteTail: dropAutocompleteTail,
+            request: request)
             return
         }
 
@@ -1461,8 +1636,8 @@ func doPickup(_ request: PickupRequest = .init()) {
         // Script overrides for replacement text and candidate list. Both
         // are independently optional. `replacement` is what gets written
         // immediately; `snapshotCandidates` is what cycle steps through.
-        let scriptSpanStart = field.value.utf8ByteOffset(forUTF16Offset: start)
-        let scriptSpanEnd   = field.value.utf8ByteOffset(forUTF16Offset: end)
+        let scriptSpanStart = field.value.utf8ByteOffset(forUTF16Offset: pickupStart)
+        let scriptSpanEnd   = field.value.utf8ByteOffset(forUTF16Offset: pickupEnd)
         let scriptSpan = mdr_span_t(
             span_start_byte: size_t(scriptSpanStart),
             span_end_byte: size_t(scriptSpanEnd),
@@ -1483,10 +1658,12 @@ func doPickup(_ request: PickupRequest = .init()) {
             route: route,
             field: field,
             appId: appId,
-            start: start,
-            end: end,
+            start: pickupStart,
+            end: pickupEnd,
             originalReading: spanText,
             replacement: replacement,
-            sessionSeed: sessionSeed)
+            sessionSeed: sessionSeed,
+            dropAutocompleteTail: dropAutocompleteTail,
+            request: request)
         return
 }

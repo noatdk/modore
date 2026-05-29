@@ -2,8 +2,8 @@
 --
 -- This script is intentionally command-oriented: it decides, stage by
 -- stage, how Chrome text fields should be acquired and replaced. The
--- omnibox stays on the host fallback path because it is the one place
--- where Chromium's internal suggestion state matters.
+-- omnibox uses selection_sync so Chromium's internal suggestion state
+-- stays aligned with the committed text.
 
 local CHROME_IDS = {
   ["com.google.Chrome"] = true,
@@ -161,12 +161,20 @@ modore.route_for_app = function(ctx, api)
     return nil
   end
   if is_omnibox(ctx) then
-    modore.log.info("chrome route: omnibox → host default")
-    return nil
+    modore.log.info("chrome route: omnibox → selection_sync")
+    return "selection_sync"
   end
   if ctx.field_role == "AXTextField" or ctx.field_role == "AXTextArea" then
     modore.log.info("chrome route: field → selection_sync")
     return "selection_sync"
   end
   return nil
+end
+
+modore.on_replacement = function(span, cands, api)
+  modore.log.info("chrome replacement hook entered")
+  if span == nil or cands == nil then
+    return nil
+  end
+  return api.default.replacement(span, cands)
 end

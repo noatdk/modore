@@ -34,7 +34,7 @@ The Linux columns are the same binary on different display servers;
 | --------------------------------------------- | :---: | :---------: | :-------------: | :-----: |
 | Top-candidate Mozc conversion (in-process)    |   ✓   |     ✓       |       ✓         |    ✗    |
 | Acronym/code prefix preserved (`R&Diraisho`)  |   ✓¹⁸ |     ✗       |       ✗         |    ✗    |
-| Cycle through Mozc candidates (repeat hotkey) |   ✓   |     ✗       |       ✗         |    ✗    |
+| Cycle through Mozc candidates (repeat hotkey) |   ✓   |     ✓       |       ✓         |    ✗    |
 | Esc to undo last conversion                   |   ✓   |     ✗       |       ✗         |    ✗    |
 | Katakana modifier (Shift+hotkey → カタカナ)   |   ✓   |     ✗       |       ✗         |    ✗    |
 | Floating candidate panel                      |   ✓   |     ✗       |       ✗         |    ✗    |
@@ -55,8 +55,8 @@ The Linux columns are the same binary on different display servers;
 | Feature                                       | macOS | Linux (X11) | Linux (Wayland) | Windows |
 | --------------------------------------------- | :---: | :---------: | :-------------: | :-----: |
 | `~/.config/modore/modore.conf` (XDG)          |   ✓   |     ✓       |       ✓         |    ✗    |
-| Auto-reload on config change                  |   ✓¹² |     ✗       |       ✗         |    ✗    |
-| Tunable clipboard-fallback timings            |   ✓¹⁴ |     ✗       |       ✗         |    ✗    |
+| Auto-reload on config change                  |   ✓¹² |     ◐²³     |       ◐²³       |    ✗    |
+| Tunable clipboard-fallback timings            |   ✓¹⁴ |     ✓²³     |       ✓²³       |    ✗    |
 | `--check-config` preflight (no engine start)  |   ✓¹⁵ |     ✗       |       ✗         |    ✗    |
 | Menu-bar status item ("running" indicator)    |   ✓¹⁶ |     ✗       |       ✗         |    ✗    |
 | SecureInput awareness (sudo/password prompts) |   ✓¹⁷ |     —       |       —         |    —    |
@@ -68,13 +68,15 @@ The Linux columns are the same binary on different display servers;
 
 ¹ Carbon `RegisterEventHotKey` (system-level grab) — `native/macos/CarbonHotkey.swift`. CGEventTap stays installed as a fallback (if Carbon registration ever fails) and as the self-event filter for synthesized CGEvents.
 ² `XGrabKey` with NumLock/CapsLock variants — `native/linux/main.cpp:2867`.
-³ Native-Wayland windows don't see X11 grabs; use `--trigger` from a compositor bind.
+³ Native-Wayland windows don't see X11 grabs; Linux prefers a raw
+`/dev/input/event*` hotkey monitor on Wayland and falls back to the
+X11/compositor-trigger paths when raw access is unavailable.
 ⁴ AT-SPI only sees the field when the toolkit publishes it; native-Wayland Chromium/Electron usually doesn't, and we fall through to clipboard.
-⁵ Includes line-copy / path-bar / UI-hint rejection and PRIMARY-vs-CLIPBOARD arbitration — `native/linux/main.cpp:1047` onward.
+⁵ Includes line-copy / path-bar / UI-hint rejection, one-shot app-specific selection flows, and PRIMARY-vs-CLIPBOARD arbitration — `native/linux/main.cpp:1047` onward.
 ⁶ Unicode `keyboardSetUnicodeString` into the session tap — chunked at 20 UTF-16 units to defeat the platform's silent-truncation limit. No clipboard touch on the write path.
 ⁷ `XTest` synthetic `Ctrl+V` with clipboard swap.
 ⁸ `wtype` and/or `hyprctl sendshortcut`.
-⁹ When `DISPLAY` is set on a Wayland session, the host prefers the X11 keyboard path because Electron is still attached to `DISPLAY`.
+⁹ Native Wayland clients use the Hyprland bind plus clipboard-paste path; XWayland clients still use the X11 keyboard helpers when `DISPLAY` is present.
 ¹⁰ macOS logs via `NSLog` to `Console.app`; no on-disk log file yet.
 ¹¹ AT-SPI uses session D-Bus; some desktops still need the user to enable Accessibility manually, but the host does not prompt.
 ¹² `DispatchSourceFileSystemObject` on `modore.conf` with 300 ms debounce; survives atomic-rename editors. Malformed reloads keep the previous chord. See [`configuration.md`](configuration.md) and `native/macos/ConfigWatcher.swift`.
@@ -85,10 +87,11 @@ The Linux columns are the same binary on different display servers;
 ¹⁵ `modore-host --check-config` parses the same file the running host would and reports each section's outcome. Exits 0 on healthy load, 1 on malformed hotkey, 2 on rejected `[clipboard]` key. Useful for pre-commit hooks and dotfiles tests.
 
 ¹⁶ `NSStatusItem` showing "ﾓﾄﾞﾚ" (half-width katakana for "modore") in the menu bar; menu lists the live hotkey, delivery path (Carbon vs CGEventTap), and shortcuts for opening / revealing the config plus Quit. Refreshes automatically on config reload. See `native/macos/StatusItem.swift`.
+²³ Linux hot-reloads `[clipboard]` timing values from `modore.conf` on a short poll interval. Hotkey registration still happens at startup, so changing `[conversion] hotkey` requires a restart.
 
 ¹⁸ Leading `[A-Z][A-Z0-9&/.+\-_:@#]*` head followed by lowercase is held back from Mozc and re-attached to the result, so `R&Diraisho` → `R&D依頼書` and `APIkaitou` → `API回答`. Single-uppercase words (`Karen`) are not split. Phase 2 plans a user dict at `~/.config/modore/non-japanese.txt` for tokens this heuristic misses. See `native/macos/Pickup/SpanSplit.swift::splitAcronymHead`.
 
-²⁰ Code integrated; build verification pending on Linux.
+²⁰ Linux wires the basic Lua hook trio into the pickup path (`pickup` / `replacement` / `route`); the default build still ships a helpers-only `libmodore_script.so`, and `candidates` / `acquire` host primitives remain Mac-only for now.
 
 ²¹ wm-class probe not yet plumbed on Linux, so the engine receives NULL app_id and only `default.lua` ever matches. macOS reads bundle id via `NSWorkspace.frontmostApplication`.
 

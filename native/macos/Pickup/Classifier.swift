@@ -12,6 +12,8 @@
 import Foundation
 
 enum Classifier {
+    static let modelFileName = "classifier.mdl"
+    static let bundledModelResourceName = "classifier"
 
     // Process-wide classifier handle. Written once at boot, read from the
     // pickup dispatch queue. Same visibility contract as ModoreScript.engine.
@@ -43,6 +45,14 @@ enum Classifier {
             }
         }
         return true
+    }
+
+    static func configModelPath(configDir: String) -> String {
+        "\(configDir)/\(modelFileName)"
+    }
+
+    static func bundledModelPath() -> String? {
+        Bundle.main.path(forResource: bundledModelResourceName, ofType: "mdl")
     }
 
     static var isLoaded: Bool { handle != nil }

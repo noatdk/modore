@@ -14,7 +14,9 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CASES = REPO_ROOT / "tools/data/classifier-eval.tsv"
-DEFAULT_MODEL = REPO_ROOT / "engine/models/classifier.mdl"
+DEFAULT_HELDOUT = REPO_ROOT / "tools/data/classifier-eval-heldout.tsv"
+MODEL_FILENAME = "classifier.mdl"
+DEFAULT_MODEL = REPO_ROOT / "engine/models" / MODEL_FILENAME
 DEFAULT_DICT = REPO_ROOT / "engine/models/english_dict.txt"
 
 
@@ -103,10 +105,18 @@ def load_lib(path: Path):
 
 def segment(lib, handle: int, text: str) -> tuple[tuple[str, str], ...]:
     raw = text.encode("ascii")
-    out = (Segment * 32)()
-    n = lib.mdr_cls_segment(handle, raw, len(raw), out, len(out))
+    # A run can't be shorter than one byte, so len(raw) segments is the hard
+    # ceiling; +1 lets us detect a full buffer (would mean the engine wrote
+    # more runs than bytes — impossible, so a real bug rather than truncation).
+    capacity = max(len(raw) + 1, 1)
+    out = (Segment * capacity)()
+    n = lib.mdr_cls_segment(handle, raw, len(raw), out, capacity)
     if n < 0:
         raise RuntimeError(f"mdr_cls_segment failed for {text!r}")
+    if n == capacity:
+        raise RuntimeError(
+            f"mdr_cls_segment filled the {capacity}-slot buffer for {text!r} "
+            "— output truncated")
     result: list[tuple[str, str]] = []
     for i in range(n):
         kind = "R" if out[i].is_romaji else "A"
@@ -118,12 +128,41 @@ def fmt(parts: tuple[tuple[str, str], ...]) -> str:
     return "|".join(f"{kind}:{text}" for kind, text in parts)
 
 
+def evaluate(lib, handle: int, cases: list[Case]) -> tuple[list, int, int]:
+    """Run every case; return (rows, must_failures, target_failures)."""
+    must_failures = 0
+    target_failures = 0
+    rows = []
+    for case in cases:
+        actual = segment(lib, handle, case.text)
+        ok = actual == case.expected
+        if not ok and case.tier == "must":
+            must_failures += 1
+        elif not ok:
+            target_failures += 1
+        rows.append((case, actual, ok))
+    return rows, must_failures, target_failures
+
+
+def print_rows(rows: list) -> None:
+    for case, actual, ok in rows:
+        marker = "ok" if ok else ("FAIL" if case.tier == "must" else "todo")
+        print(f"{marker:4s} {case.tier:6s} {case.text:28s} {fmt(actual)}")
+        if not ok:
+            print(f"      expected: {fmt(case.expected)}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--lib", type=Path, default=default_lib_path())
     parser.add_argument("--model", type=Path, default=DEFAULT_MODEL)
     parser.add_argument("--dict", type=Path, default=DEFAULT_DICT)
     parser.add_argument("--cases", type=Path, default=DEFAULT_CASES)
+    parser.add_argument("--heldout", type=Path, default=DEFAULT_HELDOUT,
+                        help="disjoint generalization set the trainer never "
+                             "loads; reported informationally")
+    parser.add_argument("--no-heldout", action="store_true",
+                        help="skip the held-out generalization report")
     parser.add_argument("--strict-targets", action="store_true")
     args = parser.parse_args()
 
@@ -138,27 +177,31 @@ def main() -> int:
         if rc != 0:
             raise SystemExit(f"failed to load dictionary: {args.dict}")
 
-    failures = 0
-    target_failures = 0
     try:
-        for case in cases:
-            actual = segment(lib, handle, case.text)
-            ok = actual == case.expected
-            if not ok and case.tier == "must":
-                failures += 1
-            elif not ok:
-                target_failures += 1
-            marker = "ok" if ok else ("FAIL" if case.tier == "must" else "todo")
-            print(f"{marker:4s} {case.tier:6s} {case.text:28s} {fmt(actual)}")
-            if not ok:
-                print(f"      expected: {fmt(case.expected)}")
+        rows, failures, target_failures = evaluate(lib, handle, cases)
+        print_rows(rows)
+        print(
+            f"\nsummary: {len(cases) - failures - target_failures}/{len(cases)} exact, "
+            f"must_failures={failures}, target_failures={target_failures}"
+        )
+
+        # Held-out generalization: a disjoint set the trainer never sees.
+        # Reported for visibility only — it does not gate the exit code,
+        # since the model is not anchored on these strings.
+        if not args.no_heldout and args.heldout and args.heldout.exists():
+            heldout = load_cases(args.heldout)
+            hrows, h_must, h_target = evaluate(lib, handle, heldout)
+            exact = sum(1 for _, _, ok in hrows if ok)
+            print("\n--- held-out generalization (unseen by trainer; "
+                  "informational) ---")
+            print_rows(hrows)
+            print(
+                f"\ngeneralization: {exact}/{len(heldout)} exact, "
+                f"must_failures={h_must}, target_failures={h_target}"
+            )
     finally:
         lib.mdr_cls_free(handle)
 
-    print(
-        f"\nsummary: {len(cases) - failures - target_failures}/{len(cases)} exact, "
-        f"must_failures={failures}, target_failures={target_failures}"
-    )
     if failures or (args.strict_targets and target_failures):
         return 1
     return 0

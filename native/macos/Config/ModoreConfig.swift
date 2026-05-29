@@ -309,6 +309,33 @@ enum ModoreConfig {
         var restoreClipboardDelayMs: Int = 50
     }
 
+
+    /// Parse `[conversion] shadow_buffer`. Wrapper that logs issues.
+    /// Default `false` — the shadow buffer is opt-in; omitting the key
+    /// keeps the existing clipboard/AX-only pickup chain.
+    static func loadShadowBufferEnabled() -> Bool {
+        let (v, issues) = parseShadowBufferEnabled()
+        for issue in issues { Log.config(issue) }
+        return v
+    }
+
+    static func parseShadowBufferEnabled() -> (Bool, [String]) {
+        var enabled = false
+        var issues: [String] = []
+        let url = configFileURL()
+        _ = forEachKeyValue(url) { section, key, value in
+            guard section == "conversion" && key == "shadow_buffer" else { return }
+            switch value.lowercased() {
+            case "on", "true", "1", "yes":
+                enabled = true
+            case "off", "false", "0", "no", "":
+                enabled = false
+            default:
+                issues.append("ignoring [conversion] shadow_buffer=\(value) (expected on|off)")
+            }
+        }
+        return (enabled, issues)
+    }
     /// Parse `[conversion] classifier`. Wrapper that logs issues.
     /// Default `false` — the ML classifier is opt-in; omitting the key
     /// keeps the existing heuristic pipeline (splitAcronymHead).
@@ -400,6 +427,11 @@ enum ModoreConfig {
                 default:
                     issues.append("ignoring [bridge] trace_raw_candidates=\(value) (expected on|off)")
                 }
+            case "mozc_backend":
+                // Valid [bridge] key, but consumed by parseMozcBackend (it can
+                // also live under [conversion]). Recognize it here so this
+                // parser doesn't flag it as unknown.
+                break
             default:
                 issues.append("ignoring [bridge] \(key)=\(value) (unknown key)")
             }
@@ -764,8 +796,15 @@ enum ModoreConfig {
         handler: (_ section: String, _ key: String, _ value: String) -> Void
     ) -> Bool {
         guard let data = try? Data(contentsOf: url),
-              let text = String(data: data, encoding: .utf8) else {
+              var text = String(data: data, encoding: .utf8) else {
             return false
+        }
+        // Strip a leading UTF-8 BOM (U+FEFF): Swift's UTF-8 decoder keeps it,
+        // and it isn't a whitespace character, so without this the first line
+        // stays "\u{FEFF}[section]", fails the hasPrefix("[") check, and the
+        // opening [section] header (plus its keys) is silently dropped.
+        if text.hasPrefix("\u{FEFF}") {
+            text.removeFirst()
         }
         var section = ""
         for raw in text.split(whereSeparator: \.isNewline) {
@@ -905,5 +944,18 @@ enum ModoreConfig {
         }
 
         return nil
+    }
+
+    // MARK: - Debug overlay
+
+    /// Parse `[debug] overlay`. Default `false` — the overlay is dev-only
+    /// and must be explicitly enabled. Accepts on/yes/true/1.
+    static func loadDebugOverlay() -> Bool {
+        var enabled = false
+        _ = forEachKeyValue(configFileURL()) { section, key, value in
+            guard section == "debug" && key == "overlay" else { return }
+            enabled = ["on", "yes", "true", "1"].contains(value.lowercased())
+        }
+        return enabled
     }
 }

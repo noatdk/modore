@@ -1,26 +1,7 @@
 #include "modore_script.h"
+#include "utf8_nav.h"
 
 #include <string.h>
-
-static size_t clamp_to_utf8_boundary(const char* s, size_t len, size_t pos) {
-    if (pos > len) pos = len;
-    while (pos > 0 && pos < len && (((unsigned char)s[pos]) & 0xC0) == 0x80) --pos;
-    return pos;
-}
-
-static size_t utf8_next(const char* s, size_t len, size_t pos) {
-    if (pos >= len) return len;
-    ++pos;
-    while (pos < len && (((unsigned char)s[pos]) & 0xC0) == 0x80) ++pos;
-    return pos;
-}
-
-static size_t utf8_prev(const char* s, size_t pos) {
-    if (pos == 0) return 0;
-    --pos;
-    while (pos > 0 && (((unsigned char)s[pos]) & 0xC0) == 0x80) --pos;
-    return pos;
-}
 
 static int is_ascii_ws_at(const char* s, size_t pos) {
     unsigned char c = (unsigned char)s[pos];
@@ -120,7 +101,7 @@ int mdr_text_word_bounds(
     const char* text, size_t len, size_t caret_byte,
     mdr_byte_bounds_t* out_bounds) {
     if (!text || !out_bounds) return -1;
-    size_t caret = clamp_to_utf8_boundary(text, len, caret_byte);
+    size_t caret = utf8_clamp(text, len, caret_byte);
 
     if (caret < len && japanese_punctuation_span_at(text, len, caret, out_bounds)) {
         return 0;
@@ -134,6 +115,22 @@ int mdr_text_word_bounds(
     if (caret > 0) {
         size_t prev = utf8_prev(text, caret);
         if (japanese_punctuation_span_at(text, len, prev, out_bounds)) {
+            return 0;
+        }
+    }
+
+    if (caret > 0 && caret < len) {
+        size_t prev = utf8_prev(text, caret);
+        if (is_ascii_at(text, prev) && !is_ascii_at(text, caret)) {
+            size_t ascii_start = prev;
+            while (ascii_start > 0) {
+                size_t before = utf8_prev(text, ascii_start);
+                if (is_ascii_ws_at(text, before)) break;
+                if (!is_ascii_at(text, before)) break;
+                ascii_start = before;
+            }
+            out_bounds->start_byte = ascii_start;
+            out_bounds->end_byte = caret;
             return 0;
         }
     }

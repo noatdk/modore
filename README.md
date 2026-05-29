@@ -8,12 +8,14 @@ English: [README.en.md](README.en.md)
 カーソル位置の単語がMozcのトップ候補に置き換わる。モード切り替えも変換
 中の下線UIもなし、必要なときだけ呼び出すスタイル。
 
+※まだ試行錯誤中です。バグ報告とPRは大歓迎です。
+
 ## ステータス
 
 | OS      | 状態                                                                  |
 | ------- | --------------------------------------------------------------------- |
-| macOS   | 動作中。ホットキー設定、候補サイクル、Escで取り消し、候補パネル対応   |
-| Linux   | 動作中。X11 grab + AT-SPI2 + Unixソケット IPC + Waylandフォールバック |
+| macOS   | 試行中。ホットキー設定、候補サイクル、Escで取り消し、候補パネル対応   |
+| Linux   | 試行中。X11 grab + AT-SPI2 + Unixソケット IPC + Waylandフォールバック |
 | Windows | 未着手                                                                |
 
 機能比較表は [docs/PARITY.md](docs/PARITY.md)。機能の追加・削除と
@@ -62,7 +64,7 @@ hotkey = Ctrl+Shift+grave
 # mozc_backend = built-in
 ```
 
-デフォルトはmacOSが `Cmd+Semicolon`、Linuxが `Super+Semicolon`。ホットキー
+デフォルトはmacOSが `Cmd+Semicolon`、Linuxが `Ctrl+Semicolon`。ホットキー
 の文法、修飾キーのエイリアス、キー名一覧は
 [docs/configuration.md](docs/configuration.md) を参照。
 

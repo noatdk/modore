@@ -100,6 +100,10 @@ var gCandidatePanelMode: ModoreConfig.CandidatePanelMode = .none
 /// race-free.
 var gCandidatePanelDurationMs: Int = ModoreConfig.defaultCandidatePanelDurationMs
 
+/// When true the shadow buffer tracks keystrokes for zero-latency text
+/// pickup. Opt-in via `[conversion] shadow_buffer = on`. Default false.
+var gShadowBufferEnabled: Bool = false
+
 /// When true, the ML n-gram classifier is used for romaji/ASCII segmentation
 /// instead of the heuristic `splitAcronymHead`. Opt-in via
 /// `[conversion] classifier = on` in the config file.
@@ -407,6 +411,20 @@ func applyCandidatePanelDurationReload() {
     }
 }
 
+/// Current `[debug] overlay` setting. When true the DebugOverlay panel is
+/// updated on every keyDown via the EventTap callback. Default false.
+var gDebugOverlayEnabled: Bool = false
+
+func applyDebugOverlayReload() {
+    let next = ModoreConfig.loadDebugOverlay()
+    if next == gDebugOverlayEnabled { return }
+    gDebugOverlayEnabled = next
+    Log.config("debug overlay: \(next ? "on" : "off")")
+    if !next {
+        DebugOverlay.shared.hide()
+    }
+}
+
 /// Single entry point for the config watcher — reloads every section.
 func applyConfigReload() {
     applyLoggingReload()
@@ -421,7 +439,9 @@ func applyConfigReload() {
     applyClipboardTimingsReload()
     applyCandidatePanelReload()
     applyCandidatePanelDurationReload()
+    applyShadowBufferReload()
     applyClassifierReload()
+    applyDebugOverlayReload()
 }
 
 /// Reload `[logging] disabled` before any other section so subsequent reload
@@ -461,6 +481,13 @@ func applyBridgeRuntimeReloadNotice() {
     Log.config("bridge trace_raw_candidates=\(next.traceRawCandidates ? "on" : "off") (applies on next bridge init)")
 }
 
+private func applyShadowBufferReload() {
+    let next = ModoreConfig.loadShadowBufferEnabled()
+    if next == gShadowBufferEnabled { return }
+    gShadowBufferEnabled = next
+    Log.config("shadow buffer: \(next ? "on" : "off")")
+}
+
 private func applyClassifierReload() {
     let new = ModoreConfig.loadClassifierEnabled()
     if new == gClassifierEnabled { return }
@@ -473,14 +500,14 @@ private func applyClassifierReload() {
                 }
                 return "\(FileManager.default.homeDirectoryForCurrentUser.path)/.config/modore"
             }()
-            let modelPath = "\(configDir)/classifier.mdl"
+            let modelPath = Classifier.configModelPath(configDir: configDir)
             if FileManager.default.fileExists(atPath: modelPath) {
                 if !Classifier.load(modelPath: modelPath) {
                     Log.config("[conversion] classifier = on but model failed to load — staying off")
                     gClassifierEnabled = false
                     return
                 }
-            } else if let bundled = Bundle.main.path(forResource: "classifier", ofType: "mdl") {
+            } else if let bundled = Classifier.bundledModelPath() {
                 if !Classifier.load(modelPath: bundled) {
                     Log.config("[conversion] classifier = on but bundle model failed to load — staying off")
                     gClassifierEnabled = false

@@ -60,7 +60,7 @@ modore.on_pickup = function(ctx, api)
   local picked = text:sub(span.start_byte + 1, span.end_byte)
   local head, tail = api.text.split_trailing_ascii(picked)
   if tail ~= "" then
-    span.end_byte = span.start_byte + #head
+    span.start_byte = span.start_byte + #head
   end
 
   return span

@@ -27,7 +27,8 @@ have already observed:
 
 - `example-chrome.lua` owns Chrome's acquisition choreography because
   Chromium page text fields and DevTools have different failure modes
-  from the omnibox.
+  from the omnibox. The omnibox now uses `selection_sync` so Chrome's
+  suggestion model stays aligned with the committed text.
 - `example-discord.lua` keeps Discord on the selection-sync route and
   prefers the focused selection when it exists.
 - `example-obsidian.lua` keeps Obsidian on the AX route and leaves AX

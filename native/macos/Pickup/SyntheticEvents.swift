@@ -5,16 +5,6 @@
 
 import Cocoa
 
-// MARK: - Virtual key codes
-
-let kVK_ANSI_C: CGKeyCode = 0x08
-let kVK_ANSI_V: CGKeyCode = 0x09
-let kVK_LeftArrow: CGKeyCode = 0x7B
-let kVK_RightArrow: CGKeyCode = 0x7C
-/// What the user calls "Backspace" — Apple's main-keyboard Delete key.
-/// (`kVK_ForwardDelete = 0x75` is the separate forward-delete key.)
-let kVK_Backspace: CGKeyCode = 0x33
-
 // MARK: - Posting location + self-event marker
 
 /// All synthetic events are posted into the **session** event tap, not the HID

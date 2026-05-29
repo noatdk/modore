@@ -22,6 +22,18 @@ MDR_1 {
         mdr_text_split_trailing_ascii_punctuation;
         mdr_text_split_acronym_head;
         mdr_text_normalize_pickup_suffix;
+        mdr_shadow_create;
+        mdr_shadow_destroy;
+        mdr_shadow_insert;
+        mdr_shadow_backspace;
+        mdr_shadow_forward_delete;
+        mdr_shadow_move;
+        mdr_shadow_word_jump;
+        mdr_shadow_line_jump;
+        mdr_shadow_reset;
+        mdr_shadow_is_valid;
+        mdr_shadow_text;
+        mdr_shadow_cursor_byte;
     local:
         *;
 };

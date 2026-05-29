@@ -63,6 +63,22 @@ struct SpanSplitTests {
         // canonical "tsuchi-yoshi" test.
         expectTuple(splitTrailingASCII("𠮷野yoshi"),       ("𠮷野", "yoshi"),       "split keeps surrogate pair intact")
 
+        expectEqual(splitConvertibleASCIIWindow("対人sen").prefix, "対人", "pickup window trailing prefix")
+        expectEqual(splitConvertibleASCIIWindow("対人sen").ascii, "sen", "pickup window trailing ascii")
+        expectEqual(splitConvertibleASCIIWindow("対人sen").suffix, "", "pickup window trailing suffix")
+        expectEqual(splitConvertibleASCIIWindow("tesutoテスト").prefix, "", "pickup window boundary prefix")
+        expectEqual(splitConvertibleASCIIWindow("tesutoテスト").ascii, "tesuto", "pickup window boundary ascii")
+        expectEqual(splitConvertibleASCIIWindow("tesutoテスト").suffix, "テスト", "pickup window boundary suffix")
+        // Space is a word boundary: only the word immediately before the kana suffix is the convertible island.
+        expectEqual(splitConvertibleASCIIWindow("通路 douroテスト").prefix, "通路 ", "pickup window space-bounded prefix")
+        expectEqual(splitConvertibleASCIIWindow("通路 douroテスト").ascii, "douro", "pickup window space-bounded ascii")
+        expectEqual(splitConvertibleASCIIWindow("通路 douroテスト").suffix, "テスト", "pickup window space-bounded suffix")
+
+        expectTuple(splitBeforeLastASCIIWord(" should show up plenty. douro"), (" should show up plenty. ", "douro"), "last word: strips english context")
+        expectTuple(splitBeforeLastASCIIWord("mi-douro"),                       ("",                          "mi-douro"), "last word: no space → unchanged")
+        expectTuple(splitBeforeLastASCIIWord(" koe"),                           (" ",                         "koe"),      "last word: leading space only")
+        expectTuple(splitBeforeLastASCIIWord("sen"),                            ("",                          "sen"),      "last word: plain word")
+
         // Trailing punctuation is kept separate so the pickup path can
         // normalize it to Japanese punctuation after conversion.
         expectTuple(splitTrailingASCIIPunctuation("IME."),       ("IME", "."),   "split trailing period")
@@ -170,6 +186,7 @@ struct SpanSplitTests {
         let kanjiRoman = Array("対人sen".utf16)
         let (kStart, kEnd) = wordBounds(kanjiRoman, caret: kanjiRoman.count)
         expectTuple((kStart, kEnd), (2, 5), "wordBounds stops at ASCII↔non-ASCII transition")
+        expectTuple(wordBounds(Array("tesutoテスト".utf16), caret: 6), (0, 6), "wordBounds prefers ASCII before kana at boundary")
         expectTuple(wordBounds(Array("声,".utf16), caret: 1), (1, 2), "wordBounds picks comma before caret after kanji")
         expectTuple(wordBounds(Array("声,".utf16), caret: 2), (1, 2), "wordBounds picks comma after caret after kanji")
         expectTuple(wordBounds(Array("声,".utf16), caret: 0), (1, 2), "wordBounds picks comma from caret before kanji")

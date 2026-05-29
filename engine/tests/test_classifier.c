@@ -170,6 +170,15 @@ static void test_dictionary_boundary_refinement(void) {
               "dockerdetsukuru: keeps detsukuru romaji");
     }
 
+    n = mdr_cls_segment(cls, "dockerdetukutta", 15, segs, 8);
+    CHECK(n == 2, "dockerdetukutta: 2 segments");
+    if (n == 2) {
+        CHECK(segs[0].is_romaji == 0 && segs[0].end == 6,
+              "dockerdetukutta: trims ASCII to docker");
+        CHECK(segs[1].is_romaji == 1 && segs[1].start == 6 && segs[1].end == 15,
+              "dockerdetukutta: keeps detukutta romaji");
+    }
+
     n = mdr_cls_segment(cls, "configwoijitte", 14, segs, 8);
     CHECK(n == 2, "configwoijitte: 2 segments");
     if (n == 2) {
@@ -177,6 +186,15 @@ static void test_dictionary_boundary_refinement(void) {
               "configwoijitte: still extends con to config");
         CHECK(segs[1].is_romaji == 1 && segs[1].start == 6,
               "configwoijitte: leaves woijitte romaji");
+    }
+
+    n = mdr_cls_segment(cls, "vrtyatto", 8, segs, 8);
+    CHECK(n == 2, "vrtyatto: 2 segments");
+    if (n == 2) {
+        CHECK(segs[0].is_romaji == 0 && segs[0].end == 2,
+              "vrtyatto: keeps vr ASCII");
+        CHECK(segs[1].is_romaji == 1 && segs[1].start == 2 && segs[1].end == 8,
+              "vrtyatto: keeps tyatto romaji");
     }
 
     mdr_cls_free(cls);

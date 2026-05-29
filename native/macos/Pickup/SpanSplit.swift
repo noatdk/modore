@@ -110,6 +110,59 @@ func splitTrailingASCII(_ s: String) -> (prefix: String, tail: String) {
     )
 }
 
+/// Return the ASCII pickup run plus any text that must be preserved around it.
+///
+/// The normal pickup shape has the romaji at the end (`対人sen`). Some macOS
+/// surfaces can acquire the larger mixed token when the caret is at an
+/// ASCII→Japanese boundary (`tesuto|テスト` with the visible caret after `o`).
+/// In that case the convertible run is the ASCII island immediately before
+/// the trailing non-ASCII suffix.
+func splitConvertibleASCIIWindow(_ s: String) -> (prefix: String, ascii: String, suffix: String) {
+    let trailing = splitTrailingASCII(s)
+    if !trailing.tail.isEmpty {
+        return (trailing.prefix, trailing.tail, "")
+    }
+
+    let bytes = Array(s.utf8)
+    var suffixStart = bytes.count
+    while suffixStart > 0 && bytes[suffixStart - 1] >= 0x80 {
+        suffixStart -= 1
+    }
+    guard suffixStart < bytes.count else {
+        return (s, "", "")
+    }
+
+    var asciiStart = suffixStart
+    while asciiStart > 0 && bytes[asciiStart - 1] < 0x80 && bytes[asciiStart - 1] > 0x20 {
+        asciiStart -= 1
+    }
+    guard asciiStart < suffixStart else {
+        return (s, "", "")
+    }
+
+    return (
+        utf8Range(s, start: 0, end: asciiStart),
+        utf8Range(s, start: asciiStart, end: suffixStart),
+        utf8Range(s, start: suffixStart, end: bytes.count)
+    )
+}
+
+/// Split at the last ASCII whitespace so the trailing word is isolated from
+/// any left-context that a line-left acquire may have included.
+/// `" should show up plenty. douro"` → `(" should show up plenty. ", "douro")`
+/// `"mi-douro"` → `("", "mi-douro")`, `"sen"` → `("", "sen")`.
+func splitBeforeLastASCIIWord(_ s: String) -> (prefix: String, word: String) {
+    let bytes = Array(s.utf8)
+    var i = bytes.count
+    while i > 0 && bytes[i - 1] > 0x20 {
+        i -= 1
+    }
+    return (
+        utf8Range(s, start: 0, end: i),
+        utf8Range(s, start: i, end: bytes.count)
+    )
+}
+
 /// Split off a trailing ASCII punctuation run from an ASCII string while
 /// keeping the core intact. Used after `splitTrailingASCII` so the pickup
 /// pipeline can convert the core and suffix separately.
