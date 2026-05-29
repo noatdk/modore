@@ -95,7 +95,30 @@ private func typedString(from event: CGEvent) -> String? {
     return String(utf16CodeUnits: buffer, count: copiedLength)
 }
 
+// Entry from the CGEventTap callback, which runs on the main run loop and
+// has only a ~1s budget before macOS disables the tap. readFocusedField()
+// does ~6 blocking AX IPCs, so running it inline stalls the tap per
+// keystroke while a Chromium omnibox is focused. Extract the cheap
+// event-bound data synchronously (keycode/flags/typed string — no IPC),
+// then hop the AX work onto kHotkeyTapQueue. That's the same serial queue
+// the pickup work runs on, so updates stay ordered ahead of any later
+// conversion trigger (which reads chromiumOmniboxTypedInputSnapshot()).
 func updateChromiumOmniboxTypedInputLog(for event: CGEvent) {
+    let keyCode = CGKeyCode(event.getIntegerValueField(.keyboardEventKeycode))
+    let coreFlags = event.flags.intersection([
+        .maskCommand, .maskShift, .maskControl, .maskAlternate
+    ])
+    let typed = typedString(from: event)
+    kHotkeyTapQueue.async {
+        applyChromiumOmniboxTypedInput(keyCode: keyCode, coreFlags: coreFlags, typed: typed)
+    }
+}
+
+private func applyChromiumOmniboxTypedInput(
+    keyCode: CGKeyCode,
+    coreFlags: CGEventFlags,
+    typed: String?
+) {
     guard let appId = FrontmostApp.describe()?.bundleID,
           kChromiumOmniboxBundleIDs.contains(appId) else {
         chromiumOmniboxTypedInputClear()
@@ -111,14 +134,10 @@ func updateChromiumOmniboxTypedInputLog(for event: CGEvent) {
 
     chromiumOmniboxHandleFocusChange(field)
 
-    let coreFlags = event.flags.intersection([
-        .maskCommand, .maskShift, .maskControl, .maskAlternate
-    ])
     if coreFlags.contains(.maskCommand) || coreFlags.contains(.maskControl) || coreFlags.contains(.maskAlternate) {
         return
     }
 
-    let keyCode = CGKeyCode(event.getIntegerValueField(.keyboardEventKeycode))
     if keyCode == kVK_Backspace {
         chromiumOmniboxTypedInputBackspace()
         return
@@ -127,7 +146,7 @@ func updateChromiumOmniboxTypedInputLog(for event: CGEvent) {
         return
     }
 
-    if let typed = typedString(from: event), !typed.isEmpty {
+    if let typed, !typed.isEmpty {
         chromiumOmniboxTypedInputAppend(typed)
     }
 }
