@@ -113,6 +113,9 @@ final class SecureInputMonitor {
     private var lastState: SecureInputState = .clear
     private let idleInterval: DispatchTimeInterval
     private let busyInterval: DispatchTimeInterval
+    /// Interval the repeating timer is currently armed with. Tracked so
+    /// rescheduleIfNeeded only re-arms on an actual idle/busy change (see there).
+    private var currentInterval: DispatchTimeInterval
     private let onChange: (SecureInputState) -> Void
 
     /// `onChange` is dispatched on the main queue.
@@ -124,6 +127,8 @@ final class SecureInputMonitor {
             label: "local.modore.secure-input", qos: .utility)
         self.idleInterval = .seconds(idleSeconds)
         self.busyInterval = .seconds(busySeconds)
+        // start() arms the timer at idleInterval; keep this in sync.
+        self.currentInterval = .seconds(idleSeconds)
         self.onChange = onChange
     }
 
@@ -185,8 +190,13 @@ final class SecureInputMonitor {
     /// down once idle so we're not wasting cycles.
     private func rescheduleIfNeeded(busy: Bool) {
         let want = busy ? busyInterval : idleInterval
-        // DispatchSourceTimer.schedule(repeating:) doesn't expose the current
-        // interval, so always re-schedule. The call is cheap.
+        // Only re-arm on an actual interval change. Re-scheduling every tick
+        // reset the deadline to `.now() + want` *after* the poll ran, so the
+        // effective period drifted to `want + poll_duration` and the repeating
+        // cadence never took effect. When the interval is unchanged, leave the
+        // repeating timer to fire on its own schedule.
+        guard want != currentInterval else { return }
+        currentInterval = want
         timer?.schedule(deadline: .now() + want, repeating: want)
     }
 }
