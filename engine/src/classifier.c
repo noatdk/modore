@@ -21,6 +21,20 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* The on-disk model stores its little-endian fields with a fixed layout and
+ * this reader does no byte-swapping. All current targets are little-endian;
+ * fail the build loudly on a big-endian target rather than load garbage. */
+#if defined(__BYTE_ORDER__) && defined(__ORDER_BIG_ENDIAN__) && \
+    __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+#error "classifier model format is little-endian; big-endian targets need byte-swap"
+#endif
+
+/* Stack buffer size for a single type n-gram in score_position; also the
+ * largest ngram_max a model file may declare. */
+#define MDR_CLS_NGRAM_BUF 16
+/* Upper bound on the model's offset window — sanity cap, not a buffer limit. */
+#define MDR_CLS_MAX_WINDOW 64
+
 /* ----- Model structure (opaque to callers) ----------------------------- */
 
 struct mdr_cls {
@@ -114,11 +128,23 @@ static const char* const ROMAJI_TABLE[] = {
 };
 #define ROMAJI_TABLE_SIZE (sizeof(ROMAJI_TABLE) / sizeof(ROMAJI_TABLE[0]))
 
+/* Exact lookup of s[0..slen) in the sorted ROMAJI_TABLE. s need not be
+ * NUL-terminated. Binary search relies on the table being strcmp-sorted
+ * (asserted by tools/, verified at review time). */
 static int romaji_table_match(const char* s, size_t slen) {
-    for (size_t i = 0; i < ROMAJI_TABLE_SIZE; i++) {
-        size_t rlen = strlen(ROMAJI_TABLE[i]);
-        if (rlen == slen && memcmp(ROMAJI_TABLE[i], s, slen) == 0)
-            return 1;
+    size_t lo = 0, hi = ROMAJI_TABLE_SIZE;
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        const char* entry = ROMAJI_TABLE[mid];
+        int cmp = strncmp(entry, s, slen);
+        if (cmp == 0) {
+            /* entry matches the first slen bytes; exact only if it ends here.
+             * A longer entry sorts after s, so search the lower half. */
+            if (entry[slen] == '\0') return 1;
+            cmp = 1;
+        }
+        if (cmp < 0) lo = mid + 1;
+        else          hi = mid;
     }
     return 0;
 }
@@ -255,8 +281,9 @@ static double score_position(const mdr_cls_t* cls,
             uint32_t h = hash_feature('S', off, text + start, n, cls->n_buckets);
             score += cls->weights[h];
 
-            /* Type n-gram */
-            char tgram[16];
+            /* Type n-gram. n <= ngram_max, which mdr_cls_load caps at
+             * MDR_CLS_NGRAM_BUF, so this write can never overflow. */
+            char tgram[MDR_CLS_NGRAM_BUF];
             for (int j = 0; j < n; j++)
                 tgram[j] = char_type(text[start + j]);
             h = hash_feature('T', off, tgram, n, cls->n_buckets);
@@ -354,6 +381,16 @@ mdr_cls_t* mdr_cls_load(const char* path) {
         return NULL;
     }
     if (version != MDR_CLS_VERSION || n_buckets == 0 || n_buckets > 1000000) {
+        fclose(f);
+        return NULL;
+    }
+    /* score_position writes a type n-gram of length ngram_max into a fixed
+     * 16-byte stack buffer (tgram[16]); a model claiming ngram_max > 16 would
+     * overflow it. window only bounds the offset loop, but an absurd value is
+     * pure wasted work per position — cap it too. The bundled model can be
+     * overridden by a user-writable file, so this is a real trust boundary. */
+    if (ngram_max == 0 || ngram_max > MDR_CLS_NGRAM_BUF ||
+        window > MDR_CLS_MAX_WINDOW) {
         fclose(f);
         return NULL;
     }
