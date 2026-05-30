@@ -33,8 +33,26 @@ mozc::commands::Request BuildDefaultRequest() {
   variation_types |= mozc::commands::DecoderExperimentParams::SVS_JAPANESE;
   request.mutable_decoder_experiment_params()->set_variation_character_types(
       variation_types);
-  request.set_zero_query_suggestion(true);
-  request.set_mixed_conversion(true);
+  // Deliberately left disabled. Both feed Mozc's suggestion machinery, which
+  // the shared system Google IME renderer (a singleton process) paints as a
+  // native candidate window — and modore can't reliably dismiss it because it
+  // only talks to Converter.session, never the renderer.
+  //
+  //   zero_query_suggestion: SUBMIT -> Session::Commit calls Suggest() right
+  //     after committing, raising a post-commit zero-query suggestion panel
+  //     (the punctuation/symbol list with the "Tab キーで選択" footer). modore
+  //     does a one-shot convert -> capture -> submit -> discard-session, so it
+  //     never consumes these suggestions; the panel is pure liability and gets
+  //     left dangling whenever the teardown REVERT races or the committed word
+  //     happens to have zero-query follow-ons.
+  //   mixed_conversion: pops suggestion windows mid-composition during the
+  //     per-keystroke SendKey loop, same dangling-renderer problem.
+  //
+  // Candidate capture does not depend on either flag — it reads the SPACE
+  // conversion window (RunConvertFlow falls back to a second SPACE to open it).
+  // The built-in backend sets neither and has never shown a phantom window.
+  // request.set_zero_query_suggestion(true);
+  // request.set_mixed_conversion(true);
   request.set_update_input_mode_from_surrounding_text(false);
 
   if (const char *candidate_mixing_mode = std::getenv(
