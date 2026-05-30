@@ -16,6 +16,20 @@ func runConfigCheck() -> Never {
     print("config path: \(url.path)")
 
     var exit_code: Int32 = 0
+
+    // Every section prints its parser's rejected values the same way and
+    // bumps the exit code to 2 (config has a bad value) the first time any
+    // section reports one. Captures `exit_code` so the per-section call
+    // sites stay a single line.
+    func reportIssues(_ issues: [String]) {
+        for issue in issues {
+            print("                \(issue)")
+        }
+        if !issues.isEmpty && exit_code == 0 {
+            exit_code = 2
+        }
+    }
+
     var resolvedPrimary: ModoreConfig.ConversionHotkey? = nil
     switch ModoreConfig.loadConversionHotkeyOutcome() {
     case .loaded(let h, let source):
@@ -46,30 +60,15 @@ func runConfigCheck() -> Never {
     } else {
         print("  [conversion]  katakana_modifier=\(katakanaMod.displayName)")
     }
-    for issue in katIssues {
-        print("                \(issue)")
-    }
-    if !katIssues.isEmpty && exit_code == 0 {
-        exit_code = 2
-    }
+    reportIssues(katIssues)
 
     let (katakanaBehavior, katBehaviorIssues) = ModoreConfig.parseKatakanaModifierBehavior()
     print("  [conversion]  katakana_modifier_behavior=\(katakanaBehavior.displayName)")
-    for issue in katBehaviorIssues {
-        print("                \(issue)")
-    }
-    if !katBehaviorIssues.isEmpty && exit_code == 0 {
-        exit_code = 2
-    }
+    reportIssues(katBehaviorIssues)
 
     let (loggingMask, loggingIssues) = ModoreConfig.parseDisabledLoggingNamespaces()
     print("  [logging]     disabled=\(loggingMask.displayName)")
-    for issue in loggingIssues {
-        print("                \(issue)")
-    }
-    if !loggingIssues.isEmpty && exit_code == 0 {
-        exit_code = 2
-    }
+    reportIssues(loggingIssues)
 
     // Cycle modifier — same shape as katakana, including the collision
     // explanation when the user configured a modifier we can't bind.
@@ -90,21 +89,11 @@ func runConfigCheck() -> Never {
     } else {
         print("  [conversion]  cycle_modifier=\(cycleMod.displayName)")
     }
-    for issue in cycleIssues {
-        print("                \(issue)")
-    }
-    if !cycleIssues.isEmpty && exit_code == 0 {
-        exit_code = 2
-    }
+    reportIssues(cycleIssues)
 
     let (cycleFromUndone, cycleFromUndoneIssues) = ModoreConfig.parseCycleFromUndone()
     print("  [conversion]  cycle_from_undone=\(cycleFromUndone.displayName)")
-    for issue in cycleFromUndoneIssues {
-        print("                \(issue)")
-    }
-    if !cycleFromUndoneIssues.isEmpty && exit_code == 0 {
-        exit_code = 2
-    }
+    reportIssues(cycleFromUndoneIssues)
 
     // Undo window — reports the value with a "disabled" gloss on 0 so
     // the user doesn't have to remember what 0 means at a glance.
@@ -114,21 +103,11 @@ func runConfigCheck() -> Never {
     } else {
         print("  [conversion]  undo_window_ms=\(undoMs)")
     }
-    for issue in undoIssues {
-        print("                \(issue)")
-    }
-    if !undoIssues.isEmpty && exit_code == 0 {
-        exit_code = 2
-    }
+    reportIssues(undoIssues)
 
     let (panelMode, panelIssues) = ModoreConfig.parseCandidatePanelMode()
     print("  [ui]          candidate_panel=\(panelMode.displayName)")
-    for issue in panelIssues {
-        print("                \(issue)")
-    }
-    if !panelIssues.isEmpty && exit_code == 0 {
-        exit_code = 2
-    }
+    reportIssues(panelIssues)
 
     let (panelDuration, panelDurationIssues) = ModoreConfig.parseCandidatePanelDurationMs()
     if panelDuration == 0 {
@@ -136,69 +115,34 @@ func runConfigCheck() -> Never {
     } else {
         print("  [ui]          candidate_panel_duration_ms=\(panelDuration)")
     }
-    for issue in panelDurationIssues {
-        print("                \(issue)")
-    }
-    if !panelDurationIssues.isEmpty && exit_code == 0 {
-        exit_code = 2
-    }
+    reportIssues(panelDurationIssues)
 
     let (classifierOn, classifierIssues) = ModoreConfig.parseClassifierEnabled()
     print("  [conversion]  classifier=\(classifierOn ? "on" : "off")")
-    for issue in classifierIssues {
-        print("                \(issue)")
-    }
-    if !classifierIssues.isEmpty && exit_code == 0 {
-        exit_code = 2
-    }
+    reportIssues(classifierIssues)
 
     let (bridgeRuntime, bridgeIssues) = ModoreConfig.parseBridgeRuntime()
     print("  [bridge]      candidate_mixing_mode=\(bridgeRuntime.candidateMixingMode)")
     print("  [bridge]      trace_raw_candidates=\(bridgeRuntime.traceRawCandidates ? "on" : "off")")
-    for issue in bridgeIssues {
-        print("                \(issue)")
-    }
-    if !bridgeIssues.isEmpty && exit_code == 0 {
-        exit_code = 2
-    }
+    reportIssues(bridgeIssues)
 
     let (mozcBackend, mozcBackendIssues) = ModoreConfig.parseMozcBackend()
     print("  [bridge]      mozc_backend=\(mozcBackend.displayName)")
-    for issue in mozcBackendIssues {
-        print("                \(issue)")
-    }
-    if !mozcBackendIssues.isEmpty && exit_code == 0 {
-        exit_code = 2
-    }
+    reportIssues(mozcBackendIssues)
 
     let (timings, issues) = ModoreConfig.parseClipboardTimings()
     print("  [clipboard]   pre_copy=\(timings.preCopyDelayMs)ms"
         + " read_timeout=\(timings.readTimeoutMs)ms"
         + " restore=\(timings.restoreClipboardDelayMs)ms")
-    for issue in issues {
-        print("                \(issue)")
-    }
-    if !issues.isEmpty && exit_code == 0 {
-        exit_code = 2
-    }
+    reportIssues(issues)
 
     let (shellWindow, shellWindowIssues) = ModoreConfig.parseShellCandidateWindow()
     print("  [shell]       candidate_window=\(shellWindow ? "on" : "off")")
-    for issue in shellWindowIssues {
-        print("                \(issue)")
-    }
-    if !shellWindowIssues.isEmpty && exit_code == 0 {
-        exit_code = 2
-    }
+    reportIssues(shellWindowIssues)
 
     let (shellPicker, shellPickerIssues) = ModoreConfig.parseShellPicker()
     print("  [shell]       picker=\(shellPicker.displayName)")
-    for issue in shellPickerIssues {
-        print("                \(issue)")
-    }
-    if !shellPickerIssues.isEmpty && exit_code == 0 {
-        exit_code = 2
-    }
+    reportIssues(shellPickerIssues)
 
     exit(exit_code)
 }

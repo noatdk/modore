@@ -8,14 +8,8 @@
 import ApplicationServices
 import Cocoa
 
-let kChromiumOmniboxBundleIDs: Set<String> = [
-    "com.google.Chrome",
-    "com.google.Chrome.canary",
-    "org.chromium.Chromium",
-]
-
 func isChromiumOmnibox(field: FocusedField, appId: String?) -> Bool {
-    guard let appId, kChromiumOmniboxBundleIDs.contains(appId) else { return false }
+    guard let appId, KnownApps.chromiumBundleIDs.contains(appId) else { return false }
     return field.role == kAXTextFieldRole as String
         && field.description == "Address and search bar"
 }
@@ -76,25 +70,6 @@ private func chromiumOmniboxTypedInputBackspace() {
     gChromiumOmniboxTypedInput.removeLast()
 }
 
-private func typedString(from event: CGEvent) -> String? {
-    var actualLength = 0
-    event.keyboardGetUnicodeString(
-        maxStringLength: 0,
-        actualStringLength: &actualLength,
-        unicodeString: nil)
-    guard actualLength > 0 else { return nil }
-    var buffer = [UniChar](repeating: 0, count: actualLength)
-    var copiedLength = 0
-    buffer.withUnsafeMutableBufferPointer { ptr in
-        event.keyboardGetUnicodeString(
-            maxStringLength: actualLength,
-            actualStringLength: &copiedLength,
-            unicodeString: ptr.baseAddress)
-    }
-    guard copiedLength > 0 else { return nil }
-    return String(utf16CodeUnits: buffer, count: copiedLength)
-}
-
 // Entry from the CGEventTap callback, which runs on the main run loop and
 // has only a ~1s budget before macOS disables the tap. readFocusedField()
 // does ~6 blocking AX IPCs, so running it inline stalls the tap per
@@ -105,10 +80,8 @@ private func typedString(from event: CGEvent) -> String? {
 // conversion trigger (which reads chromiumOmniboxTypedInputSnapshot()).
 func updateChromiumOmniboxTypedInputLog(for event: CGEvent) {
     let keyCode = CGKeyCode(event.getIntegerValueField(.keyboardEventKeycode))
-    let coreFlags = event.flags.intersection([
-        .maskCommand, .maskShift, .maskControl, .maskAlternate
-    ])
-    let typed = typedString(from: event)
+    let coreFlags = event.flags.intersection(kCoreModifierFlags)
+    let typed = unicodeString(from: event)
     kHotkeyTapQueue.async {
         applyChromiumOmniboxTypedInput(keyCode: keyCode, coreFlags: coreFlags, typed: typed)
     }
@@ -120,7 +93,7 @@ private func applyChromiumOmniboxTypedInput(
     typed: String?
 ) {
     guard let appId = FrontmostApp.describe()?.bundleID,
-          kChromiumOmniboxBundleIDs.contains(appId) else {
+          KnownApps.chromiumBundleIDs.contains(appId) else {
         chromiumOmniboxTypedInputClear()
         return
     }

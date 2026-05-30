@@ -16,9 +16,7 @@ final class ShadowBufferHost {
 
     func feed(_ event: CGEvent) {
         let keyCode = CGKeyCode(event.getIntegerValueField(.keyboardEventKeycode))
-        let coreFlags = event.flags.intersection([
-            .maskCommand, .maskShift, .maskControl, .maskAlternate
-        ])
+        let coreFlags = event.flags.intersection(kCoreModifierFlags)
         let modsNoShift = coreFlags.subtracting(.maskShift)
 
         if modsNoShift.contains(.maskControl) {
@@ -71,20 +69,7 @@ final class ShadowBufferHost {
              kVK_UpArrow, kVK_DownArrow, kVK_PageUp, kVK_PageDown:
             lock.lock(); mdr_shadow_reset(ptr); lock.unlock()
         default:
-            var actualLen = 0
-            event.keyboardGetUnicodeString(
-                maxStringLength: 0, actualStringLength: &actualLen, unicodeString: nil)
-            guard actualLen > 0 else { return }
-            var buf = [UniChar](repeating: 0, count: actualLen)
-            var copiedLen = 0
-            buf.withUnsafeMutableBufferPointer { bptr in
-                event.keyboardGetUnicodeString(
-                    maxStringLength: actualLen, actualStringLength: &copiedLen,
-                    unicodeString: bptr.baseAddress)
-            }
-            guard copiedLen > 0 else { return }
-            let s = String(utf16CodeUnits: buf, count: copiedLen)
-            guard !s.isEmpty else { return }
+            guard let s = unicodeString(from: event), !s.isEmpty else { return }
             s.withCString { cStr in
                 lock.lock()
                 mdr_shadow_insert(ptr, cStr, s.utf8.count)

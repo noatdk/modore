@@ -124,10 +124,7 @@ private func undoOnClipboard(
     }
     let currentText = snap.currentText
     let backspaces = currentText.count
-    for _ in 0..<backspaces {
-        postKey(kVK_Backspace)
-    }
-    postUnicode(snap.originalReading)
+    replaceByBackspaceRetype(deleting: backspaces, insert: snap.originalReading)
     let ageMs = Int(Date().timeIntervalSince(snap.timestamp) * 1000)
     Log.undo("reverted '\(currentText)' → '\(snap.originalReading)' after \(ageMs)ms (clipboard, \(backspaces) backspaces)")
     return true

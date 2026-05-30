@@ -319,6 +319,18 @@ private func normalizeCommittedCandidateState(
     return (normalized, 0)
 }
 
+/// Record `session` as the live conversion and, when `[ui] candidate_panel
+/// = on_convert`, surface the panel. This is the tail every successful
+/// pickup path runs after building its backing-specific `ConversionSession`;
+/// the construction stays at each call site because the backing (AX element
+/// vs frontmost-app identity) and reading differ per path.
+private func commitSession(_ session: ConversionSession) {
+    ConversionSessionStore.set(session)
+    if gCandidatePanelMode == .onConvert {
+        CandidatePanel.shared.show(session: session)
+    }
+}
+
 // MARK: - Shadow-buffer pickup (zero-latency fallback before clipboard)
 
 private func doShadowPickup(_ request: PickupRequest) -> Bool {
@@ -395,10 +407,7 @@ private func doShadowPickup(_ request: PickupRequest) -> Bool {
         candidates: sessionSeed.candidates,
         candidateIndex: sessionSeed.currentIndex,
         timestamp: Date())
-    ConversionSessionStore.set(session)
-    if gCandidatePanelMode == .onConvert {
-        CandidatePanel.shared.show(session: session)
-    }
+    commitSession(session)
     return true
 }
 
@@ -720,13 +729,6 @@ private func postClipboardReplacement(_ replacement: String, deleteBeforeInsert:
     postUnicode(replacement)
 }
 
-private func axStringAttr(_ element: AXUIElement, _ attr: String) -> String? {
-    var ref: CFTypeRef?
-    let err = AXUIElementCopyAttributeValue(element, attr as CFString, &ref)
-    guard err == .success else { return nil }
-    return ref as? String
-}
-
 func postUnicodeOverAXSelection(
     in element: AXUIElement,
     start: Int,
@@ -768,10 +770,7 @@ private func replaceChromiumOmnibox(
             candidates: sessionSeed.candidates,
             candidateIndex: sessionSeed.currentIndex,
             timestamp: Date())
-        ConversionSessionStore.set(session)
-        if gCandidatePanelMode == .onConvert {
-            CandidatePanel.shared.show(session: session)
-        }
+        commitSession(session)
         return true
     }
     Log.pickup("Chromium omnibox: typed-input sync failed; falling back to keystroke retype")
@@ -789,10 +788,7 @@ private func replaceChromiumOmnibox(
         candidates: sessionSeed.candidates,
         candidateIndex: sessionSeed.currentIndex,
         timestamp: Date())
-    ConversionSessionStore.set(session)
-    if gCandidatePanelMode == .onConvert {
-        CandidatePanel.shared.show(session: session)
-    }
+    commitSession(session)
     return true
 }
 
@@ -823,10 +819,7 @@ private func applyFieldReplacement(
                     candidates: sessionSeed.candidates,
                     candidateIndex: sessionSeed.currentIndex,
                     timestamp: Date())
-                ConversionSessionStore.set(session)
-                if gCandidatePanelMode == .onConvert {
-                    CandidatePanel.shared.show(session: session)
-                }
+                commitSession(session)
                 return true
             }
             Log.pickup("Chromium omnibox: full-field replace failed; falling back to keystroke retype")
@@ -844,10 +837,7 @@ private func applyFieldReplacement(
                 candidates: sessionSeed.candidates,
                 candidateIndex: sessionSeed.currentIndex,
                 timestamp: Date())
-            ConversionSessionStore.set(session)
-            if gCandidatePanelMode == .onConvert {
-                CandidatePanel.shared.show(session: session)
-            }
+            commitSession(session)
             return true
         case .keystroke, .clipboard:
             keystrokeReplaceSpan(
@@ -864,10 +854,7 @@ private func applyFieldReplacement(
                 candidates: sessionSeed.candidates,
                 candidateIndex: sessionSeed.currentIndex,
                 timestamp: Date())
-            ConversionSessionStore.set(session)
-            if gCandidatePanelMode == .onConvert {
-                CandidatePanel.shared.show(session: session)
-            }
+            commitSession(session)
             return true
         }
     }
@@ -885,10 +872,7 @@ private func applyFieldReplacement(
                 candidates: sessionSeed.candidates,
                 candidateIndex: sessionSeed.currentIndex,
                 timestamp: Date())
-            ConversionSessionStore.set(session)
-            if gCandidatePanelMode == .onConvert {
-                CandidatePanel.shared.show(session: session)
-            }
+            commitSession(session)
             return true
         }
         Log.pickup("selection-sync route failed; falling back to keystroke-retype")
@@ -906,10 +890,7 @@ private func applyFieldReplacement(
             candidates: sessionSeed.candidates,
             candidateIndex: sessionSeed.currentIndex,
             timestamp: Date())
-        ConversionSessionStore.set(session)
-        if gCandidatePanelMode == .onConvert {
-            CandidatePanel.shared.show(session: session)
-        }
+        commitSession(session)
         return true
     case .keystroke, .clipboard:
         keystrokeReplaceSpan(
@@ -926,10 +907,7 @@ private func applyFieldReplacement(
             candidates: sessionSeed.candidates,
             candidateIndex: sessionSeed.currentIndex,
             timestamp: Date())
-        ConversionSessionStore.set(session)
-        if gCandidatePanelMode == .onConvert {
-            CandidatePanel.shared.show(session: session)
-        }
+        commitSession(session)
         return true
     case .ax:
         if isChromiumOmnibox(field: field, appId: appId) {
@@ -960,10 +938,7 @@ private func applyFieldReplacement(
                 candidates: sessionSeed.candidates,
                 candidateIndex: sessionSeed.currentIndex,
                 timestamp: Date())
-            ConversionSessionStore.set(session)
-            if gCandidatePanelMode == .onConvert {
-                CandidatePanel.shared.show(session: session)
-            }
+            commitSession(session)
             return true
         }
         Log.pickup(skipAXWrite
@@ -990,29 +965,14 @@ private func applyFieldReplacement(
             candidates: sessionSeed.candidates,
             candidateIndex: sessionSeed.currentIndex,
             timestamp: Date())
-        ConversionSessionStore.set(session)
-        if gCandidatePanelMode == .onConvert {
-            CandidatePanel.shared.show(session: session)
-        }
+        commitSession(session)
         return true
     }
 }
 
-/// Bundle IDs where the Cmd+C-peek heuristic in step 1 below is unreliable
-/// because the app line-copies the caret's current line *without* a
-/// trailing newline (so `looksLikeLineCopy` misses it). Chrome's DevTools
-/// console is the discovered offender; the same Chromium behaviour
-/// presumably exists in other Chromium-hosted dev surfaces. Obsidian's
-/// CodeMirror editor behaves the same way — and on top of that it
-/// silently rejects AXValue writes, so every conversion lands here.
-/// AX-capable surfaces in these apps never reach this code path (they
-/// go through doPickup → readFocusedField), so blocklisting the whole
-/// bundle here only affects the already-unreliable clipboard-fallback
-/// regions.
-private let kPeekExistingSelectionBlocklist: Set<String> = [
-    "com.google.Chrome",
-    "md.obsidian",
-]
+// The Cmd+C-peek skip for line-copying apps keys off
+// `KnownApps.peekSelectionBlocklist` (Chrome DevTools, Obsidian CodeMirror);
+// see that registry entry for why those bundles defeat `looksLikeLineCopy`.
 
 func doClipboardPickup(_ request: PickupRequest = .init()) {
     if gShadowBufferEnabled, doShadowPickup(request) { return }
@@ -1037,7 +997,7 @@ func doClipboardPickup(_ request: PickupRequest = .init()) {
     // trailing newline, defeating looksLikeLineCopy and causing the
     // pickup to wrongly treat the line as a real selection).
     let frontmostBundleID = FrontmostApp.describe()?.bundleID
-    let allowPeek = !(frontmostBundleID.map(kPeekExistingSelectionBlocklist.contains) ?? false)
+    let allowPeek = !(frontmostBundleID.map(KnownApps.peekSelectionBlocklist.contains) ?? false)
     if allowPeek {
         let baseline = pb.changeCount
         postKey(kVK_ANSI_C, flags: .maskCommand)
@@ -1127,7 +1087,7 @@ func doClipboardPickup(_ request: PickupRequest = .init()) {
     // Backspace and eat a preceding character. Matches undoOnClipboard /
     // cycleClipboard, which already use .count.
     let deleteBeforeInsertCount = (deletePickedBeforeInsert ||
-        (didForceSelect && (frontmostBundleID.map(kPeekExistingSelectionBlocklist.contains) ?? false)))
+        (didForceSelect && (frontmostBundleID.map(KnownApps.peekSelectionBlocklist.contains) ?? false)))
         ? pickedText.count
         : 0
 
@@ -1197,10 +1157,7 @@ func doClipboardPickup(_ request: PickupRequest = .init()) {
             candidates: sessionSeed.candidates,
             candidateIndex: sessionSeed.currentIndex,
             timestamp: Date())
-        ConversionSessionStore.set(session)
-        if gCandidatePanelMode == .onConvert {
-            CandidatePanel.shared.show(session: session)
-        }
+        commitSession(session)
         return
     }
 
@@ -1264,10 +1221,7 @@ func doClipboardPickup(_ request: PickupRequest = .init()) {
             candidates: sessionSeed.candidates,
             candidateIndex: sessionSeed.currentIndex,
             timestamp: Date())
-    ConversionSessionStore.set(session)
-    if gCandidatePanelMode == .onConvert {
-        CandidatePanel.shared.show(session: session)
-    }
+    commitSession(session)
 }
 
 // MARK: - Imperative acquisition flow
@@ -1336,10 +1290,7 @@ func runConversionOnAcquiredText(
             candidates: sessionSeed.candidates,
             candidateIndex: sessionSeed.currentIndex,
             timestamp: Date())
-        ConversionSessionStore.set(session)
-        if gCandidatePanelMode == .onConvert {
-            CandidatePanel.shared.show(session: session)
-        }
+        commitSession(session)
         return
     }
     let (leadingJunk, romajiBody) = splitLeadingASCIIJunkBeforeLowercase(romajiCore)
@@ -1410,10 +1361,7 @@ func runConversionOnAcquiredText(
         candidates: sessionSeed.candidates,
         candidateIndex: sessionSeed.currentIndex,
         timestamp: Date())
-    ConversionSessionStore.set(session)
-    if gCandidatePanelMode == .onConvert {
-        CandidatePanel.shared.show(session: session)
-    }
+    commitSession(session)
 }
 
 // MARK: - Pickup pipeline

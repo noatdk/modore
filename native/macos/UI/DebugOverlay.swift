@@ -79,47 +79,11 @@ final class DebugOverlay {
 
     private func ensurePanel() -> NSPanel {
         if let existing = panel { return existing }
-
-        let p = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 200, height: 40),
-            styleMask: [.borderless, .nonactivatingPanel],
-            backing: .buffered,
-            defer: true)
-        p.isFloatingPanel = true
-        p.level = .statusBar
-        p.hidesOnDeactivate = false
-        p.becomesKeyOnlyIfNeeded = true
-        p.hasShadow = true
-        p.isOpaque = false
-        p.backgroundColor = .clear
-        p.ignoresMouseEvents = true
-        p.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
-
-        let container = NSVisualEffectView()
-        container.material = .hudWindow
-        container.blendingMode = .behindWindow
-        container.state = .active
-        container.wantsLayer = true
-        container.layer?.cornerRadius = 8
-        container.layer?.borderWidth = 0.5
-        container.layer?.borderColor = NSColor.separatorColor.cgColor
-        container.translatesAutoresizingMaskIntoConstraints = false
-
-        let s = NSStackView()
-        s.orientation = .vertical
-        s.alignment = .leading
-        s.spacing = 1
-        s.edgeInsets = NSEdgeInsets(top: 6, left: 10, bottom: 6, right: 10)
-        s.translatesAutoresizingMaskIntoConstraints = false
-        container.addSubview(s)
-        NSLayoutConstraint.activate([
-            s.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            s.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            s.topAnchor.constraint(equalTo: container.topAnchor),
-            s.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-        ])
-
-        p.contentView = container
+        let (p, s) = makeHUDPanel(
+            level: .statusBar,
+            cornerRadius: 8,
+            stackSpacing: 1,
+            stackInsets: NSEdgeInsets(top: 6, left: 10, bottom: 6, right: 10))
         self.panel = p
         self.stack = s
         return p

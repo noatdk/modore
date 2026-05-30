@@ -246,6 +246,25 @@ func applyCycleChord(
     }
 }
 
+// MARK: - Status-item refresh
+
+/// The current primary chord, reconstructed from the live globals. The
+/// reload paths need it to rebuild derived chords and refresh the menu bar.
+func currentPrimaryChord() -> ModoreConfig.ConversionHotkey {
+    ModoreConfig.ConversionHotkey(keyCode: gConversionKeyCode, coreFlags: gConversionCoreFlags)
+}
+
+/// Push the current chord state to the menu-bar item, surfacing only the
+/// derived chords that are actually bound (`*ForStatus` returns nil when a
+/// chord isn't Carbon-grabbed). Main-thread only — every caller already is.
+func refreshStatusItem(primary: ModoreConfig.ConversionHotkey) {
+    gStatusItem?.refresh(
+        hotkey: primary,
+        usingCarbonHotkey: gUsingCarbonHotkey,
+        katakanaChord: secondaryChordForStatus(primary: primary),
+        cycleChord: cycleChordForStatus(primary: primary))
+}
+
 // MARK: - Primary chord registration
 
 func applyConversionHotkeyChord(_ chord: ModoreConfig.ConversionHotkey) {
@@ -264,11 +283,7 @@ func applyConversionHotkeyChord(_ chord: ModoreConfig.ConversionHotkey) {
     // re-registration rebinds them too.
     applyKatakanaSecondaryChord(primary: chord, modifier: gKatakanaModifier)
     applyCycleChord(primary: chord, cycle: gCycleModifier, katakana: gKatakanaModifier)
-    gStatusItem?.refresh(
-        hotkey: chord,
-        usingCarbonHotkey: gUsingCarbonHotkey,
-        katakanaChord: secondaryChordForStatus(primary: chord),
-        cycleChord: cycleChordForStatus(primary: chord))
+    refreshStatusItem(primary: chord)
 }
 
 // MARK: - Section reloaders (one per [section] in modore.conf)
@@ -316,15 +331,10 @@ func applyKatakanaModifierReload() {
     if next != gKatakanaModifier {
         gKatakanaModifier = next
         Log.config("katakana modifier: \(next.displayName)")
-        let primary = ModoreConfig.ConversionHotkey(
-            keyCode: gConversionKeyCode, coreFlags: gConversionCoreFlags)
+        let primary = currentPrimaryChord()
         applyKatakanaSecondaryChord(primary: primary, modifier: next)
         applyCycleChord(primary: primary, cycle: gCycleModifier, katakana: next)
-        gStatusItem?.refresh(
-            hotkey: primary,
-            usingCarbonHotkey: gUsingCarbonHotkey,
-            katakanaChord: secondaryChordForStatus(primary: primary),
-            cycleChord: cycleChordForStatus(primary: primary))
+        refreshStatusItem(primary: primary)
     }
 }
 
@@ -346,14 +356,9 @@ func applyCycleModifierReload() {
     if next != gCycleModifier {
         gCycleModifier = next
         Log.config("cycle modifier: \(next.displayName)")
-        let primary = ModoreConfig.ConversionHotkey(
-            keyCode: gConversionKeyCode, coreFlags: gConversionCoreFlags)
+        let primary = currentPrimaryChord()
         applyCycleChord(primary: primary, cycle: next, katakana: gKatakanaModifier)
-        gStatusItem?.refresh(
-            hotkey: primary,
-            usingCarbonHotkey: gUsingCarbonHotkey,
-            katakanaChord: secondaryChordForStatus(primary: primary),
-            cycleChord: cycleChordForStatus(primary: primary))
+        refreshStatusItem(primary: primary)
     }
 }
 
@@ -494,13 +499,7 @@ private func applyClassifierReload() {
     gClassifierEnabled = new
     if new {
         if !Classifier.isLoaded {
-            let configDir: String = {
-                if let xdg = ProcessInfo.processInfo.environment["XDG_CONFIG_HOME"], !xdg.isEmpty {
-                    return "\(xdg)/modore"
-                }
-                return "\(FileManager.default.homeDirectoryForCurrentUser.path)/.config/modore"
-            }()
-            let modelPath = Classifier.configModelPath(configDir: configDir)
+            let modelPath = Classifier.configModelPath(configDir: ModoreConfig.configDir())
             if FileManager.default.fileExists(atPath: modelPath) {
                 if !Classifier.load(modelPath: modelPath) {
                     Log.config("[conversion] classifier = on but model failed to load — staying off")

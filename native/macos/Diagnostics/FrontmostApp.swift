@@ -22,13 +22,6 @@ import Cocoa
 import ApplicationServices
 
 enum FrontmostApp {
-    private static let shellNativeTerminalBundleIDs: Set<String> = [
-        "net.kovidgoyal.kitty",
-        "com.mitchellh.ghostty",
-        "com.github.wez.wezterm",
-        "io.alacritty",
-    ]
-
     /// Returns `(localizedName, bundleIdentifier, pid)` of the current
     /// frontmost app, or `nil` if AppKit reports no frontmost (e.g.
     /// Mission Control, app-switcher transitions, or login window).
@@ -80,7 +73,7 @@ enum FrontmostApp {
     /// intentionally route through the shell-native binding path.
     static func isShellNativeTerminal(bundleID: String?) -> Bool {
         guard let bundleID else { return false }
-        return shellNativeTerminalBundleIDs.contains(bundleID)
+        return KnownApps.shellNativeTerminalBundleIDs.contains(bundleID)
     }
 
     /// Best-effort title for the frontmost app's focused window. Used only

@@ -78,20 +78,9 @@ func enableElectronAXIfNeeded() {
 
 func frontmostAppLooksElectron() -> Bool {
     guard let info = FrontmostApp.describe() else { return false }
-    let bundleID = info.bundleID.lowercased()
-    if bundleID.contains("electron") { return true }
-
-    if let proc = SecureInputMonitor.describeProcess(pid: info.pid) {
-        let path = proc.path.lowercased()
-        return path.contains("electron framework.framework")
-            || path.contains("/electron.app/")
-            || path.contains("/discord.app/")
-            || path.contains("/slack.app/")
-            || path.contains("/visual studio code.app/")
-            || path.contains("/cursor.app/")
-            || path.contains("/obsidian.app/")
-    }
-    return false
+    return KnownApps.looksElectron(
+        bundleID: info.bundleID.lowercased(),
+        executablePath: SecureInputMonitor.describeProcess(pid: info.pid)?.path)
 }
 
 func readFocusedField() -> FocusedField? {
@@ -376,6 +365,32 @@ func axSelectionSnapshot(label: String) {
          + "value='\(valueSample)'")
 }
 
+/// Read a string-typed AX attribute off `element`, or nil if the attribute
+/// is missing or isn't a string. Best-effort: the `AXError` is swallowed
+/// because every caller already has its own fallback (the value is only used
+/// to enrich logs / positioning). Shared by the pickup pipeline and the
+/// candidate panel.
+func axStringAttr(_ element: AXUIElement, _ attr: String) -> String? {
+    var ref: CFTypeRef?
+    let err = AXUIElementCopyAttributeValue(element, attr as CFString, &ref)
+    guard err == .success else { return nil }
+    return ref as? String
+}
+
+/// The system-wide focused UI element, or nil when AX can't resolve one.
+/// Non-logging — callers that want a per-failure diagnostic do the lookup
+/// inline (`readFocusedField`, `axSelectionSnapshot`). Used by the
+/// read-selection primitive and the candidate panel's positioning fallback,
+/// which only need the element-or-nil.
+func systemWideFocusedElement() -> AXUIElement? {
+    let systemWide = AXUIElementCreateSystemWide()
+    var focusedRef: CFTypeRef?
+    let r = AXUIElementCopyAttributeValue(
+        systemWide, kAXFocusedUIElementAttribute as CFString, &focusedRef)
+    guard r == .success, let focused = focusedRef else { return nil }
+    return (focused as! AXUIElement)
+}
+
 /// Read `kAXSelectedTextAttribute` from the system-wide focused element.
 /// Returns nil if AX read fails or the attribute is absent. Used by the
 /// `modore.host.read_selection` Lua primitive so scripts can pick up the
@@ -384,13 +399,7 @@ func axSelectionSnapshot(label: String) {
 /// clipboard path silently extends the editor's range past the visible
 /// selection and corrupts the subsequent postUnicode replacement.
 func readFocusedSelection() -> String? {
-    let systemWide = AXUIElementCreateSystemWide()
-    var focusedRef: CFTypeRef?
-    let r1 = AXUIElementCopyAttributeValue(
-        systemWide, kAXFocusedUIElementAttribute as CFString, &focusedRef)
-    guard r1 == .success, let focused = focusedRef else { return nil }
-    let element = focused as! AXUIElement
-
+    guard let element = systemWideFocusedElement() else { return nil }
     var selRef: CFTypeRef?
     let r2 = AXUIElementCopyAttributeValue(
         element, kAXSelectedTextAttribute as CFString, &selRef)

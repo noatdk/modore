@@ -14,15 +14,9 @@ import Foundation
 
 // MARK: - UTF-8 ↔ UTF-16 mapping
 
-private let kChromiumClipboardProbeBundleIDs: Set<String> = [
-    "com.google.Chrome",
-    "com.google.Chrome.canary",
-    "org.chromium.Chromium",
-]
-
 func isChromiumClipboardProbeBundleID(_ bundleID: String?) -> Bool {
     guard let bundleID else { return false }
-    return kChromiumClipboardProbeBundleIDs.contains(bundleID)
+    return KnownApps.chromiumBundleIDs.contains(bundleID)
 }
 
 extension String {

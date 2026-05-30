@@ -332,13 +332,22 @@ enum ModoreConfig {
     }
 
 
+    /// Run a `parse*` and surface its validation issues through
+    /// `Log.config`, returning the parsed value. Every `load*` wrapper is
+    /// "parse, log each issue, return the value" — that shape lives here so
+    /// adding a config key needs a parser and a one-line wrapper, not a
+    /// fourth copy of the logging loop.
+    private static func logging<T>(_ parse: () -> (T, [String])) -> T {
+        let (value, issues) = parse()
+        for issue in issues { Log.config(issue) }
+        return value
+    }
+
     /// Parse `[conversion] shadow_buffer`. Wrapper that logs issues.
     /// Default `false` — the shadow buffer is opt-in; omitting the key
     /// keeps the existing clipboard/AX-only pickup chain.
     static func loadShadowBufferEnabled() -> Bool {
-        let (v, issues) = parseShadowBufferEnabled()
-        for issue in issues { Log.config(issue) }
-        return v
+        logging(parseShadowBufferEnabled)
     }
 
     static func parseShadowBufferEnabled() -> (Bool, [String]) {
@@ -362,9 +371,7 @@ enum ModoreConfig {
     /// Default `false` — the ML classifier is opt-in; omitting the key
     /// keeps the existing heuristic pipeline (splitAcronymHead).
     static func loadClassifierEnabled() -> Bool {
-        let (v, issues) = parseClassifierEnabled()
-        for issue in issues { Log.config(issue) }
-        return v
+        logging(parseClassifierEnabled)
     }
 
     static func parseClassifierEnabled() -> (Bool, [String]) {
@@ -389,9 +396,7 @@ enum ModoreConfig {
     /// fallback. Wrapper that logs issues.
     /// Default bundled Mozc preserves the long-standing built-in behavior.
     static func loadMozcBackend() -> MozcBackend {
-        let (v, issues) = parseMozcBackend()
-        for issue in issues { Log.config(issue) }
-        return v
+        logging(parseMozcBackend)
     }
 
     /// Same parse as `loadMozcBackend()` but returns issues separately.
@@ -421,9 +426,7 @@ enum ModoreConfig {
     /// Values are only read once at boot and on config reload, so this adds
     /// no per-conversion overhead.
     static func loadBridgeRuntime() -> BridgeRuntime {
-        let (runtime, issues) = parseBridgeRuntime()
-        for issue in issues { Log.config(issue) }
-        return runtime
+        logging(parseBridgeRuntime)
     }
 
     /// Same parse as `loadBridgeRuntime()` but returns issues separately.
@@ -465,9 +468,7 @@ enum ModoreConfig {
     /// The host applies this before any other startup logs so disabled
     /// namespaces cost only a bitmask test in the hot path.
     static func loadDisabledLoggingNamespaces() -> LoggingNamespaceMask {
-        let (mask, issues) = parseDisabledLoggingNamespaces()
-        for issue in issues { Log.config(issue) }
-        return mask
+        logging(parseDisabledLoggingNamespaces)
     }
 
     /// Same parse as `loadDisabledLoggingNamespaces()` but returns issues
@@ -517,12 +518,24 @@ enum ModoreConfig {
             displayName: defaultChord)
     }
 
-    static func configFileURL() -> URL {
+    /// The modore config directory (`$XDG_CONFIG_HOME/modore`, or
+    /// `~/.config/modore` when XDG isn't set), as a filesystem path. Single
+    /// source of truth for the XDG-vs-home branch — `configFileURL()`, the
+    /// scripts dir, and the classifier model path all hang off it.
+    static func configDir() -> String {
         if let xdg = ProcessInfo.processInfo.environment["XDG_CONFIG_HOME"], !xdg.isEmpty {
-            return URL(fileURLWithPath: xdg).appendingPathComponent("modore/modore.conf")
+            return "\(xdg)/modore"
         }
-        return FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".config/modore/modore.conf")
+        return "\(FileManager.default.homeDirectoryForCurrentUser.path)/.config/modore"
+    }
+
+    /// The Lua scripts directory (`<configDir>/scripts`).
+    static func scriptsDir() -> String {
+        return "\(configDir())/scripts"
+    }
+
+    static func configFileURL() -> URL {
+        return URL(fileURLWithPath: configDir()).appendingPathComponent("modore.conf")
     }
 
     /// Parse `~/.config/modore/modore.conf` and report the hotkey outcome.
@@ -549,11 +562,7 @@ enum ModoreConfig {
     /// Logs issues via `Log.config`; never fails. Wrapper around
     /// `parseKatakanaModifier()` for the runtime path.
     static func loadKatakanaModifier() -> KatakanaModifier {
-        let (m, issues) = parseKatakanaModifier()
-        for issue in issues {
-            Log.config(issue)
-        }
-        return m
+        logging(parseKatakanaModifier)
     }
 
     /// Same parse as `loadKatakanaModifier()` but returns the validation
@@ -581,11 +590,7 @@ enum ModoreConfig {
 
     /// Parse `[conversion] katakana_modifier_behavior`. Wrapper that logs issues.
     static func loadKatakanaModifierBehavior() -> KatakanaModifierBehavior {
-        let (m, issues) = parseKatakanaModifierBehavior()
-        for issue in issues {
-            Log.config(issue)
-        }
-        return m
+        logging(parseKatakanaModifierBehavior)
     }
 
     /// Same parse as `loadKatakanaModifierBehavior()` but returns the
@@ -610,9 +615,7 @@ enum ModoreConfig {
 
     /// Parse `[conversion] cycle_modifier`. Wrapper that logs issues.
     static func loadCycleModifier() -> CycleModifier {
-        let (m, issues) = parseCycleModifier()
-        for issue in issues { Log.config(issue) }
-        return m
+        logging(parseCycleModifier)
     }
 
     /// Same parse as `loadCycleModifier()` but returns issues separately.
@@ -645,9 +648,7 @@ enum ModoreConfig {
 
     /// Parse `[conversion] cycle_from_undone`. Wrapper that logs issues.
     static func loadCycleFromUndone() -> CycleFromUndone {
-        let (m, issues) = parseCycleFromUndone()
-        for issue in issues { Log.config(issue) }
-        return m
+        logging(parseCycleFromUndone)
     }
 
     /// Same parse as `loadCycleFromUndone()` but returns issues separately.
@@ -672,9 +673,7 @@ enum ModoreConfig {
 
     /// Parse `[ui] candidate_panel`. Wrapper that logs issues.
     static func loadCandidatePanelMode() -> CandidatePanelMode {
-        let (m, issues) = parseCandidatePanelMode()
-        for issue in issues { Log.config(issue) }
-        return m
+        logging(parseCandidatePanelMode)
     }
 
     /// Same parse as `loadCandidatePanelMode()` but returns issues
@@ -699,9 +698,7 @@ enum ModoreConfig {
 
     /// Parse `[ui] candidate_panel_duration_ms`. Wrapper that logs issues.
     static func loadCandidatePanelDurationMs() -> Int {
-        let (n, issues) = parseCandidatePanelDurationMs()
-        for issue in issues { Log.config(issue) }
-        return n
+        logging(parseCandidatePanelDurationMs)
     }
 
     /// Same parse as `loadCandidatePanelDurationMs()` but returns issues
@@ -728,9 +725,7 @@ enum ModoreConfig {
 
     /// Parse `[shell] candidate_window`. Wrapper that logs issues.
     static func loadShellCandidateWindow() -> Bool {
-        let (v, issues) = parseShellCandidateWindow()
-        for issue in issues { Log.config(issue) }
-        return v
+        logging(parseShellCandidateWindow)
     }
 
     /// Same parse as `loadShellCandidateWindow()` but returns issues
@@ -757,9 +752,7 @@ enum ModoreConfig {
 
     /// Parse `[shell] picker`. Wrapper that logs issues.
     static func loadShellPicker() -> ShellPicker {
-        let (p, issues) = parseShellPicker()
-        for issue in issues { Log.config(issue) }
-        return p
+        logging(parseShellPicker)
     }
 
     /// Same parse as `loadShellPicker()` but returns issues separately.
@@ -787,11 +780,7 @@ enum ModoreConfig {
     /// Parse `~/.config/modore/modore.conf` for `[conversion] undo_window_ms`.
     /// Wrapper around `parseUndoWindowMs()` that logs issues via `Log.config`.
     static func loadUndoWindowMs() -> Int {
-        let (n, issues) = parseUndoWindowMs()
-        for issue in issues {
-            Log.config(issue)
-        }
-        return n
+        logging(parseUndoWindowMs)
     }
 
     /// Same parse as `loadUndoWindowMs()` but returns issues separately.
@@ -821,11 +810,7 @@ enum ModoreConfig {
     /// hard-coded defaults — never fails. Malformed values get a single
     /// `[config]` log line so the user can see what was ignored.
     static func loadClipboardTimings() -> ClipboardTimings {
-        let (t, issues) = parseClipboardTimings()
-        for issue in issues {
-            Log.config(issue)
-        }
-        return t
+        logging(parseClipboardTimings)
     }
 
     /// Same parse as `loadClipboardTimings()` but returns the validation

@@ -72,15 +72,7 @@ enum ModoreScript {
             clipboard_read: { _, outBuf, cap, outLen in
                 guard let buf = outBuf, let lenOut = outLen, cap > 0 else { return 0 }
                 guard let s = NSPasteboard.general.string(forType: .string) else { return 0 }
-                let bytes = Array(s.utf8)
-                let n = min(bytes.count, cap - 1)
-                bytes.withUnsafeBytes { src in
-                    guard let base = src.baseAddress else { return }
-                    UnsafeMutableRawPointer(buf).copyMemory(from: base, byteCount: n)
-                }
-                buf[n] = 0
-                lenOut.pointee = n
-                return 1
+                return ModoreScript.fillCBuffer(s, buf, cap, lenOut)
             },
             clipboard_write: { _, textPtr, len in
                 guard let p = textPtr else { return 0 }
@@ -93,18 +85,32 @@ enum ModoreScript {
             read_selection: { _, outBuf, cap, outLen in
                 guard let buf = outBuf, let lenOut = outLen, cap > 0 else { return 0 }
                 guard let s = readFocusedSelection(), !s.isEmpty else { return 0 }
-                let bytes = Array(s.utf8)
-                let n = min(bytes.count, cap - 1)
-                bytes.withUnsafeBytes { src in
-                    guard let base = src.baseAddress else { return }
-                    UnsafeMutableRawPointer(buf).copyMemory(from: base, byteCount: n)
-                }
-                buf[n] = 0
-                lenOut.pointee = n
-                return 1
+                return ModoreScript.fillCBuffer(s, buf, cap, lenOut)
             }
         )
         _ = mdr_set_host_ops(h, &ops, nil)
+    }
+
+    /// Copy `s` as UTF-8 into a C out-buffer (NUL-terminated, truncated to
+    /// `cap - 1` bytes) and report the written length. Returns the `1`
+    /// success code the host-op ABI expects. Shared by the
+    /// `clipboard_read` / `read_selection` trampolines, which marshal a
+    /// Swift String into the engine the same way. Caller guarantees `cap > 0`.
+    private static func fillCBuffer(
+        _ s: String,
+        _ buf: UnsafeMutablePointer<CChar>,
+        _ cap: Int,
+        _ outLen: UnsafeMutablePointer<size_t>
+    ) -> Int32 {
+        let bytes = Array(s.utf8)
+        let n = min(bytes.count, cap - 1)
+        bytes.withUnsafeBytes { src in
+            guard let base = src.baseAddress else { return }
+            UnsafeMutableRawPointer(buf).copyMemory(from: base, byteCount: n)
+        }
+        buf[n] = 0
+        outLen.pointee = n
+        return 1
     }
 
     /// Expose the host baseline as `modore.default.*` so scripts can wrap

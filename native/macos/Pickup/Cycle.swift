@@ -270,10 +270,6 @@ private func cycleOnClipboard(
         return false
     }
     let currentText = snap.currentText
-    let backspaces = currentText.count
-    for _ in 0..<backspaces {
-        postKey(kVK_Backspace)
-    }
-    postUnicode(next)
+    replaceByBackspaceRetype(deleting: currentText.count, insert: next)
     return true
 }

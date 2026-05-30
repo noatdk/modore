@@ -137,7 +137,10 @@ final class CandidatePanel {
             } else if pid > 0 {
                 Log.panel("per-app focused-element lookup returned nil pid=\(pid)")
             }
-            if let focused = focusedElementFromSystem() {
+            // System-wide focused element: cheaper than per-app (no pid),
+            // but several apps publish focus only through the per-app path,
+            // so this is the secondary fallback after `focusedElementFromApp`.
+            if let focused = systemWideFocusedElement() {
                 let role = axStringAttr(focused, kAXRoleAttribute) ?? "(role unknown)"
                 switch elementFrame(of: focused) {
                 case .ok(let rect):
@@ -166,20 +169,6 @@ final class CandidatePanel {
         var ref: CFTypeRef?
         let err = AXUIElementCopyAttributeValue(
             app,
-            kAXFocusedUIElementAttribute as CFString,
-            &ref)
-        guard err == .success, let any = ref else { return nil }
-        return (any as! AXUIElement)
-    }
-
-    /// System-wide focused element. Cheaper than per-app (no pid required),
-    /// but several apps publish focus only through the per-app path. Used
-    /// as a secondary fallback after `focusedElementFromApp`.
-    private func focusedElementFromSystem() -> AXUIElement? {
-        let systemWide = AXUIElementCreateSystemWide()
-        var ref: CFTypeRef?
-        let err = AXUIElementCopyAttributeValue(
-            systemWide,
             kAXFocusedUIElementAttribute as CFString,
             &ref)
         guard err == .success, let any = ref else { return nil }
@@ -255,16 +244,6 @@ final class CandidatePanel {
             return .fail("zero-size element \(formatSize(size))")
         }
         return .ok(CGRect(origin: origin, size: size))
-    }
-
-    /// Best-effort AX string attribute read — returns nil rather than
-    /// surfacing the AXError, since failure here is only used to enrich
-    /// log lines (the calling code already has its own success path).
-    private func axStringAttr(_ element: AXUIElement, _ attr: String) -> String? {
-        var ref: AnyObject?
-        let err = AXUIElementCopyAttributeValue(element, attr as CFString, &ref)
-        guard err == .success else { return nil }
-        return ref as? String
     }
 
     private func formatRect(_ r: CGRect) -> String {
@@ -394,50 +373,11 @@ final class CandidatePanel {
 
     private func ensurePanel() -> NSPanel {
         if let existing = panel { return existing }
-        let p = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 200, height: 40),
-            styleMask: [.borderless, .nonactivatingPanel],
-            backing: .buffered,
-            defer: true)
-        p.isFloatingPanel = true
-        p.level = .floating
-        p.hidesOnDeactivate = false
-        p.becomesKeyOnlyIfNeeded = true
-        p.hasShadow = true
-        p.isOpaque = false
-        p.backgroundColor = .clear
-        p.ignoresMouseEvents = true
-        // Show on every Space so cycle still works when the user is in a
-        // different Space than where the conversion started (rare; mostly
-        // matters for the AX path's stale-anchor case).
-        p.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
-
-        let container = NSVisualEffectView()
-        container.material = .hudWindow
-        container.blendingMode = .behindWindow
-        container.state = .active
-        container.wantsLayer = true
-        container.layer?.cornerRadius = PanelMetrics.cornerRadius
-        container.layer?.borderWidth = 0.5
-        container.layer?.borderColor = NSColor.separatorColor.cgColor
-        container.translatesAutoresizingMaskIntoConstraints = false
-
-        let stack = NSStackView()
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = PanelMetrics.stackSpacing
-        stack.edgeInsets = PanelMetrics.stackInsets
-        stack.translatesAutoresizingMaskIntoConstraints = false
-
-        container.addSubview(stack)
-        NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            stack.topAnchor.constraint(equalTo: container.topAnchor),
-            stack.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-        ])
-
-        p.contentView = container
+        let (p, stack) = makeHUDPanel(
+            level: .floating,
+            cornerRadius: PanelMetrics.cornerRadius,
+            stackSpacing: PanelMetrics.stackSpacing,
+            stackInsets: PanelMetrics.stackInsets)
         self.panel = p
         self.stackView = stack
         return p

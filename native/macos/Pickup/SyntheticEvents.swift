@@ -5,6 +5,12 @@
 
 import Cocoa
 
+/// The modifier bits modore treats as "core" when matching a physical
+/// keystroke against a configured chord. The OS also sets device-dependent
+/// bits (numeric-pad, coreGraphics flags) that we intersect away so a chord
+/// comparison only sees Cmd / Shift / Ctrl / Alt.
+let kCoreModifierFlags: CGEventFlags = [.maskCommand, .maskShift, .maskControl, .maskAlternate]
+
 // MARK: - Posting location + self-event marker
 
 /// All synthetic events are posted into the **session** event tap, not the HID
@@ -20,6 +26,29 @@ let kPostTap: CGEventTapLocation = .cgSessionEventTap
 /// process's tap callback can recognize and skip events it emitted itself
 /// (otherwise a future "synth a hotkey" feature would loop).
 let kSyntheticEventMarker = CGPoint(x: -27469, y: 0)
+
+/// Read the Unicode text a keyDown event carries, if any. macOS exposes
+/// this through a two-call dance: probe for the length with a nil buffer,
+/// then copy into a buffer of that size. Returns nil when the event carries
+/// no string payload (modifier-only, dead keys mid-sequence, …). Shared by
+/// the shadow buffer and the Chromium omnibox typed-input log, which both
+/// reconstruct what the user typed from the raw event stream.
+func unicodeString(from event: CGEvent) -> String? {
+    var actualLength = 0
+    event.keyboardGetUnicodeString(
+        maxStringLength: 0, actualStringLength: &actualLength, unicodeString: nil)
+    guard actualLength > 0 else { return nil }
+    var buffer = [UniChar](repeating: 0, count: actualLength)
+    var copiedLength = 0
+    buffer.withUnsafeMutableBufferPointer { ptr in
+        event.keyboardGetUnicodeString(
+            maxStringLength: actualLength,
+            actualStringLength: &copiedLength,
+            unicodeString: ptr.baseAddress)
+    }
+    guard copiedLength > 0 else { return nil }
+    return String(utf16CodeUnits: buffer, count: copiedLength)
+}
 
 /// Stamp the marker on a freshly created event. Call before `post(tap:)`.
 func markSynthetic(_ event: CGEvent) {
@@ -120,6 +149,18 @@ func postUnicode(_ s: String) {
 /// when text is visibly selected) defeat the BS-storm — the first BS
 /// consumes the hidden selection and the rest delete surrounding
 /// text. The pickup call site documents this as a known limitation.
+/// Delete `count` graphemes with Backspace, then type `text` in their place.
+/// The clipboard-fallback swap shared by Esc-undo and the cycle gesture —
+/// neither has an AX handle, so both revert/advance the committed text by
+/// driving synthetic keystrokes. `count` must be a grapheme-cluster count
+/// (what one Backspace eats in most apps), i.e. `String.count`, not
+/// `.utf16.count`: a supplementary-plane char (emoji = 1 grapheme, 2 UTF-16
+/// units) would otherwise fire an extra Backspace and eat a neighbour.
+func replaceByBackspaceRetype(deleting count: Int, insert text: String) {
+    for _ in 0..<count { postKey(kVK_Backspace) }
+    postUnicode(text)
+}
+
 func keystrokeReplaceSpan(
     caret: (start: Int, end: Int),
     spanEnd: Int,

@@ -86,6 +86,21 @@ func describeSelf() {
 // each flag is independent and produces deterministic output suitable for
 // pasting into bug reports or branching on in CI / pre-commit hooks.
 
+/// Read a `--name=value` or `--name value` CLI argument, or nil if absent.
+/// Used by the `--shell-*` widget entry points (each takes `--caret`, and
+/// `--shell-select` also `--candidate-index`).
+func cliStringArg(named name: String) -> String? {
+    let prefix = "\(name)="
+    if let eq = CommandLine.arguments.first(where: { $0.hasPrefix(prefix) }) {
+        return String(eq.dropFirst(prefix.count))
+    }
+    if let idx = CommandLine.arguments.firstIndex(of: name),
+       idx + 1 < CommandLine.arguments.count {
+        return CommandLine.arguments[idx + 1]
+    }
+    return nil
+}
+
 if CommandLine.arguments.contains("--check-config") {
     runConfigCheck()
 }
@@ -168,16 +183,7 @@ if CommandLine.arguments.contains("--print-shell-bootstrap") {
 }
 
 if CommandLine.arguments.contains("--shell-convert") {
-    let caretArg: String? = {
-        if let caretEq = CommandLine.arguments.first(where: { $0.hasPrefix("--caret=") }) {
-            return String(caretEq.dropFirst("--caret=".count))
-        }
-        if let caretIdx = CommandLine.arguments.firstIndex(of: "--caret"),
-           caretIdx + 1 < CommandLine.arguments.count {
-            return CommandLine.arguments[caretIdx + 1]
-        }
-        return nil
-    }()
+    let caretArg = cliStringArg(named: "--caret")
     let caretUTF16: Int
     let target: MozcBridge.ConvertTarget = CommandLine.arguments.contains("--katakana")
         ? .katakana
@@ -212,16 +218,7 @@ if CommandLine.arguments.contains("--shell-convert") {
 }
 
 if CommandLine.arguments.contains("--shell-candidates") {
-    let caretArg: String? = {
-        if let caretEq = CommandLine.arguments.first(where: { $0.hasPrefix("--caret=") }) {
-            return String(caretEq.dropFirst("--caret=".count))
-        }
-        if let caretIdx = CommandLine.arguments.firstIndex(of: "--caret"),
-           caretIdx + 1 < CommandLine.arguments.count {
-            return CommandLine.arguments[caretIdx + 1]
-        }
-        return nil
-    }()
+    let caretArg = cliStringArg(named: "--caret")
     let caretUTF16: Int
     let target: MozcBridge.ConvertTarget = CommandLine.arguments.contains("--katakana")
         ? .katakana
@@ -250,26 +247,8 @@ if CommandLine.arguments.contains("--shell-candidates") {
 }
 
 if CommandLine.arguments.contains("--shell-select") {
-    let caretArg: String? = {
-        if let caretEq = CommandLine.arguments.first(where: { $0.hasPrefix("--caret=") }) {
-            return String(caretEq.dropFirst("--caret=".count))
-        }
-        if let caretIdx = CommandLine.arguments.firstIndex(of: "--caret"),
-           caretIdx + 1 < CommandLine.arguments.count {
-            return CommandLine.arguments[caretIdx + 1]
-        }
-        return nil
-    }()
-    let selectedIndexArg: String? = {
-        if let idxEq = CommandLine.arguments.first(where: { $0.hasPrefix("--candidate-index=") }) {
-            return String(idxEq.dropFirst("--candidate-index=".count))
-        }
-        if let idx = CommandLine.arguments.firstIndex(of: "--candidate-index"),
-           idx + 1 < CommandLine.arguments.count {
-            return CommandLine.arguments[idx + 1]
-        }
-        return nil
-    }()
+    let caretArg = cliStringArg(named: "--caret")
+    let selectedIndexArg = cliStringArg(named: "--candidate-index")
     let selectedIndex = Int(selectedIndexArg ?? "") ?? 0
     let caretUTF16: Int
     let target: MozcBridge.ConvertTarget = CommandLine.arguments.contains("--katakana")
@@ -461,11 +440,7 @@ applyCycleChord(primary: modoreHotkey, cycle: gCycleModifier, katakana: gKatakan
 // refresh shows the correct delivery path; subsequent refreshes come from
 // `applyConversionHotkeyChord` on every chord change.
 gStatusItem = ModoreStatusItem()
-gStatusItem?.refresh(
-    hotkey: modoreHotkey,
-    usingCarbonHotkey: gUsingCarbonHotkey,
-    katakanaChord: secondaryChordForStatus(primary: modoreHotkey),
-    cycleChord: cycleChordForStatus(primary: modoreHotkey))
+refreshStatusItem(primary: modoreHotkey)
 Log.boot("status item installed in menu bar")
 
 // SecureInput watcher. Starts polling immediately so a password prompt
@@ -520,13 +495,7 @@ Log.boot("shadow buffer: \(gShadowBufferEnabled ? "on" : "off (set [conversion] 
 // `[conversion] classifier = on` in modore.conf.
 gClassifierEnabled = ModoreConfig.loadClassifierEnabled()
 if gClassifierEnabled {
-    let configDir: String = {
-        if let xdg = ProcessInfo.processInfo.environment["XDG_CONFIG_HOME"], !xdg.isEmpty {
-            return "\(xdg)/modore"
-        }
-        return "\(FileManager.default.homeDirectoryForCurrentUser.path)/.config/modore"
-    }()
-    let modelPath = Classifier.configModelPath(configDir: configDir)
+    let modelPath = Classifier.configModelPath(configDir: ModoreConfig.configDir())
     if FileManager.default.fileExists(atPath: modelPath) {
         if Classifier.load(modelPath: modelPath) {
             Log.boot("ML classifier loaded from \(modelPath)")
@@ -553,12 +522,7 @@ if gClassifierEnabled {
 // scripts (`modore.log.*` at top level) interleave below the rest of the
 // boot sequence. Engine is opt-in via the presence of files in the dir;
 // an empty/missing dir is a no-op and the host runs in pass-through.
-let scriptsDir: String = {
-    if let xdg = ProcessInfo.processInfo.environment["XDG_CONFIG_HOME"], !xdg.isEmpty {
-        return "\(xdg)/modore/scripts"
-    }
-    return "\(FileManager.default.homeDirectoryForCurrentUser.path)/.config/modore/scripts"
-}()
+let scriptsDir = ModoreConfig.scriptsDir()
 ModoreScript.boot(scriptDir: scriptsDir)
 
 // Watch the scripts dir for adds/removes AND every *.lua file inside it

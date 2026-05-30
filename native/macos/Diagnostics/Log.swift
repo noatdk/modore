@@ -73,28 +73,16 @@ enum Log {
     }
 
     private static func namespaceMask(for tag: String) -> ModoreConfig.LoggingNamespaceMask? {
+        // A tag may be namespaced ("scripting:engine"); the leading root is
+        // what maps to a suppression bit. Token→mask lives in one place —
+        // `LoggingNamespaceMask(namespace:)` — so the config parser and this
+        // filter can't drift apart.
         let root: Substring
         if let colon = tag.firstIndex(of: ":") {
             root = tag[..<colon]
         } else {
             root = Substring(tag)
         }
-        switch root {
-        case "boot": return .boot
-        case "config": return .config
-        case "ax": return .ax
-        case "hotkey": return .hotkey
-        case "pickup": return .pickup
-        case "clipboard": return .clipboard
-        case "mozc": return .mozc
-        case "secure-input": return .secureInput
-        case "undo": return .undo
-        case "cycle": return .cycle
-        case "panel": return .panel
-        case "shell": return .shell
-        case "unicode": return .unicode
-        case "scripting": return .scripting
-        default: return nil
-        }
+        return ModoreConfig.LoggingNamespaceMask(namespace: String(root))
     }
 }

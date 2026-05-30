@@ -44,9 +44,7 @@ let tapCallback: CGEventTapCallBack = { _, type, event, _ in
     }
 
     let keyCode = CGKeyCode(event.getIntegerValueField(.keyboardEventKeycode))
-    let coreFlags = event.flags.intersection([
-        .maskCommand, .maskShift, .maskControl, .maskAlternate
-    ])
+    let coreFlags = event.flags.intersection(kCoreModifierFlags)
 
     // Esc undo. Independent of Carbon — Carbon only grabs the conversion
     // chord, Esc is always delivered to the tap. Gate cheaply on the
