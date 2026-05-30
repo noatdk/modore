@@ -40,6 +40,14 @@ The Linux columns are the same binary on different display servers;
 | Floating candidate panel                      |   ✓   |     ✗       |       ✗         |    ✗    |
 | Bootstrap from existing Mozc / GJI profile    |   ✗   |     ✗       |       ✗         |    ✗    |
 
+## Shell-native (terminal)
+
+| Feature                                       | macOS | Linux (X11) | Linux (Wayland) | Windows |
+| --------------------------------------------- | :---: | :---------: | :-------------: | :-----: |
+| zsh / bash / fish convert + cycle (`Ctrl-X`)  |   ✓²⁴ |     ✗²⁵     |       ✗²⁵       |    ✗    |
+| Inline candidate window while cycling         |   ◐²⁶ |     ✗       |       ✗         |    ✗    |
+| Candidate chooser (`Ctrl-X Ctrl-L`)           |   ✓²⁷ |     ✗       |       ✗         |    ✗    |
+
 ## Scripting
 
 | Feature                                          | macOS | Linux (X11) | Linux (Wayland) | Windows |
@@ -98,3 +106,11 @@ X11/compositor-trigger paths when raw access is unavailable.
 ²² Per-file content edits reload on the next hotkey press (engine's mtime poll). The macOS host also watches the scripts directory itself via `ConfigWatcher`, so adding or removing files is picked up live; the Linux host has no equivalent watcher yet, so new files only appear after a host restart.
 
 ¹⁷ Polls `IORegistry → IOConsoleUsers → kCGSSessionSecureInputPID` on a background timer (3 s idle / 1 s while held). When held by another app (sudo prompts in Terminal/iTerm, password fields in 1Password/Bitwarden/Safari, the Lock Screen, Touch ID) the menu-bar title flips to red and a `⚠ Blocked by <App>` line appears in the menu — so the user knows why the hotkey is silently failing. `modore-host --secure-input-status` is a one-shot diagnostic. See `native/macos/SecureInputMonitor.swift`. The feature is "—" on Linux/Windows because Secure Keyboard Entry is a macOS-only OS concept.
+
+²⁴ The shell sources `scripts/modore-shell-bootstrap.{sh,fish}`, which lazily asks `modore-host --print-shell-bootstrap` for a widget snippet (generated per-shell in `bridge/src/shell_convert.cc`). The widgets talk to the running host over a Unix socket; `Ctrl-X Ctrl-J` converts/cycles, `Ctrl-X Ctrl-K` does katakana/reverse. See [`shell-integration.md`](shell-integration.md).
+
+²⁵ The Linux host has no shell-convert socket server or `--print-shell-bootstrap`, so the bootstrap has nothing to talk to.
+
+²⁶ zsh only: cycling draws the candidate list below the prompt via ZLE `POSTDISPLAY` (no dependency), current pick bracketed, cleared on the next edit or accept. bash (readline) and fish expose no below-buffer region, so they cycle without the inline list.
+
+²⁷ `Ctrl-X Ctrl-L` opens a chooser; picker auto-detects `fzf` → `gum` → a built-in numbered prompt (no dependency), overridable with `MODORE_SHELL_PICKER`.

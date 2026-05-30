@@ -17,6 +17,21 @@ else
   MODORE_SHELL_NAME=sh
 fi
 
+modore_shell_predeclare_zsh_widgets() {
+  if [ -z "${ZSH_VERSION-}" ] || [ -n "${MODORE_SHELL_WIDGETS_PREDECLARED-}" ]; then
+    return 0
+  fi
+  modore_shell_convert() { return 0; }
+  modore_shell_convert_katakana() { return 0; }
+  modore_shell_choose_candidate() { return 0; }
+  zle -N modore_shell_convert
+  zle -N modore_shell_convert_katakana
+  zle -N modore_shell_choose_candidate
+  MODORE_SHELL_WIDGETS_PREDECLARED=1
+}
+
+modore_shell_predeclare_zsh_widgets
+
 MODORE_HOST_EXECUTABLE="${MODORE_HOST_EXECUTABLE-}"
 if [ -z "$MODORE_HOST_EXECUTABLE" ]; then
   MODORE_HOST_EXECUTABLE="$(command -v modore-host 2>/dev/null)"

@@ -66,3 +66,13 @@ hotkey = Ctrl+Shift+grave
 # wayland_copy_poll_ms = 72
 # wayland_copy_poll_step_ms = 2
 # cycle_backspace_step_ms = 12
+
+# Available: macOS
+# Shell-native conversion (zsh/bash/fish), sourced via scripts/modore-shell-bootstrap.*.
+#   candidate_window = on|off — zsh inline candidate strip while cycling (default on)
+#   picker = auto|fzf|gum|numeric — chooser launched by Ctrl-X Ctrl-L (default auto:
+#                                   probe fzf, then gum, then a built-in numbered prompt)
+# The MODORE_SHELL_PICKER env var overrides picker per shell.
+# [shell]
+# candidate_window = on
+# picker = auto

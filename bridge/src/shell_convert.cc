@@ -373,80 +373,6 @@ enum class ShellBootstrapTarget {
     kFish,
 };
 
-struct ParsedHotkey {
-    bool control = false;
-    bool shift = false;
-    bool alternate = false;
-    bool command = false;
-    std::string key;
-};
-
-static std::string trim_ascii(const std::string& s) {
-    size_t start = 0;
-    while (start < s.size()) {
-        unsigned char c = static_cast<unsigned char>(s[start]);
-        if (c != ' ' && c != '\t' && c != '\n' && c != '\r') break;
-        ++start;
-    }
-    size_t end = s.size();
-    while (end > start) {
-        unsigned char c = static_cast<unsigned char>(s[end - 1]);
-        if (c != ' ' && c != '\t' && c != '\n' && c != '\r') break;
-        --end;
-    }
-    return s.substr(start, end - start);
-}
-
-static std::string lower_ascii_copy(const std::string& s) {
-    std::string out = s;
-    for (char& ch : out) {
-        unsigned char c = static_cast<unsigned char>(ch);
-        if (c >= 'A' && c <= 'Z') ch = static_cast<char>(c - 'A' + 'a');
-    }
-    return out;
-}
-
-static std::vector<std::string> split_plus(const std::string& s) {
-    std::vector<std::string> parts;
-    size_t pos = 0;
-    while (pos <= s.size()) {
-        size_t next = s.find('+', pos);
-        std::string part = trim_ascii(s.substr(pos, next == std::string::npos ? std::string::npos : next - pos));
-        if (!part.empty()) {
-            parts.push_back(part);
-        }
-        if (next == std::string::npos) break;
-        pos = next + 1;
-    }
-    return parts;
-}
-
-static std::optional<ParsedHotkey> parse_hotkey_display_name(const char* display_name) {
-    if (!display_name || !*display_name) return std::nullopt;
-    std::vector<std::string> parts = split_plus(display_name);
-    if (parts.empty()) return std::nullopt;
-
-    ParsedHotkey out;
-    out.key = trim_ascii(parts.back());
-    if (out.key.empty()) return std::nullopt;
-
-    for (size_t i = 0; i + 1 < parts.size(); ++i) {
-        const std::string lower = lower_ascii_copy(parts[i]);
-        if (lower == "ctrl" || lower == "control") {
-            out.control = true;
-        } else if (lower == "shift") {
-            out.shift = true;
-        } else if (lower == "alt" || lower == "option" || lower == "meta") {
-            out.alternate = true;
-        } else if (lower == "cmd" || lower == "command" || lower == "super" || lower == "win") {
-            out.command = true;
-        } else {
-            return std::nullopt;
-        }
-    }
-    return out;
-}
-
 static std::string shell_single_quote(const std::string& s) {
     std::string out;
     out.reserve(s.size() + 8);
@@ -462,20 +388,6 @@ static std::string shell_single_quote(const std::string& s) {
     return out;
 }
 
-static std::string quote_for_fish(const std::string& s) {
-    std::string out;
-    out.reserve(s.size() + 8);
-    out.push_back('"');
-    for (char ch : s) {
-        if (ch == '"' || ch == '\\') {
-            out.push_back('\\');
-        }
-        out.push_back(ch);
-    }
-    out.push_back('"');
-    return out;
-}
-
 static ShellBootstrapTarget detect_shell_bootstrap_target() {
     if (const char* shell = std::getenv("MODORE_SHELL")) {
         if (std::strcmp(shell, "fish") == 0) return ShellBootstrapTarget::kFish;
@@ -485,10 +397,6 @@ static ShellBootstrapTarget detect_shell_bootstrap_target() {
     if (std::getenv("FISH_VERSION")) return ShellBootstrapTarget::kFish;
     if (std::getenv("ZSH_VERSION")) return ShellBootstrapTarget::kZsh;
     return ShellBootstrapTarget::kBash;
-}
-
-static std::string fallback_shell_sequence(ShellBootstrapTarget shell) {
-    return shell == ShellBootstrapTarget::kFish ? "ctrl-x,ctrl-j" : "\\C-x\\C-j";
 }
 
 struct ShellSession {
@@ -672,6 +580,160 @@ static std::optional<std::pair<std::string, std::string>> shell_start_or_cycle(
     return std::make_pair(session_id, session.current_text());
 }
 
+static std::optional<std::pair<std::string, ShellSession>> shell_ensure_session(
+    const std::string& session_id_in,
+    ShellConvertMode mode,
+    const std::string& text,
+    size_t caret_byte) {
+    const auto now = std::chrono::steady_clock::now();
+    std::lock_guard<std::mutex> lock(g_shell_session_mutex);
+    purge_expired_shell_sessions_locked(now);
+
+    if (!session_id_in.empty()) {
+        auto it = g_shell_sessions.find(session_id_in);
+        if (it != g_shell_sessions.end()) {
+            ShellSession& session = it->second;
+            if (session.current_text() == text) {
+                session.last_touch = now;
+                return std::make_pair(session_id_in, session);
+            }
+        }
+    }
+
+    auto bounds = shell_token_bounds(text, caret_byte);
+    if (!bounds.has_value()) return std::nullopt;
+    const auto [start, end] = *bounds;
+    const std::string token = text.substr(start, end - start);
+
+    std::vector<std::string> candidates;
+    const unsigned int flags =
+        mode == ShellConvertMode::kKatakana ? MOZC_CONVERT_FLAG_KATAKANA : 0u;
+    std::optional<std::string> committed = shell_convert_token(token, flags, &candidates);
+    if (!committed.has_value()) return std::nullopt;
+
+    ShellSession session;
+    session.prefix = text.substr(0, start);
+    session.suffix = text.substr(end);
+    session.candidates = candidates;
+    session.current_index = 0;
+    session.last_touch = now;
+
+    std::string session_id = session_id_in.empty() ? shell_session_id_locked() : session_id_in;
+    g_shell_sessions[session_id] = session;
+    return std::make_pair(session_id, session);
+}
+
+static std::optional<std::pair<std::string, ShellSession>> shell_select_candidate(
+    const std::string& session_id_in,
+    ShellConvertMode mode,
+    const std::string& text,
+    size_t caret_byte,
+    size_t selected_index) {
+    const auto now = std::chrono::steady_clock::now();
+    std::lock_guard<std::mutex> lock(g_shell_session_mutex);
+    purge_expired_shell_sessions_locked(now);
+
+    if (!session_id_in.empty()) {
+        auto it = g_shell_sessions.find(session_id_in);
+        if (it != g_shell_sessions.end()) {
+            ShellSession& session = it->second;
+            if (session.current_text() == text) {
+                if (session.candidates.empty() || selected_index >= session.candidates.size()) {
+                    return std::nullopt;
+                }
+                session.current_index = selected_index;
+                session.last_touch = now;
+                return std::make_pair(session_id_in, session);
+            }
+        }
+    }
+    auto bounds = shell_token_bounds(text, caret_byte);
+    if (!bounds.has_value()) return std::nullopt;
+    const auto [start, end] = *bounds;
+    const std::string token = text.substr(start, end - start);
+
+    std::vector<std::string> candidates;
+    const unsigned int flags =
+        mode == ShellConvertMode::kKatakana ? MOZC_CONVERT_FLAG_KATAKANA : 0u;
+    std::optional<std::string> committed = shell_convert_token(token, flags, &candidates);
+    if (!committed.has_value()) return std::nullopt;
+
+    ShellSession session;
+    session.prefix = text.substr(0, start);
+    session.suffix = text.substr(end);
+    session.candidates = candidates;
+    if (session.candidates.empty() || selected_index >= session.candidates.size()) {
+        return std::nullopt;
+    }
+    session.current_index = selected_index;
+    session.last_touch = now;
+
+    std::string session_id = session_id_in.empty() ? shell_session_id_locked() : session_id_in;
+    g_shell_sessions[session_id] = session;
+    return std::make_pair(session_id, session);
+}
+
+static std::string shell_candidates_text(const ShellSession& session) {
+    std::string out;
+    for (size_t i = 0; i < session.candidates.size(); ++i) {
+        if (i > 0) out.push_back('\n');
+        out.append(std::to_string(i));
+        out.push_back('\t');
+        out.append(session.candidates[i]);
+    }
+    return out;
+}
+
+static bool write_all_fd(int fd, const char* data, size_t len);
+static bool read_all_fd(int fd, std::string* out);
+static bool connect_unix_socket(const std::string& socket_path, int* fd_out);
+static int shell_request_remote(const char *socket_path,
+                                const char *session_id_in,
+                                const char *mode_in,
+                                const char *action,
+                                const std::string& payload,
+                                const char *text,
+                                size_t text_len,
+                                size_t caret_byte,
+                                char *out_buf,
+                                size_t out_cap,
+                                size_t *out_len) {
+    if (!socket_path || !text || !out_buf || !out_len || out_cap == 0) {
+        mozc_bridge_set_error("invalid args");
+        return -1;
+    }
+    int fd = -1;
+    if (!connect_unix_socket(socket_path, &fd)) {
+        mozc_bridge_set_error("failed to connect shell convert socket");
+        return -1;
+    }
+    std::string request = session_id_in ? session_id_in : "";
+    request.push_back('\0');
+    request.append(std::to_string(caret_byte));
+    request.push_back('\0');
+    request.append(mode_in ? mode_in : "");
+    request.push_back('\0');
+    request.append(action ? action : "");
+    request.push_back('\0');
+    request.append(payload);
+    request.push_back('\0');
+    request.append(text, text_len);
+    if (!write_all_fd(fd, request.data(), request.size())) {
+        ::close(fd);
+        mozc_bridge_set_error("failed to write shell request");
+        return -1;
+    }
+    ::shutdown(fd, SHUT_WR);
+    std::string response;
+    bool ok = read_all_fd(fd, &response);
+    ::close(fd);
+    if (!ok) {
+        mozc_bridge_set_error("failed to read shell response");
+        return -1;
+    }
+    return copy_output(response, out_buf, out_cap, out_len);
+}
+
 static bool write_all_fd(int fd, const char* data, size_t len) {
     size_t written = 0;
     while (written < len) {
@@ -740,11 +802,16 @@ static std::optional<std::string> handle_shell_request(const std::string& reques
     if (second == std::string::npos) return std::nullopt;
     size_t third = request.find('\0', second + 1);
     if (third == std::string::npos) return std::nullopt;
+    size_t fourth = request.find('\0', third + 1);
+    if (fourth == std::string::npos) return std::nullopt;
+    size_t fifth = request.find('\0', fourth + 1);
 
     const std::string session_id_in = request.substr(0, first);
     const std::string caret_s = request.substr(first + 1, second - first - 1);
     const std::string mode_s = request.substr(second + 1, third - second - 1);
-    const std::string text = request.substr(third + 1);
+    const std::string action_s = request.substr(third + 1, fourth - third - 1);
+    const std::string payload = request.substr(fourth + 1);
+    const std::string text = fifth == std::string::npos ? payload : request.substr(fifth + 1);
 
     size_t caret = 0;
     try {
@@ -758,9 +825,29 @@ static std::optional<std::string> handle_shell_request(const std::string& reques
         mode = ShellConvertMode::kKatakana;
     }
 
-    auto result = shell_start_or_cycle(session_id_in, mode, text, caret);
-    if (!result.has_value()) return std::nullopt;
-    return result->first + "\n" + result->second;
+    if (action_s == "convert") {
+        auto result = shell_start_or_cycle(session_id_in, mode, text, caret);
+        if (!result.has_value()) return std::nullopt;
+        return result->first + "\n" + result->second;
+    }
+    if (action_s == "candidates") {
+        auto result = shell_ensure_session(session_id_in, mode, text, caret);
+        if (!result.has_value()) return std::nullopt;
+        return result->first + "\n" + std::to_string(result->second.current_index) +
+               "\n" + shell_candidates_text(result->second);
+    }
+    if (action_s == "select") {
+        size_t selected_index = 0;
+        try {
+            selected_index = static_cast<size_t>(std::stoul(payload));
+        } catch (...) {
+            return std::nullopt;
+        }
+        auto result = shell_select_candidate(session_id_in, mode, text, caret, selected_index);
+        if (!result.has_value()) return std::nullopt;
+        return result->first + "\n" + result->second.current_text();
+    }
+    return std::nullopt;
 }
 
 static void shell_server_worker(ShellConvertServerState* state) {
@@ -797,121 +884,449 @@ static void shell_server_worker(ShellConvertServerState* state) {
     }
 }
 
+static void replace_all(std::string* s, const std::string& from, const std::string& to) {
+    if (from.empty()) return;
+    size_t pos = 0;
+    while ((pos = s->find(from, pos)) != std::string::npos) {
+        s->replace(pos, from.size(), to);
+        pos += to.size();
+    }
+}
+
+// Substitutes the snippet placeholders. `picker_default` and
+// `candidate_window` are pre-sanitized by the caller (a fixed enum word and
+// "0"/"1"), so they go in unquoted; only the host path needs shell quoting.
+static std::string render_shell_template(
+    std::string tpl,
+    const std::string& host,
+    const std::string& socket_path,
+    const std::string& picker_default,
+    const std::string& candidate_window) {
+    replace_all(&tpl, "{{HOST}}", shell_single_quote(host));
+    replace_all(&tpl, "{{SOCKET}}", shell_single_quote(socket_path));
+    replace_all(&tpl, "{{PICKER_DEFAULT}}", picker_default);
+    replace_all(&tpl, "{{CANDIDATE_WINDOW}}", candidate_window);
+    return tpl;
+}
+
+static constexpr const char* kBashShellBootstrapTemplate = R"SH(
+# Generated by modore-host. Source this from your shell startup file.
+# Where the resident host listens; the lean client reads this.
+export MODORE_SHELL_SOCKET={{SOCKET}}
+# Candidate picker: honors MODORE_SHELL_PICKER (fzf|gum|numeric), else
+# auto-detects fzf, then gum, then a dependency-free numbered prompt.
+modore_shell_pick_candidate() {
+  local candidates="$1" picker="${MODORE_SHELL_PICKER:-{{PICKER_DEFAULT}}}"
+  case "$picker" in
+    fzf|gum|numeric) ;;
+    *) picker="" ;;
+  esac
+  if [ -z "$picker" ]; then
+    if command -v fzf >/dev/null 2>&1; then
+      picker=fzf
+    elif command -v gum >/dev/null 2>&1; then
+      picker=gum
+    else
+      picker=numeric
+    fi
+  fi
+  case "$picker" in
+    fzf)
+      printf '%s\n' "$candidates" | fzf --height 40% --reverse --no-sort --delimiter=$'\t' --with-nth=2..
+      ;;
+    gum)
+      printf '%s\n' "$candidates" | gum choose --height 15
+      ;;
+    numeric)
+      local line n=1 sel
+      while IFS= read -r line; do
+        [ -z "$line" ] && continue
+        printf '%2d) %s\n' "$n" "${line#*$'\t'}" >&2
+        n=$((n + 1))
+      done <<< "$candidates"
+      printf 'modore> ' >&2
+      IFS= read -r sel </dev/tty || return 1
+      case "$sel" in
+        ''|*[!0-9]*) return 1 ;;
+      esac
+      printf '%s\n' "$candidates" | sed -n "${sel}p"
+      ;;
+  esac
+}
+modore_shell_choose_candidate() {
+  local candidate_response candidate_session candidate_lines choice chosen_index response session converted
+  candidate_response="$(MODORE_SHELL_SESSION="${MODORE_SHELL_SESSION-}" {{HOST}} --shell-candidates --caret "$READLINE_POINT" <<< "$READLINE_LINE")" || return 1
+  candidate_session=${candidate_response%%$'\n'*}
+  candidate_response=${candidate_response#*$'\n'}
+  candidate_response=${candidate_response#*$'\n'}
+  candidate_lines=$candidate_response
+  choice="$(modore_shell_pick_candidate "$candidate_lines")" || return 1
+  chosen_index=${choice%%$'\t'*}
+  response="$(MODORE_SHELL_SESSION="$candidate_session" {{HOST}} --shell-select --candidate-index "$chosen_index" --caret "$READLINE_POINT" <<< "$READLINE_LINE")" || return 1
+  session=${response%%$'\n'*}
+  if [ "$session" = "$response" ]; then
+    return 1
+  fi
+  converted=${response#*$'\n'}
+  MODORE_SHELL_SESSION="$session"
+  READLINE_LINE="$converted"
+  READLINE_POINT=${#READLINE_LINE}
+}
+modore_shell_convert() {
+  local response session converted
+  response="$(MODORE_SHELL_SESSION="${MODORE_SHELL_SESSION-}" {{HOST}} --shell-convert --caret "$READLINE_POINT" <<< "$READLINE_LINE")" || {
+    return 1
+  }
+  session=${response%%$'\n'*}
+  if [ "$session" = "$response" ]; then
+    return 1
+  fi
+  converted=${response#*$'\n'}
+  MODORE_SHELL_SESSION="$session"
+  READLINE_LINE="$converted"
+  READLINE_POINT=${#READLINE_LINE}
+}
+modore_shell_convert_katakana() {
+  local response session converted
+  response="$(MODORE_SHELL_SESSION="${MODORE_SHELL_SESSION-}" {{HOST}} --shell-convert --katakana --caret "$READLINE_POINT" <<< "$READLINE_LINE")" || {
+    return 1
+  }
+  session=${response%%$'\n'*}
+  if [ "$session" = "$response" ]; then
+    return 1
+  fi
+  converted=${response#*$'\n'}
+  MODORE_SHELL_SESSION="$session"
+  READLINE_LINE="$converted"
+  READLINE_POINT=${#READLINE_LINE}
+}
+bind -x "\"\C-x\C-j\":modore_shell_convert"
+bind -x "\"\C-x\C-l\":modore_shell_choose_candidate"
+bind -x "\"\C-x\C-k\":modore_shell_convert_katakana"
+)SH";
+
+static constexpr const char* kZshShellBootstrapTemplate = R"SH(
+# Generated by modore-host. Source this from your shell startup file.
+# Where the resident host listens; the lean client reads this.
+export MODORE_SHELL_SOCKET={{SOCKET}}
+autoload -Uz add-zle-hook-widget 2>/dev/null
+# Candidate picker for the explicit chooser. Honors MODORE_SHELL_PICKER
+# (fzf|gum|numeric), else auto-detects fzf, then gum, then a numbered prompt.
+modore_shell_pick_candidate() {
+  local candidates="$1" picker="${MODORE_SHELL_PICKER:-{{PICKER_DEFAULT}}}"
+  case "$picker" in
+    fzf|gum|numeric) ;;
+    *) picker="" ;;
+  esac
+  if [ -z "$picker" ]; then
+    if command -v fzf >/dev/null 2>&1; then
+      picker=fzf
+    elif command -v gum >/dev/null 2>&1; then
+      picker=gum
+    else
+      picker=numeric
+    fi
+  fi
+  case "$picker" in
+    fzf)
+      printf '%s\n' "$candidates" | fzf --height 40% --reverse --no-sort --delimiter=$'\t' --with-nth=2..
+      ;;
+    gum)
+      printf '%s\n' "$candidates" | gum choose --height 15
+      ;;
+    numeric)
+      local line n=1 sel
+      while IFS= read -r line; do
+        [ -z "$line" ] && continue
+        print -u2 -- "$(printf '%2d) %s' "$n" "${line#*$'\t'}")"
+        n=$((n + 1))
+      done <<< "$candidates"
+      print -n -u2 -- 'modore> '
+      IFS= read -r sel </dev/tty || return 1
+      case "$sel" in
+        ''|*[!0-9]*) return 1 ;;
+      esac
+      printf '%s\n' "$candidates" | sed -n "${sel}p"
+      ;;
+  esac
+}
+# Inline candidate window shown below the prompt while cycling. Uses ZLE's
+# POSTDISPLAY (the same read-only region zsh-autosuggestions draws into), so
+# it needs nothing installed. The current pick is wrapped in brackets.
+modore_shell_render_strip() {
+  local cur="$1" lines="$2"
+  local -a rows
+  rows=("${(@f)lines}")
+  local out="" row idx cand
+  for row in "${rows[@]}"; do
+    [ -z "$row" ] && continue
+    idx=${row%%$'\t'*}
+    cand=${row#*$'\t'}
+    if [ "$idx" = "$cur" ]; then
+      out+=" [${cand}]"
+    else
+      out+="  ${cand} "
+    fi
+  done
+  if [ -z "$out" ]; then
+    POSTDISPLAY=""
+  else
+    POSTDISPLAY=$'\n'"modore:${out}"
+  fi
+  typeset -g MODORE_SHELL_LAST_BUFFER="$BUFFER"
+}
+modore_shell_show_strip() {
+  if [ "{{CANDIDATE_WINDOW}}" != "1" ]; then
+    POSTDISPLAY=""
+    return 0
+  fi
+  local resp rest cur lines
+  resp="$(MODORE_SHELL_SESSION="${MODORE_SHELL_SESSION-}" {{HOST}} --shell-candidates --caret "$CURSOR" <<< "$BUFFER")" || {
+    POSTDISPLAY=""
+    return 0
+  }
+  rest=${resp#*$'\n'}
+  if [ "$rest" = "$resp" ]; then
+    POSTDISPLAY=""
+    return 0
+  fi
+  cur=${rest%%$'\n'*}
+  lines=${rest#*$'\n'}
+  modore_shell_render_strip "$cur" "$lines"
+}
+# Drop the strip as soon as the buffer changes out from under it (a normal
+# keystroke) or the line is accepted, so it never lingers stale.
+if (( $+functions[add-zle-hook-widget] )); then
+  modore_shell__clear_on_change() {
+    if [ -n "$POSTDISPLAY" ] && [ "$BUFFER" != "${MODORE_SHELL_LAST_BUFFER-}" ]; then
+      POSTDISPLAY=""
+    fi
+  }
+  modore_shell__clear_on_finish() {
+    POSTDISPLAY=""
+  }
+  add-zle-hook-widget line-pre-redraw modore_shell__clear_on_change 2>/dev/null
+  add-zle-hook-widget line-finish modore_shell__clear_on_finish 2>/dev/null
+fi
+modore_shell_choose_candidate() {
+  local candidate_response candidate_session candidate_lines choice chosen_index response session converted
+  zle -I
+  candidate_response="$(MODORE_SHELL_SESSION="${MODORE_SHELL_SESSION-}" {{HOST}} --shell-candidates --caret "$CURSOR" <<< "$BUFFER")" || return 1
+  candidate_session=${candidate_response%%$'\n'*}
+  candidate_response=${candidate_response#*$'\n'}
+  candidate_response=${candidate_response#*$'\n'}
+  candidate_lines=$candidate_response
+  choice="$(modore_shell_pick_candidate "$candidate_lines")" || return 1
+  [ -z "$choice" ] && return 1
+  chosen_index=${choice%%$'\t'*}
+  response="$(MODORE_SHELL_SESSION="$candidate_session" {{HOST}} --shell-select --candidate-index "$chosen_index" --caret "$CURSOR" <<< "$BUFFER")" || return 1
+  session=${response%%$'\n'*}
+  if [ "$session" = "$response" ]; then
+    return 1
+  fi
+  converted=${response#*$'\n'}
+  typeset -g MODORE_SHELL_SESSION="$session"
+  BUFFER="$converted"
+  CURSOR=${#BUFFER}
+  modore_shell_show_strip
+  zle -R
+}
+modore_shell_convert() {
+  local response session converted
+  response="$(MODORE_SHELL_SESSION="${MODORE_SHELL_SESSION-}" {{HOST}} --shell-convert --caret "$CURSOR" <<< "$BUFFER")" || {
+    return 1
+  }
+  session=${response%%$'\n'*}
+  if [ "$session" = "$response" ]; then
+    return 1
+  fi
+  converted=${response#*$'\n'}
+  typeset -g MODORE_SHELL_SESSION="$session"
+  BUFFER="$converted"
+  CURSOR=${#BUFFER}
+  modore_shell_show_strip
+  zle -R
+}
+modore_shell_convert_katakana() {
+  local response session converted
+  response="$(MODORE_SHELL_SESSION="${MODORE_SHELL_SESSION-}" {{HOST}} --shell-convert --katakana --caret "$CURSOR" <<< "$BUFFER")" || {
+    return 1
+  }
+  session=${response%%$'\n'*}
+  if [ "$session" = "$response" ]; then
+    return 1
+  fi
+  converted=${response#*$'\n'}
+  typeset -g MODORE_SHELL_SESSION="$session"
+  BUFFER="$converted"
+  CURSOR=${#BUFFER}
+  modore_shell_show_strip
+  zle -R
+}
+zle -N modore_shell_convert
+zle -N modore_shell_convert_katakana
+zle -N modore_shell_choose_candidate
+bindkey -M emacs '^X^J' modore_shell_convert
+bindkey -M emacs '^X^L' modore_shell_choose_candidate
+bindkey -M emacs '^X^K' modore_shell_convert_katakana
+bindkey -M viins '^X^J' modore_shell_convert
+bindkey -M viins '^X^L' modore_shell_choose_candidate
+bindkey -M viins '^X^K' modore_shell_convert_katakana
+bindkey -M vicmd '^X^J' modore_shell_convert
+bindkey -M vicmd '^X^L' modore_shell_choose_candidate
+bindkey -M vicmd '^X^K' modore_shell_convert_katakana
+if typeset -f _zsh_highlight_bind_widgets >/dev/null 2>&1; then
+  _zsh_highlight_bind_widgets
+fi
+)SH";
+
+static constexpr const char* kFishShellBootstrapTemplate = R"SH(
+# Generated by modore-host. Source this from your shell startup file.
+# Where the resident host listens; the lean client reads this.
+set -gx MODORE_SHELL_SOCKET {{SOCKET}}
+function modore_shell_pick_candidate
+    set -l candidates $argv
+    set -l picker $MODORE_SHELL_PICKER
+    if test -z "$picker"
+        set picker {{PICKER_DEFAULT}}
+    end
+    if not contains -- "$picker" fzf gum numeric
+        set picker ""
+    end
+    if test -z "$picker"
+        if command -q fzf
+            set picker fzf
+        else if command -q gum
+            set picker gum
+        else
+            set picker numeric
+        end
+    end
+    switch $picker
+        case fzf
+            printf '%s\n' $candidates | fzf --height 40% --reverse --no-sort --delimiter \t --with-nth 2..
+        case gum
+            printf '%s\n' $candidates | gum choose --height 15
+        case numeric
+            set -l n 1
+            for line in $candidates
+                printf '%2d) %s\n' $n (string split -m 1 \t -- $line)[2] >&2
+                set n (math $n + 1)
+            end
+            printf 'modore> ' >&2
+            read -l sel
+            or return 1
+            if not string match -qr '^[0-9]+$' -- "$sel"
+                return 1
+            end
+            if test $sel -lt 1 -o $sel -gt (count $candidates)
+                return 1
+            end
+            printf '%s\n' $candidates[$sel]
+    end
+end
+function modore_shell_choose_candidate
+    set -l candidate_response (env MODORE_SHELL_SESSION="$MODORE_SHELL_SESSION" {{HOST}} --shell-candidates --caret (commandline -C) | string collect)
+    or return 1
+    set -l parts (string split -m 2 \n -- $candidate_response)
+    if test (count $parts) -lt 3
+        return 1
+    end
+    set -l candidate_session $parts[1]
+    set -l candidate_index $parts[2]
+    set -l candidates (string split \n -- $parts[3])
+    set -l choice (modore_shell_pick_candidate $candidates)
+    or return 1
+    set -l chosen_parts (string split -m 1 \t -- $choice)
+    set -l chosen_index $chosen_parts[1]
+    set -l response (env MODORE_SHELL_SESSION="$candidate_session" {{HOST}} --shell-select --candidate-index $chosen_index --caret (commandline -C) | string collect)
+    or return 1
+    set -l selected_parts (string split -m 1 \n -- $response)
+    if test (count $selected_parts) -lt 2
+        return 1
+    end
+    set -g MODORE_SHELL_SESSION $selected_parts[1]
+    set -l converted $selected_parts[2]
+    commandline -r -- "$converted"
+    commandline -C (string length -- $converted)
+end
+function modore_shell_convert
+    set -l response (env MODORE_SHELL_SESSION="$MODORE_SHELL_SESSION" {{HOST}} --shell-convert --caret (commandline -C) | string collect)
+    or return 1
+    set -l parts (string split -m 1 \n -- $response)
+    if test (count $parts) -lt 2
+        return 1
+    end
+    set -g MODORE_SHELL_SESSION $parts[1]
+    set -l converted $parts[2]
+    commandline -r -- "$converted"
+    commandline -C (string length -- $converted)
+end
+function modore_shell_convert_katakana
+    set -l response (env MODORE_SHELL_SESSION="$MODORE_SHELL_SESSION" {{HOST}} --shell-convert --katakana --caret (commandline -C) | string collect)
+    or return 1
+    set -l parts (string split -m 1 \n -- $response)
+    if test (count $parts) -lt 2
+        return 1
+    end
+    set -g MODORE_SHELL_SESSION $parts[1]
+    set -l converted $parts[2]
+    commandline -r -- "$converted"
+    commandline -C (string length -- $converted)
+end
+bind ctrl-x,ctrl-j modore_shell_convert
+bind ctrl-x,ctrl-l modore_shell_choose_candidate
+bind ctrl-x,ctrl-k modore_shell_convert_katakana
+)SH";
+
 static std::string shell_bootstrap_script(
     ShellBootstrapTarget shell,
-    const std::string& sequence,
-    const std::string& host_executable_path) {
+    const std::string& host_executable_path,
+    const std::string& socket_path,
+    const std::string& picker_default,
+    const std::string& candidate_window) {
     const std::string host_bin =
         host_executable_path.empty() ? std::string("modore-host")
                                      : host_executable_path;
-    std::string quoted_host = shell_single_quote(host_bin);
     switch (shell) {
         case ShellBootstrapTarget::kBash:
-            return "# Generated by modore-host. Source this from your shell startup file.\n"
-                   "modore_shell_convert() {\n"
-                   "  local response session converted\n"
-                   "  response=\"$(MODORE_SHELL_SESSION=\"${MODORE_SHELL_SESSION-}\" " + quoted_host + " --shell-convert --caret \"$READLINE_POINT\" <<< \"$READLINE_LINE\")\" || {\n"
-                   "    return 1\n"
-                   "  }\n"
-                   "  session=${response%%$'\\n'*}\n"
-                   "  if [ \"$session\" = \"$response\" ]; then\n"
-                   "    return 1\n"
-                   "  fi\n"
-                   "  converted=${response#*$'\\n'}\n"
-                   "  MODORE_SHELL_SESSION=\"$session\"\n"
-                   "  READLINE_LINE=\"$converted\"\n"
-                   "  READLINE_POINT=${#READLINE_LINE}\n"
-                   "}\n"
-                   "modore_shell_convert_katakana() {\n"
-                   "  local response session converted\n"
-                   "  response=\"$(MODORE_SHELL_SESSION=\"${MODORE_SHELL_SESSION-}\" " + quoted_host + " --shell-convert --katakana --caret \"$READLINE_POINT\" <<< \"$READLINE_LINE\")\" || {\n"
-                   "    return 1\n"
-                   "  }\n"
-                   "  session=${response%%$'\\n'*}\n"
-                   "  if [ \"$session\" = \"$response\" ]; then\n"
-                   "    return 1\n"
-                   "  fi\n"
-                   "  converted=${response#*$'\\n'}\n"
-                   "  MODORE_SHELL_SESSION=\"$session\"\n"
-                   "  READLINE_LINE=\"$converted\"\n"
-                   "  READLINE_POINT=${#READLINE_LINE}\n"
-                   "}\n"
-                   "bind -x "
-                   + shell_single_quote("\"" + sequence + "\":modore_shell_convert")
-                   + "\n"
-                   + "bind -x "
-                   + shell_single_quote("\"\\C-x\\C-k\":modore_shell_convert_katakana")
-                   + "\n";
+            return render_shell_template(kBashShellBootstrapTemplate, host_bin,
+                                         socket_path, picker_default, candidate_window);
         case ShellBootstrapTarget::kZsh:
-            return "# Generated by modore-host. Source this from your shell startup file.\n"
-                   "modore_shell_convert() {\n"
-                   "  local response session converted\n"
-                   "  response=\"$(MODORE_SHELL_SESSION=\"${MODORE_SHELL_SESSION-}\" " + quoted_host + " --shell-convert --caret \"$CURSOR\" <<< \"$BUFFER\")\" || {\n"
-                   "    return 1\n"
-                   "  }\n"
-                   "  session=${response%%$'\\n'*}\n"
-                   "  if [ \"$session\" = \"$response\" ]; then\n"
-                   "    return 1\n"
-                   "  fi\n"
-                   "  converted=${response#*$'\\n'}\n"
-                   "  typeset -g MODORE_SHELL_SESSION=\"$session\"\n"
-                   "  BUFFER=\"$converted\"\n"
-                   "  CURSOR=${#BUFFER}\n"
-                   "}\n"
-                   "modore_shell_convert_katakana() {\n"
-                   "  local response session converted\n"
-                   "  response=\"$(MODORE_SHELL_SESSION=\"${MODORE_SHELL_SESSION-}\" " + quoted_host + " --shell-convert --katakana --caret \"$CURSOR\" <<< \"$BUFFER\")\" || {\n"
-                   "    return 1\n"
-                   "  }\n"
-                   "  session=${response%%$'\\n'*}\n"
-                   "  if [ \"$session\" = \"$response\" ]; then\n"
-                   "    return 1\n"
-                   "  fi\n"
-                   "  converted=${response#*$'\\n'}\n"
-                   "  typeset -g MODORE_SHELL_SESSION=\"$session\"\n"
-                   "  BUFFER=\"$converted\"\n"
-                   "  CURSOR=${#BUFFER}\n"
-                   "}\n"
-                   "zle -N modore_shell_convert\n"
-                   "zle -N modore_shell_convert_katakana\n"
-                   "bindkey -M emacs '^X^J' modore_shell_convert\n"
-                   "bindkey -M emacs '^X^K' modore_shell_convert_katakana\n"
-                   "bindkey -M viins '^X^J' modore_shell_convert\n"
-                   "bindkey -M viins '^X^K' modore_shell_convert_katakana\n"
-                   "bindkey -M vicmd '^X^J' modore_shell_convert\n"
-                   "bindkey -M vicmd '^X^K' modore_shell_convert_katakana\n";
+            return render_shell_template(kZshShellBootstrapTemplate, host_bin,
+                                         socket_path, picker_default, candidate_window);
         case ShellBootstrapTarget::kFish:
-            return "# Generated by modore-host. Source this from your shell startup file.\n"
-                   "function modore_shell_convert\n"
-                   "    set -l current (commandline)\n"
-                   "    set -l response (env MODORE_SHELL_SESSION=\"$MODORE_SHELL_SESSION\" " + quoted_host + " --shell-convert --caret (commandline -C) | string collect)\n"
-                   "    or return 1\n"
-                   "    set -l parts (string split -m 1 \\n -- $response)\n"
-                   "    if test (count $parts) -lt 2\n"
-                   "        return 1\n"
-                   "    end\n"
-                   "    set -g MODORE_SHELL_SESSION $parts[1]\n"
-                   "    set -l converted $parts[2]\n"
-                   "    commandline -r -- \"$converted\"\n"
-                   "    commandline -C (string length -- $converted)\n"
-                   "end\n"
-                   "function modore_shell_convert_katakana\n"
-                   "    set -l current (commandline)\n"
-                   "    set -l response (env MODORE_SHELL_SESSION=\"$MODORE_SHELL_SESSION\" " + quoted_host + " --shell-convert --katakana --caret (commandline -C) | string collect)\n"
-                   "    or return 1\n"
-                   "    set -l parts (string split -m 1 \\n -- $response)\n"
-                   "    if test (count $parts) -lt 2\n"
-                   "        return 1\n"
-                   "    end\n"
-                   "    set -g MODORE_SHELL_SESSION $parts[1]\n"
-                   "    set -l converted $parts[2]\n"
-                   "    commandline -r -- \"$converted\"\n"
-                   "    commandline -C (string length -- $converted)\n"
-                   "end\n"
-                   "bind " + quote_for_fish(sequence) + " modore_shell_convert\n"
-                   "bind ctrl-x,ctrl-k modore_shell_convert_katakana\n";
+            return render_shell_template(kFishShellBootstrapTemplate, host_bin,
+                                         socket_path, picker_default, candidate_window);
     }
     return "";
+}
+
+static std::string shell_socket_from_env() {
+    if (const char* s = std::getenv("MODORE_SHELL_CFG_SOCKET")) {
+        return s;
+    }
+    return "";
+}
+
+// Snippet knobs from `[shell]` config, handed over as env by the host (same
+// channel bridge runtime tuning uses). Sanitized to a fixed vocabulary here so
+// a stray value can never inject shell into the generated snippet.
+static std::string shell_picker_default_from_env() {
+    if (const char* p = std::getenv("MODORE_SHELL_CFG_PICKER")) {
+        const std::string s = p;
+        if (s == "auto" || s == "fzf" || s == "gum" || s == "numeric") {
+            return s;
+        }
+    }
+    return "auto";
+}
+
+static std::string shell_candidate_window_from_env() {
+    if (const char* w = std::getenv("MODORE_SHELL_CFG_CANDIDATE_WINDOW")) {
+        if (std::strcmp(w, "0") == 0) return "0";
+    }
+    return "1";
 }
 
 }  // namespace
@@ -1046,6 +1461,9 @@ extern "C" int mozc_bridge_shell_convert_remote(const char *socket_path,
     request.push_back('\0');
     request.append(mode_in ? mode_in : "");
     request.push_back('\0');
+    request.append("convert");
+    request.push_back('\0');
+    request.push_back('\0');
     request.append(text, text_len);
     if (!write_all_fd(fd, request.data(), request.size())) {
         ::close(fd);
@@ -1063,6 +1481,35 @@ extern "C" int mozc_bridge_shell_convert_remote(const char *socket_path,
     return copy_output(response, out_buf, out_cap, out_len);
 }
 
+extern "C" int mozc_bridge_shell_candidates_remote(const char *socket_path,
+                                                   const char *session_id_in,
+                                                   const char *mode_in,
+                                                   const char *text,
+                                                   size_t text_len,
+                                                   size_t caret_byte,
+                                                   char *out_buf,
+                                                   size_t out_cap,
+                                                   size_t *out_len) {
+    return shell_request_remote(socket_path, session_id_in, mode_in, "candidates",
+                                "", text, text_len, caret_byte, out_buf, out_cap,
+                                out_len);
+}
+
+extern "C" int mozc_bridge_shell_select_remote(const char *socket_path,
+                                               const char *session_id_in,
+                                               const char *mode_in,
+                                               size_t selected_index,
+                                               const char *text,
+                                               size_t text_len,
+                                               size_t caret_byte,
+                                               char *out_buf,
+                                               size_t out_cap,
+                                               size_t *out_len) {
+    return shell_request_remote(socket_path, session_id_in, mode_in, "select",
+                                std::to_string(selected_index), text, text_len,
+                                caret_byte, out_buf, out_cap, out_len);
+}
+
 extern "C" int mozc_bridge_shell_bootstrap(const char *hotkey_display_name,
                                            const char *host_executable_path,
                                            char *out_buf,
@@ -1072,10 +1519,12 @@ extern "C" int mozc_bridge_shell_bootstrap(const char *hotkey_display_name,
         return -1;
     }
     const ShellBootstrapTarget shell = detect_shell_bootstrap_target();
-    const std::optional<ParsedHotkey> hotkey =
-        parse_hotkey_display_name(hotkey_display_name);
-    const std::string sequence = fallback_shell_sequence(shell);
+    (void)hotkey_display_name;
     const std::string script = shell_bootstrap_script(
-        shell, sequence, host_executable_path ? host_executable_path : "");
+        shell,
+        host_executable_path ? host_executable_path : "",
+        shell_socket_from_env(),
+        shell_picker_default_from_env(),
+        shell_candidate_window_from_env());
     return copy_output(script, out_buf, out_cap, out_len);
 }

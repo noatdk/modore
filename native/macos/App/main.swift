@@ -135,10 +135,27 @@ if CommandLine.arguments.contains("--print-shell-bootstrap") {
     do {
         let hotkey = ModoreConfig.loadConversionHotkey().displayName
         let hostPath = Bundle.main.executablePath
-        Log.shell("printing bootstrap hotkey=\(hotkey) host=\(hostPath ?? "?")")
+        // The per-keystroke widgets call the lean `modore-shell` client (a
+        // sibling of modore-host) so they relay a socket request without
+        // loading the engine dylib; fall back to modore-host if it isn't
+        // bundled. The socket path is baked in here — the host is the
+        // authority on where the daemon listens, so the client never guesses.
+        let clientPath: String? = {
+            guard let hp = hostPath else { return nil }
+            let sibling = (hp as NSString).deletingLastPathComponent + "/modore-shell"
+            return FileManager.default.isExecutableFile(atPath: sibling) ? sibling : hp
+        }()
+        // Shell knobs reach the bridge's snippet renderer via env, the same
+        // way bridge runtime tuning does (see applyBridgeRuntimeEnv).
+        let picker = ModoreConfig.loadShellPicker()
+        let candidateWindow = ModoreConfig.loadShellCandidateWindow()
+        setenv("MODORE_SHELL_CFG_PICKER", picker.displayName, 1)
+        setenv("MODORE_SHELL_CFG_CANDIDATE_WINDOW", candidateWindow ? "1" : "0", 1)
+        setenv("MODORE_SHELL_CFG_SOCKET", shellConvertSocketPath(), 1)
+        Log.shell("printing bootstrap hotkey=\(hotkey) client=\(clientPath ?? "?") picker=\(picker.displayName) candidate_window=\(candidateWindow)")
         let bootstrap = try MozcBridge.shellBootstrap(
             hotkeyDisplayName: hotkey,
-            hostExecutablePath: hostPath)
+            hostExecutablePath: clientPath)
         Log.shell("bootstrap script:\n\(bootstrap)")
         Log.shell("bootstrap bytes=\(bootstrap.utf8.count)")
         print(bootstrap, terminator: "")
@@ -189,6 +206,93 @@ if CommandLine.arguments.contains("--shell-convert") {
         exit(0)
     } catch {
         let msg = "shell convert failed: \(error)\n"
+        FileHandle.standardError.write(msg.data(using: .utf8) ?? Data())
+        exit(1)
+    }
+}
+
+if CommandLine.arguments.contains("--shell-candidates") {
+    let caretArg: String? = {
+        if let caretEq = CommandLine.arguments.first(where: { $0.hasPrefix("--caret=") }) {
+            return String(caretEq.dropFirst("--caret=".count))
+        }
+        if let caretIdx = CommandLine.arguments.firstIndex(of: "--caret"),
+           caretIdx + 1 < CommandLine.arguments.count {
+            return CommandLine.arguments[caretIdx + 1]
+        }
+        return nil
+    }()
+    let caretUTF16: Int
+    let target: MozcBridge.ConvertTarget = CommandLine.arguments.contains("--katakana")
+        ? .katakana
+        : .kanji
+    let stdinData = FileHandle.standardInput.readDataToEndOfFile()
+    let input = String(data: stdinData, encoding: .utf8) ?? ""
+    if let caretArg, let caret = Int(caretArg) {
+        caretUTF16 = caret
+    } else {
+        caretUTF16 = input.utf16.count
+    }
+    do {
+        let sessionEnv = ProcessInfo.processInfo.environment["MODORE_SHELL_SESSION"] ?? ""
+        let sessionLabel = sessionEnv.isEmpty ? "<none>" : sessionEnv
+        let targetLabel = target == .katakana ? "katakana" : "primary"
+        Log.shell("cli candidates entry session=\(sessionLabel) mode=\(targetLabel) caret=\(caretUTF16) bytes=\(input.utf8.count)")
+        let response = try MozcBridge.shellCandidatesViaLiveHost(input, caretUTF16: caretUTF16, target: target)
+        Log.shell("cli candidates exit session=\(response.session) currentIndex=\(response.currentIndex) count=\(response.candidates.count)")
+        print(response.session, response.currentIndex, response.candidates.joined(separator: "\n"), separator: "\n", terminator: "")
+        exit(0)
+    } catch {
+        let msg = "shell candidates failed: \(error)\n"
+        FileHandle.standardError.write(msg.data(using: .utf8) ?? Data())
+        exit(1)
+    }
+}
+
+if CommandLine.arguments.contains("--shell-select") {
+    let caretArg: String? = {
+        if let caretEq = CommandLine.arguments.first(where: { $0.hasPrefix("--caret=") }) {
+            return String(caretEq.dropFirst("--caret=".count))
+        }
+        if let caretIdx = CommandLine.arguments.firstIndex(of: "--caret"),
+           caretIdx + 1 < CommandLine.arguments.count {
+            return CommandLine.arguments[caretIdx + 1]
+        }
+        return nil
+    }()
+    let selectedIndexArg: String? = {
+        if let idxEq = CommandLine.arguments.first(where: { $0.hasPrefix("--candidate-index=") }) {
+            return String(idxEq.dropFirst("--candidate-index=".count))
+        }
+        if let idx = CommandLine.arguments.firstIndex(of: "--candidate-index"),
+           idx + 1 < CommandLine.arguments.count {
+            return CommandLine.arguments[idx + 1]
+        }
+        return nil
+    }()
+    let selectedIndex = Int(selectedIndexArg ?? "") ?? 0
+    let caretUTF16: Int
+    let target: MozcBridge.ConvertTarget = CommandLine.arguments.contains("--katakana")
+        ? .katakana
+        : .kanji
+    let stdinData = FileHandle.standardInput.readDataToEndOfFile()
+    let input = String(data: stdinData, encoding: .utf8) ?? ""
+    if let caretArg, let caret = Int(caretArg) {
+        caretUTF16 = caret
+    } else {
+        caretUTF16 = input.utf16.count
+    }
+    do {
+        let sessionEnv = ProcessInfo.processInfo.environment["MODORE_SHELL_SESSION"] ?? ""
+        let sessionLabel = sessionEnv.isEmpty ? "<none>" : sessionEnv
+        let targetLabel = target == .katakana ? "katakana" : "primary"
+        Log.shell("cli select entry session=\(sessionLabel) mode=\(targetLabel) selectedIndex=\(selectedIndex) caret=\(caretUTF16) bytes=\(input.utf8.count)")
+        let response = try MozcBridge.shellSelectViaLiveHost(input, caretUTF16: caretUTF16, target: target, selectedIndex: selectedIndex)
+        Log.shell("cli select exit bytes=\(response.utf8.count)")
+        print(response, terminator: "")
+        exit(0)
+    } catch {
+        let msg = "shell select failed: \(error)\n"
         FileHandle.standardError.write(msg.data(using: .utf8) ?? Data())
         exit(1)
     }
