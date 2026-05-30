@@ -941,7 +941,19 @@ private func applyFieldReplacement(
                 replacement: replacement,
                 sessionSeed: sessionSeed)
         }
-        if replaceRange(in: field.element, start: start, end: end, replacement: replacement) {
+        // Chrome web fields (everything but the omnibox, handled above) silently
+        // reject AX value writes, and the *failed* write scrambles the
+        // caret/selection unpredictably — that scramble, not the keystroke logic,
+        // is what made the fallback delete the wrong range (autocomplete combobox
+        // → span left selected, first Backspace eats it; chat contenteditable →
+        // caret jumps to 0, conversion prepends). So don't attempt the AX write
+        // for them at all: replace by synthetic keystrokes driven by the caret we
+        // read at pickup, which is still accurate because nothing perturbed it.
+        // This is Espanso's browser strategy — it never writes text via AX, it
+        // backspaces the trigger and types the replacement from the live caret.
+        let skipAXWrite = isChromiumClipboardProbeBundleID(appId)
+        if !skipAXWrite,
+           replaceRange(in: field.element, start: start, end: end, replacement: replacement) {
             let session = ConversionSession(
                 backing: .ax(element: field.element, spanStart: start),
                 originalReading: originalReading,
@@ -954,13 +966,16 @@ private func applyFieldReplacement(
             }
             return true
         }
-        Log.pickup("AX write rejected; trying shadow pickup for [\(start)..\(end)] \(originalReading)\(FrontmostApp.logSuffix())")
+        Log.pickup(skipAXWrite
+            ? "Chromium web field: keystroke-replacing [\(start)..\(end)] \(originalReading) without AX write\(FrontmostApp.logSuffix())"
+            : "AX write rejected; trying shadow pickup for [\(start)..\(end)] \(originalReading)\(FrontmostApp.logSuffix())")
         if gShadowBufferEnabled, doShadowPickup(request) { return true }
-        // replaceRange rolls back the AX selection to its pre-write state.
-        // Pass the actual AX cursor (field.sel*) so keystrokeReplaceSpan knows
-        // whether to collapse a selection (RightArrow → correct end) or skip
-        // navigation entirely (cursor already at end — avoids RightArrow overshooting
-        // to end+1 in Chrome contenteditable at block-element boundaries).
+        // The pickup-time caret (field.sel*) is accurate here — for Chromium
+        // because we skipped the perturbing AX write, for everyone else because
+        // replaceRange restores the selection to its pre-write state on failure.
+        // keystrokeReplaceSpan collapses a real selection (RightArrow → right end)
+        // or skips navigation when the caret is already collapsed (avoids
+        // overshooting end+1 at a Chrome contenteditable block boundary).
         keystrokeReplaceSpan(
             caret: (start: field.selStart, end: field.selEnd),
             spanEnd: end,
