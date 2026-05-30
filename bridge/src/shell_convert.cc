@@ -4,6 +4,7 @@
 // macOS Swift only needs a thin CLI wrapper around a C ABI call.
 
 #include "mozc_bridge.h"
+#include "mdr_text.h"
 
 #include <cctype>
 #include <cerrno>
@@ -28,210 +29,6 @@
 #include <unistd.h>
 
 namespace {
-
-static size_t clamp_to_utf8_boundary(const char* s, size_t len, size_t pos) {
-    if (pos > len) pos = len;
-    while (pos > 0 && pos < len && (((unsigned char)s[pos]) & 0xC0) == 0x80) --pos;
-    return pos;
-}
-
-static size_t utf8_next(const char* s, size_t len, size_t pos) {
-    if (pos >= len) return len;
-    ++pos;
-    while (pos < len && (((unsigned char)s[pos]) & 0xC0) == 0x80) ++pos;
-    return pos;
-}
-
-static size_t utf8_prev(const char* s, size_t pos) {
-    if (pos == 0) return 0;
-    --pos;
-    while (pos > 0 && (((unsigned char)s[pos]) & 0xC0) == 0x80) --pos;
-    return pos;
-}
-
-static int is_ascii_ws_at(const char* s, size_t pos) {
-    unsigned char c = (unsigned char)s[pos];
-    return c == ' ' || c == '\t' || c == '\n' || c == '\r';
-}
-
-static int is_ascii_at(const char* s, size_t pos) {
-    return ((unsigned char)s[pos]) < 0x80;
-}
-
-static unsigned int utf8_codepoint_at(const char* s, size_t len, size_t pos) {
-    if (pos >= len) return 0;
-    unsigned char c0 = (unsigned char)s[pos];
-    if (c0 < 0x80) return c0;
-    if ((c0 & 0xE0) == 0xC0 && pos + 1 < len) {
-        unsigned char c1 = (unsigned char)s[pos + 1];
-        if ((c1 & 0xC0) == 0x80) {
-            return ((unsigned int)(c0 & 0x1F) << 6) |
-                   (unsigned int)(c1 & 0x3F);
-        }
-    }
-    if ((c0 & 0xF0) == 0xE0 && pos + 2 < len) {
-        unsigned char c1 = (unsigned char)s[pos + 1];
-        unsigned char c2 = (unsigned char)s[pos + 2];
-        if ((c1 & 0xC0) == 0x80 && (c2 & 0xC0) == 0x80) {
-            return ((unsigned int)(c0 & 0x0F) << 12) |
-                   ((unsigned int)(c1 & 0x3F) << 6) |
-                   (unsigned int)(c2 & 0x3F);
-        }
-    }
-    if ((c0 & 0xF8) == 0xF0 && pos + 3 < len) {
-        unsigned char c1 = (unsigned char)s[pos + 1];
-        unsigned char c2 = (unsigned char)s[pos + 2];
-        unsigned char c3 = (unsigned char)s[pos + 3];
-        if ((c1 & 0xC0) == 0x80 && (c2 & 0xC0) == 0x80 &&
-            (c3 & 0xC0) == 0x80) {
-            return ((unsigned int)(c0 & 0x07) << 18) |
-                   ((unsigned int)(c1 & 0x3F) << 12) |
-                   ((unsigned int)(c2 & 0x3F) << 6) |
-                   (unsigned int)(c3 & 0x3F);
-        }
-    }
-    return 0;
-}
-
-static int is_japanese_at(const char* s, size_t len, size_t pos) {
-    unsigned int cp = utf8_codepoint_at(s, len, pos);
-    return (cp >= 0x3040 && cp <= 0x30FF) ||
-           (cp >= 0x3400 && cp <= 0x9FFF) ||
-           (cp >= 0xF900 && cp <= 0xFAFF);
-}
-
-static int is_convertible_ascii_punctuation(unsigned char c) {
-    return c == '.' || c == ',' || c == '-';
-}
-
-static int japanese_punctuation_span_at(
-    const char* text, size_t len, size_t punct_pos,
-    size_t* start_out, size_t* end_out) {
-    if (punct_pos >= len ||
-        !is_convertible_ascii_punctuation((unsigned char)text[punct_pos]) ||
-        punct_pos == 0) {
-        return 0;
-    }
-
-    size_t prev = utf8_prev(text, punct_pos);
-    size_t next = utf8_next(text, len, punct_pos);
-    if (!is_japanese_at(text, len, prev)) return 0;
-    if (next < len && !is_japanese_at(text, len, next)) return 0;
-
-    *start_out = punct_pos;
-    *end_out = next;
-    return 1;
-}
-
-static int is_ascii_alnum(unsigned char c) {
-    return (c >= 'A' && c <= 'Z') ||
-           (c >= 'a' && c <= 'z') ||
-           (c >= '0' && c <= '9');
-}
-
-static int is_upper_ascii(unsigned char c) { return c >= 'A' && c <= 'Z'; }
-static int is_lower_ascii(unsigned char c) { return c >= 'a' && c <= 'z'; }
-static int is_digit_ascii(unsigned char c) { return c >= '0' && c <= '9'; }
-
-static int is_acronym_symbol(unsigned char c) {
-    switch (c) {
-        case '&': case '-': case '.': case '_': case '+':
-        case '/': case ':': case '@': case '#':
-            return 1;
-        default:
-            return 0;
-    }
-}
-
-static int text_word_bounds(
-    const char* text, size_t len, size_t caret_byte,
-    size_t* start_out, size_t* end_out) {
-    if (!text || !start_out || !end_out) return -1;
-    size_t caret = clamp_to_utf8_boundary(text, len, caret_byte);
-
-    if (caret < len && japanese_punctuation_span_at(text, len, caret, start_out, end_out)) {
-        return 0;
-    }
-    if (caret < len && is_japanese_at(text, len, caret)) {
-        size_t next = utf8_next(text, len, caret);
-        if (japanese_punctuation_span_at(text, len, next, start_out, end_out)) {
-            return 0;
-        }
-    }
-    if (caret > 0) {
-        size_t prev = utf8_prev(text, caret);
-        if (japanese_punctuation_span_at(text, len, prev, start_out, end_out)) {
-            return 0;
-        }
-    }
-
-    size_t start = caret;
-    while (start > 0) {
-        size_t prev = utf8_prev(text, start);
-        if (is_ascii_ws_at(text, prev)) break;
-        if (start < len && is_ascii_at(text, prev) != is_ascii_at(text, start)) break;
-        start = prev;
-    }
-
-    size_t end = caret;
-    while (end < len) {
-        if (is_ascii_ws_at(text, end)) break;
-        if (end > 0) {
-            size_t prev = utf8_prev(text, end);
-            if (is_ascii_at(text, prev) != is_ascii_at(text, end)) break;
-        }
-        end = utf8_next(text, len, end);
-    }
-
-    if (start == end) {
-        if (caret < len &&
-            is_convertible_ascii_punctuation((unsigned char)text[caret]) &&
-            caret > 0) {
-            size_t prev = utf8_prev(text, caret);
-            if (is_japanese_at(text, len, prev)) {
-                *start_out = prev;
-                *end_out = caret;
-                return 0;
-            }
-        }
-        if (caret < len) {
-            start = caret;
-            end = utf8_next(text, len, caret);
-        } else if (caret > 0) {
-            start = utf8_prev(text, caret);
-            end = caret;
-        }
-    }
-
-    *start_out = start;
-    *end_out = end;
-    return 0;
-}
-
-static bool split_trailing_ascii(const std::string& s, std::string* prefix, std::string* tail) {
-    size_t split = s.size();
-    while (split > 0) {
-        unsigned char c = static_cast<unsigned char>(s[split - 1]);
-        if (c >= 0x80) break;
-        --split;
-    }
-    *prefix = s.substr(0, split);
-    *tail = s.substr(split);
-    return true;
-}
-
-static bool split_trailing_ascii_punctuation(const std::string& ascii, std::string* core, std::string* suffix) {
-    size_t split = ascii.size();
-    while (split > 0) {
-        unsigned char c = static_cast<unsigned char>(ascii[split - 1]);
-        if (c >= 0x80) break;
-        if (is_ascii_alnum(c)) break;
-        --split;
-    }
-    *core = ascii.substr(0, split);
-    *suffix = ascii.substr(split);
-    return true;
-}
 
 static bool split_leading_ascii_junk_before_lowercase(
     const std::string& ascii, std::string* prefix, std::string* tail) {
@@ -264,36 +61,6 @@ static bool split_leading_ascii_junk_before_lowercase(
     return true;
 }
 
-static bool split_acronym_head(const std::string& text, std::string* head, std::string* tail) {
-    if (text.size() < 2 || !is_upper_ascii(static_cast<unsigned char>(text[0]))) {
-        *head = "";
-        *tail = text;
-        return true;
-    }
-    size_t i = 1;
-    bool saw_non_letter = false;
-    while (i < text.size()) {
-        unsigned char c = static_cast<unsigned char>(text[i]);
-        if (is_upper_ascii(c)) {
-            ++i;
-        } else if (is_digit_ascii(c) || is_acronym_symbol(c)) {
-            saw_non_letter = true;
-            ++i;
-        } else {
-            break;
-        }
-    }
-    if (i >= 2 && i < text.size() && is_lower_ascii(static_cast<unsigned char>(text[i])) &&
-        (i >= 3 || saw_non_letter)) {
-        *head = text.substr(0, i);
-        *tail = text.substr(i);
-    } else {
-        *head = "";
-        *tail = text;
-    }
-    return true;
-}
-
 static std::string convert_suffix(const std::string& suffix, unsigned int flags) {
     std::string out;
     for (unsigned char c : suffix) {
@@ -319,11 +86,16 @@ static std::string convert_suffix(const std::string& suffix, unsigned int flags)
 
 static bool convert_token(
     const std::string& token, unsigned int flags, std::string* replacement) {
-    std::string ascii_prefix, romaji_tail;
-    split_trailing_ascii(token, &ascii_prefix, &romaji_tail);
+    size_t ta_split = 0;
+    mdr_text_split_trailing_ascii(token.c_str(), token.size(), &ta_split);
+    const std::string ascii_prefix = token.substr(0, ta_split);
+    const std::string romaji_tail = token.substr(ta_split);
 
-    std::string romaji_core, romaji_suffix;
-    split_trailing_ascii_punctuation(romaji_tail, &romaji_core, &romaji_suffix);
+    size_t tp_split = 0;
+    mdr_text_split_trailing_ascii_punctuation(romaji_tail.c_str(),
+                                              romaji_tail.size(), &tp_split);
+    const std::string romaji_core = romaji_tail.substr(0, tp_split);
+    const std::string romaji_suffix = romaji_tail.substr(tp_split);
     const std::string converted_suffix = convert_suffix(romaji_suffix, flags);
 
     if (romaji_core.empty()) {
@@ -334,8 +106,10 @@ static bool convert_token(
     std::string leading_junk, romaji_body;
     split_leading_ascii_junk_before_lowercase(romaji_core, &leading_junk, &romaji_body);
 
-    std::string acronym_head, mozc_input;
-    split_acronym_head(romaji_body, &acronym_head, &mozc_input);
+    size_t ah_split = 0;
+    mdr_text_split_acronym_head(romaji_body.c_str(), romaji_body.size(), &ah_split);
+    const std::string acronym_head = romaji_body.substr(0, ah_split);
+    const std::string mozc_input = romaji_body.substr(ah_split);
     const std::string frozen_prefix = ascii_prefix + leading_junk + acronym_head;
 
     if (mozc_input.empty()) {
@@ -460,12 +234,11 @@ static std::vector<std::string> split_nul_list(const std::string& s) {
 static std::optional<std::pair<size_t, size_t>> shell_token_bounds(
     const std::string& text,
     size_t caret_byte) {
-    size_t start = 0;
-    size_t end = 0;
-    if (text_word_bounds(text.c_str(), text.size(), caret_byte, &start, &end) != 0) {
+    mdr_byte_bounds_t bounds = {0, 0};
+    if (mdr_text_word_bounds(text.c_str(), text.size(), caret_byte, &bounds) != 0) {
         return std::nullopt;
     }
-    return std::make_pair(start, end);
+    return std::make_pair(bounds.start_byte, bounds.end_byte);
 }
 
 static std::optional<std::string> shell_convert_token(
@@ -1329,11 +1102,12 @@ extern "C" int mozc_bridge_convert_line(const char *text,
     if (!text || !out_buf || !out_len || out_cap == 0) {
         return -1;
     }
-    size_t start = 0;
-    size_t end = 0;
-    if (text_word_bounds(text, text_len, caret_byte, &start, &end) != 0) {
+    mdr_byte_bounds_t bounds = {0, 0};
+    if (mdr_text_word_bounds(text, text_len, caret_byte, &bounds) != 0) {
         return -1;
     }
+    const size_t start = bounds.start_byte;
+    const size_t end = bounds.end_byte;
     std::string prefix(text, start);
     std::string token(text + start, end - start);
     std::string suffix(text + end, text_len - end);

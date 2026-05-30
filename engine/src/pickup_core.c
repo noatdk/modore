@@ -1,4 +1,4 @@
-#include "modore_script.h"
+#include "mdr_text.h"
 #include "utf8_nav.h"
 
 #include <string.h>

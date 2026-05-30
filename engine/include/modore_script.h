@@ -27,6 +27,10 @@
 
 #include <stddef.h>
 
+/* Shared romaji/ASCII text policy (mdr_byte_bounds_t + mdr_text_*). Split out
+ * so the bridge can compile the same implementation without the Lua ABI. */
+#include "mdr_text.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -76,10 +80,7 @@ typedef struct {
     size_t      romaji_len;
 } mdr_span_t;
 
-typedef struct {
-    size_t start_byte;
-    size_t end_byte;
-} mdr_byte_bounds_t;
+/* mdr_byte_bounds_t lives in mdr_text.h (included above). */
 
 /* ----- Routing --------------------------------------------------------- */
 
@@ -244,29 +245,8 @@ MDR_EXPORT int mdr_acquire(
     const mdr_pickup_ctx_t* ctx,
     char* out_buf, size_t out_cap, size_t* out_len);
 
-/* ----- Portable pickup core --------------------------------------------
- *
- * Stateless UTF-8 helpers used by native hosts and Lua. Hosts keep platform
- * IO; these functions own shared baseline text policy so macOS/Linux/Windows
- * and scripts do not drift.
- */
-
-MDR_EXPORT int mdr_text_word_bounds(
-    const char* text, size_t len, size_t caret_byte,
-    mdr_byte_bounds_t* out_bounds);
-
-MDR_EXPORT int mdr_text_split_trailing_ascii(
-    const char* text, size_t len, size_t* out_split_byte);
-
-MDR_EXPORT int mdr_text_split_trailing_ascii_punctuation(
-    const char* text, size_t len, size_t* out_core_end_byte);
-
-MDR_EXPORT int mdr_text_split_acronym_head(
-    const char* text, size_t len, size_t* out_head_end_byte);
-
-MDR_EXPORT int mdr_text_normalize_pickup_suffix(
-    const char* suffix, size_t suffix_len,
-    char* out_buf, size_t out_cap, size_t* out_len);
+/* Portable pickup core (mdr_text_*): stateless UTF-8 span/segmentation policy
+ * shared by native hosts, Lua, and the bridge — declared in mdr_text.h. */
 
 #ifdef __cplusplus
 }

@@ -10,7 +10,9 @@
 # only touch what changed.
 
 cmake_minimum_required(VERSION 3.22)
-project(mozc_bridge CXX)
+# C is enabled too: the shared text-policy module (engine/src/pickup_core.c)
+# compiles into the bridge alongside the C++ sources.
+project(mozc_bridge C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -106,6 +108,11 @@ add_library(mozc_bridge SHARED
     src/mozc_bridge.cc
     src/shell_convert.cc
     src/direct_client.cc
+    # Shared romaji/ASCII text policy, compiled directly from the engine tree
+    # (with MDR_TEXT_INTERNAL below, so this copy stays hidden) so the
+    # shell-native path uses the same mdr_text_* as the hosts instead of a
+    # drifting C++ re-implementation. See engine/include/mdr_text.h.
+    ${CMAKE_CURRENT_SOURCE_DIR}/../engine/src/pickup_core.c
 )
 
 if(APPLE)
@@ -127,12 +134,19 @@ target_include_directories(mozc_bridge
         ${CMAKE_CURRENT_SOURCE_DIR}/include
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
+        # Shared text-policy module (mdr_text.h + pickup_core.c's utf8_nav.h).
+        ${CMAKE_CURRENT_SOURCE_DIR}/../engine/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/../engine/src
         ${FCITX5_MOZC_DIR}/mozc/src
         ${FCITX5_MOZC_DIR}/abseil-cpp
         ${FCITX5_MOZC_DIR}/protobuf/src
         # Generated proto headers live in fcitx5-mozc's binary dir.
         ${CMAKE_BINARY_DIR}/fcitx5-mozc
 )
+
+# Keep the bridge's compiled-in copy of the mdr_text_* policy hidden, so the
+# engine dylib remains the sole exporter when a host links both.
+target_compile_definitions(mozc_bridge PRIVATE MDR_TEXT_INTERNAL)
 
 # Mozc requires char to be unsigned (uses it as array index).
 target_compile_options(mozc_bridge PRIVATE -funsigned-char -Wall -Wextra -Wno-unused-parameter)
