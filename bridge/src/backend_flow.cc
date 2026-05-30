@@ -156,25 +156,72 @@ std::vector<CandidateEntry> RebuildFullSpanCandidates(
   return full_candidates;
 }
 
-int RunConvertFlow(SessionDriver *driver,
-                   const char *romaji,
-                   size_t romaji_len,
-                   char *commit_buf,
-                   size_t commit_cap,
-                   size_t *commit_len,
-                   char *cands_buf,
-                   size_t cands_cap,
-                   size_t *cands_total_len,
-                   int max_candidates,
-                   int *out_candidate_count,
-                   unsigned int flags,
-                   std::string *error) {
+namespace {
+
+// Where a convert captures its candidate list. The flow is identical whether
+// the caller wants a NUL-separated value blob (the `_with_candidates_ex` ABI)
+// or structured records (the `_with_candidate_details_ex` ABI); only this sink
+// differs, so the two used to be near-identical 120-line copies of the flow.
+struct CandidateSink {
+  virtual ~CandidateSink() = default;
+  // True when the caller supplied buffers to capture into.
+  virtual bool wants_capture() const = 0;
+  // Serialize up to `max_candidates` of `candidates` into the caller's
+  // buffers, setting `*out_candidate_count` and the caller's total-length out.
+  virtual void emit(const std::vector<CandidateEntry> &candidates,
+                    int max_candidates, int *out_candidate_count) = 0;
+};
+
+struct BlobSink : CandidateSink {
+  BlobSink(char *b, size_t c, size_t *tl) : buf(b), cap(c), total_len(tl) {}
+  bool wants_capture() const override { return buf != nullptr && cap > 0; }
+  void emit(const std::vector<CandidateEntry> &candidates, int max_candidates,
+            int *out_candidate_count) override {
+    const size_t written = CopyCandidateValuesToBuffer(
+        candidates, buf, cap, max_candidates, out_candidate_count);
+    if (total_len) *total_len = written;
+  }
+  char *buf;
+  size_t cap;
+  size_t *total_len;
+};
+
+struct RecordsSink : CandidateSink {
+  RecordsSink(mozc_bridge_candidate_record_t *r, size_t rc, char *s, size_t sc,
+              size_t *sl)
+      : records(r), records_cap(rc), strings(s), strings_cap(sc),
+        strings_len(sl) {}
+  bool wants_capture() const override {
+    return records != nullptr && records_cap > 0 && strings != nullptr &&
+           strings_cap > 0;
+  }
+  void emit(const std::vector<CandidateEntry> &candidates, int max_candidates,
+            int *out_candidate_count) override {
+    const size_t written = CopyCandidateRecordsToBuffers(
+        candidates, records, records_cap, strings, strings_cap, max_candidates,
+        out_candidate_count);
+    if (strings_len) *strings_len = written;
+  }
+  mozc_bridge_candidate_record_t *records;
+  size_t records_cap;
+  char *strings;
+  size_t strings_cap;
+  size_t *strings_len;
+};
+
+// The single convert flow both public entry points share: build the preedit
+// byte-by-byte, trigger conversion (SPACE), optionally force katakana (F7) or
+// open the candidate window (a second SPACE), capture candidates through
+// `sink`, then commit the top candidate. The caller's length out param is
+// reset by the wrapper before this runs.
+int RunConvertFlowImpl(SessionDriver *driver, const char *romaji,
+                       size_t romaji_len, char *commit_buf, size_t commit_cap,
+                       size_t *commit_len, CandidateSink *sink,
+                       int max_candidates, int *out_candidate_count,
+                       unsigned int flags, std::string *error) {
   if (!romaji || !commit_len) {
     *error = "null pointer passed to mozc_bridge_convert";
     return -1;
-  }
-  if (cands_total_len) {
-    *cands_total_len = 0;
   }
   if (out_candidate_count) {
     *out_candidate_count = 0;
@@ -191,8 +238,7 @@ int RunConvertFlow(SessionDriver *driver,
   }
 
   const bool force_katakana = (flags & MOZC_CONVERT_FLAG_KATAKANA) != 0u;
-  const bool capture_cands =
-      (cands_buf != nullptr) && (cands_cap > 0) && !force_katakana;
+  const bool capture_cands = sink->wants_capture() && !force_katakana;
 
   int rc = 0;
   do {
@@ -240,12 +286,7 @@ int RunConvertFlow(SessionDriver *driver,
           CaptureFocusedSegmentCandidates(driver, &out, error);
       const std::vector<CandidateEntry> full_candidates =
           RebuildFullSpanCandidates(base_output, focused_candidates);
-      const size_t written = CopyCandidateValuesToBuffer(
-          full_candidates, cands_buf, cands_cap, max_candidates,
-          out_candidate_count);
-      if (cands_total_len) {
-        *cands_total_len = written;
-      }
+      sink->emit(full_candidates, max_candidates, out_candidate_count);
     }
 
     std::string committed;
@@ -281,6 +322,30 @@ int RunConvertFlow(SessionDriver *driver,
   return rc;
 }
 
+}  // namespace
+
+int RunConvertFlow(SessionDriver *driver,
+                   const char *romaji,
+                   size_t romaji_len,
+                   char *commit_buf,
+                   size_t commit_cap,
+                   size_t *commit_len,
+                   char *cands_buf,
+                   size_t cands_cap,
+                   size_t *cands_total_len,
+                   int max_candidates,
+                   int *out_candidate_count,
+                   unsigned int flags,
+                   std::string *error) {
+  if (cands_total_len) {
+    *cands_total_len = 0;
+  }
+  BlobSink sink(cands_buf, cands_cap, cands_total_len);
+  return RunConvertFlowImpl(driver, romaji, romaji_len, commit_buf, commit_cap,
+                            commit_len, &sink, max_candidates,
+                            out_candidate_count, flags, error);
+}
+
 int RunConvertFlowWithDetails(
     SessionDriver *driver,
     const char *romaji,
@@ -297,118 +362,14 @@ int RunConvertFlowWithDetails(
     int *out_candidate_count,
     unsigned int flags,
     std::string *error) {
-  if (!romaji || !commit_len) {
-    *error = "null pointer passed to mozc_bridge_convert";
-    return -1;
-  }
   if (cand_strings_len) {
     *cand_strings_len = 0;
   }
-  if (out_candidate_count) {
-    *out_candidate_count = 0;
-  }
-  if (romaji_len == 0) {
-    *commit_len = 0;
-    error->clear();
-    return 0;
-  }
-
-  mozc::commands::Output out;
-  if (!driver->Begin(&out, error)) {
-    return -1;
-  }
-
-  const bool force_katakana = (flags & MOZC_CONVERT_FLAG_KATAKANA) != 0u;
-  const bool capture_cands =
-      (cand_records != nullptr) && (cand_records_cap > 0) &&
-      (cand_strings_buf != nullptr) && (cand_strings_cap > 0) &&
-      !force_katakana;
-
-  int rc = 0;
-  do {
-    for (size_t i = 0; i < romaji_len; ++i) {
-      mozc::commands::KeyEvent key;
-      key.set_key_code(static_cast<unsigned char>(romaji[i]));
-      if (!driver->SendKey(key, &out, "romaji", error)) {
-        rc = -1;
-        break;
-      }
-    }
-    if (rc != 0) {
-      break;
-    }
-
-    {
-      mozc::commands::KeyEvent key;
-      key.set_special_key(mozc::commands::KeyEvent::SPACE);
-      if (!driver->SendKey(key, &out, "space", error)) {
-        rc = -1;
-        break;
-      }
-    }
-
-    if (force_katakana) {
-      mozc::commands::KeyEvent key;
-      key.set_special_key(mozc::commands::KeyEvent::F7);
-      if (!driver->SendKey(key, &out, "f7", error)) {
-        rc = -1;
-        break;
-      }
-    } else if (capture_cands && !out.has_candidate_window()) {
-      mozc::commands::KeyEvent key;
-      key.set_special_key(mozc::commands::KeyEvent::SPACE);
-      if (!driver->SendKey(key, &out, "space-candidates", error)) {
-        rc = -1;
-        break;
-      }
-    }
-
-    if (!force_katakana && capture_cands && out.has_candidate_window()) {
-      TraceRawCandidates(out);
-      const mozc::commands::Output base_output = out;
-      const std::vector<CandidateEntry> focused_candidates =
-          CaptureFocusedSegmentCandidates(driver, &out, error);
-      const std::vector<CandidateEntry> full_candidates =
-          RebuildFullSpanCandidates(base_output, focused_candidates);
-      const size_t written = CopyCandidateRecordsToBuffers(
-          full_candidates, cand_records, cand_records_cap, cand_strings_buf,
-          cand_strings_cap, max_candidates, out_candidate_count);
-      if (cand_strings_len) {
-        *cand_strings_len = written;
-      }
-    }
-
-    std::string committed;
-    if (force_katakana) {
-      committed = JoinPreeditSegments(out);
-    } else {
-      if (!driver->Submit(&out, error)) {
-        rc = -1;
-        break;
-      }
-      if (out.has_result()) {
-        committed = out.result().value();
-      } else {
-        committed = JoinPreeditSegments(out);
-      }
-    }
-    if (committed.empty()) {
-      committed.assign(romaji, romaji_len);
-    }
-    if (committed.size() > commit_cap) {
-      rc = static_cast<int>(committed.size());
-      break;
-    }
-    if (commit_buf) {
-      std::memcpy(commit_buf, committed.data(), committed.size());
-    }
-    *commit_len = committed.size();
-    error->clear();
-    rc = 0;
-  } while (false);
-
-  driver->Finish();
-  return rc;
+  RecordsSink sink(cand_records, cand_records_cap, cand_strings_buf,
+                   cand_strings_cap, cand_strings_len);
+  return RunConvertFlowImpl(driver, romaji, romaji_len, commit_buf, commit_cap,
+                            commit_len, &sink, max_candidates,
+                            out_candidate_count, flags, error);
 }
 
 }  // namespace modore::mozc_bridge

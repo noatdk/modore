@@ -526,6 +526,37 @@ static std::optional<std::string> shell_convert_token(
     return committed;
 }
 
+// Find the token around `caret_byte`, convert it, and build a fresh
+// ShellSession (current_index 0, last_touch = now). Returns nullopt when
+// there's no token or the conversion failed. The three session entry points
+// share this; each keeps its own existing-session handling and how it assigns
+// the id / index before storing. Must be called under g_shell_session_mutex
+// (it calls shell_convert_token, matching the prior in-lock behavior).
+static std::optional<ShellSession> shell_build_session(
+    ShellConvertMode mode,
+    const std::string& text,
+    size_t caret_byte,
+    std::chrono::steady_clock::time_point now) {
+    auto bounds = shell_token_bounds(text, caret_byte);
+    if (!bounds.has_value()) return std::nullopt;
+    const auto [start, end] = *bounds;
+    const std::string token = text.substr(start, end - start);
+
+    std::vector<std::string> candidates;
+    const unsigned int flags =
+        mode == ShellConvertMode::kKatakana ? MOZC_CONVERT_FLAG_KATAKANA : 0u;
+    std::optional<std::string> committed = shell_convert_token(token, flags, &candidates);
+    if (!committed.has_value()) return std::nullopt;
+
+    ShellSession session;
+    session.prefix = text.substr(0, start);
+    session.suffix = text.substr(end);
+    session.candidates = std::move(candidates);
+    session.current_index = 0;
+    session.last_touch = now;
+    return session;
+}
+
 static std::optional<std::pair<std::string, std::string>> shell_start_or_cycle(
     const std::string& session_id_in,
     ShellConvertMode mode,
@@ -555,25 +586,9 @@ static std::optional<std::pair<std::string, std::string>> shell_start_or_cycle(
         }
     }
 
-    auto bounds = shell_token_bounds(text, caret_byte);
-    if (!bounds.has_value()) return std::nullopt;
-    const auto [start, end] = *bounds;
-    const std::string prefix = text.substr(0, start);
-    const std::string token = text.substr(start, end - start);
-    const std::string suffix = text.substr(end);
-
-    std::vector<std::string> candidates;
-    const unsigned int flags =
-        mode == ShellConvertMode::kKatakana ? MOZC_CONVERT_FLAG_KATAKANA : 0u;
-    std::optional<std::string> committed = shell_convert_token(token, flags, &candidates);
-    if (!committed.has_value()) return std::nullopt;
-
-    ShellSession session;
-    session.prefix = prefix;
-    session.suffix = suffix;
-    session.candidates = candidates;
-    session.current_index = 0;
-    session.last_touch = now;
+    auto built = shell_build_session(mode, text, caret_byte, now);
+    if (!built.has_value()) return std::nullopt;
+    ShellSession session = std::move(*built);
 
     std::string session_id = session_id_in.empty() ? shell_session_id_locked() : session_id_in;
     g_shell_sessions[session_id] = session;
@@ -600,23 +615,9 @@ static std::optional<std::pair<std::string, ShellSession>> shell_ensure_session(
         }
     }
 
-    auto bounds = shell_token_bounds(text, caret_byte);
-    if (!bounds.has_value()) return std::nullopt;
-    const auto [start, end] = *bounds;
-    const std::string token = text.substr(start, end - start);
-
-    std::vector<std::string> candidates;
-    const unsigned int flags =
-        mode == ShellConvertMode::kKatakana ? MOZC_CONVERT_FLAG_KATAKANA : 0u;
-    std::optional<std::string> committed = shell_convert_token(token, flags, &candidates);
-    if (!committed.has_value()) return std::nullopt;
-
-    ShellSession session;
-    session.prefix = text.substr(0, start);
-    session.suffix = text.substr(end);
-    session.candidates = candidates;
-    session.current_index = 0;
-    session.last_touch = now;
+    auto built = shell_build_session(mode, text, caret_byte, now);
+    if (!built.has_value()) return std::nullopt;
+    ShellSession session = std::move(*built);
 
     std::string session_id = session_id_in.empty() ? shell_session_id_locked() : session_id_in;
     g_shell_sessions[session_id] = session;
@@ -647,26 +648,13 @@ static std::optional<std::pair<std::string, ShellSession>> shell_select_candidat
             }
         }
     }
-    auto bounds = shell_token_bounds(text, caret_byte);
-    if (!bounds.has_value()) return std::nullopt;
-    const auto [start, end] = *bounds;
-    const std::string token = text.substr(start, end - start);
-
-    std::vector<std::string> candidates;
-    const unsigned int flags =
-        mode == ShellConvertMode::kKatakana ? MOZC_CONVERT_FLAG_KATAKANA : 0u;
-    std::optional<std::string> committed = shell_convert_token(token, flags, &candidates);
-    if (!committed.has_value()) return std::nullopt;
-
-    ShellSession session;
-    session.prefix = text.substr(0, start);
-    session.suffix = text.substr(end);
-    session.candidates = candidates;
+    auto built = shell_build_session(mode, text, caret_byte, now);
+    if (!built.has_value()) return std::nullopt;
+    ShellSession session = std::move(*built);
     if (session.candidates.empty() || selected_index >= session.candidates.size()) {
         return std::nullopt;
     }
     session.current_index = selected_index;
-    session.last_touch = now;
 
     std::string session_id = session_id_in.empty() ? shell_session_id_locked() : session_id_in;
     g_shell_sessions[session_id] = session;
@@ -1446,39 +1434,9 @@ extern "C" int mozc_bridge_shell_convert_remote(const char *socket_path,
                                                 char *out_buf,
                                                 size_t out_cap,
                                                 size_t *out_len) {
-    if (!socket_path || !text || !out_buf || !out_len || out_cap == 0) {
-        mozc_bridge_set_error("invalid args");
-        return -1;
-    }
-    int fd = -1;
-    if (!connect_unix_socket(socket_path, &fd)) {
-        mozc_bridge_set_error("failed to connect shell convert socket");
-        return -1;
-    }
-    std::string request = session_id_in ? session_id_in : "";
-    request.push_back('\0');
-    request.append(std::to_string(caret_byte));
-    request.push_back('\0');
-    request.append(mode_in ? mode_in : "");
-    request.push_back('\0');
-    request.append("convert");
-    request.push_back('\0');
-    request.push_back('\0');
-    request.append(text, text_len);
-    if (!write_all_fd(fd, request.data(), request.size())) {
-        ::close(fd);
-        mozc_bridge_set_error("failed to write shell convert request");
-        return -1;
-    }
-    ::shutdown(fd, SHUT_WR);
-    std::string response;
-    bool ok = read_all_fd(fd, &response);
-    ::close(fd);
-    if (!ok) {
-        mozc_bridge_set_error("failed to read shell convert response");
-        return -1;
-    }
-    return copy_output(response, out_buf, out_cap, out_len);
+    return shell_request_remote(socket_path, session_id_in, mode_in, "convert",
+                                "", text, text_len, caret_byte, out_buf, out_cap,
+                                out_len);
 }
 
 extern "C" int mozc_bridge_shell_candidates_remote(const char *socket_path,

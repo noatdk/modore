@@ -214,6 +214,20 @@ static int push_modore_api(mdr_engine_t* eng, script_entry_t* s) {
     return 1;
 }
 
+/* Copy the Lua string on top of L into out_buf (clamped to out_cap-1 bytes,
+ * NUL-terminated), set *out_len, and pop it. Callers have already checked the
+ * stack top is a string. Shared by mdr_replacement / mdr_acquire. */
+static void copy_lua_string_result(lua_State* L, char* out_buf, size_t out_cap,
+                                   size_t* out_len) {
+    size_t len = 0;
+    const char* str = lua_tolstring(L, -1, &len);
+    if (len >= out_cap) len = out_cap - 1;  /* clamp; reserve NUL */
+    memcpy(out_buf, str, len);
+    out_buf[len] = '\0';
+    *out_len = len;
+    lua_pop(L, 1);
+}
+
 int mdr_pickup(mdr_engine_t* eng,
                                 const mdr_pickup_ctx_t* ctx,
                                 mdr_span_t* out_span) {
@@ -259,13 +273,7 @@ int mdr_replacement(mdr_engine_t* eng,
         pthread_mutex_unlock(&eng->lock);
         return 0;
     }
-    size_t len = 0;
-    const char* str = lua_tolstring(eng->L, -1, &len);
-    if (len >= out_cap) len = out_cap - 1;  /* clamp; reserve NUL */
-    memcpy(out_buf, str, len);
-    out_buf[len] = '\0';
-    *out_len = len;
-    lua_pop(eng->L, 1);
+    copy_lua_string_result(eng->L, out_buf, out_cap, out_len);
     pthread_mutex_unlock(&eng->lock);
     return 1;
 }
@@ -383,13 +391,7 @@ int mdr_acquire(mdr_engine_t* eng,
         pthread_mutex_unlock(&eng->lock);
         return 0;
     }
-    size_t len = 0;
-    const char* str = lua_tolstring(eng->L, -1, &len);
-    if (len >= out_cap) len = out_cap - 1;  /* clamp; reserve NUL */
-    memcpy(out_buf, str, len);
-    out_buf[len] = '\0';
-    *out_len = len;
-    lua_pop(eng->L, 1);
+    copy_lua_string_result(eng->L, out_buf, out_cap, out_len);
     pthread_mutex_unlock(&eng->lock);
     return 1;
 }

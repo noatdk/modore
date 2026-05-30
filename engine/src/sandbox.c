@@ -294,11 +294,16 @@ static int text_word_bounds(lua_State* L) {
     return 1;
 }
 
-static int text_split_trailing_ascii(lua_State* L) {
+/* The split helpers all have the same shape — `(text, len, *split) -> rc`,
+ * returning a single byte offset — and present the same two-string result to
+ * Lua (head, tail). Share that wrapper; each Lua entry point just names its
+ * mdr_text_* function. */
+static int push_text_split(lua_State* L,
+                           int (*split_fn)(const char*, size_t, size_t*)) {
     size_t len = 0;
     const char* s = luaL_checklstring(L, 1, &len);
     size_t split = 0;
-    if (mdr_text_split_trailing_ascii(s, len, &split) != 0) {
+    if (split_fn(s, len, &split) != 0) {
         lua_pushnil(L);
         return 1;
     }
@@ -307,17 +312,12 @@ static int text_split_trailing_ascii(lua_State* L) {
     return 2;
 }
 
+static int text_split_trailing_ascii(lua_State* L) {
+    return push_text_split(L, mdr_text_split_trailing_ascii);
+}
+
 static int text_split_trailing_ascii_punctuation(lua_State* L) {
-    size_t len = 0;
-    const char* s = luaL_checklstring(L, 1, &len);
-    size_t split = 0;
-    if (mdr_text_split_trailing_ascii_punctuation(s, len, &split) != 0) {
-        lua_pushnil(L);
-        return 1;
-    }
-    lua_pushlstring(L, s, split);
-    lua_pushlstring(L, s + split, len - split);
-    return 2;
+    return push_text_split(L, mdr_text_split_trailing_ascii_punctuation);
 }
 
 static int text_normalize_pickup_suffix(lua_State* L) {
@@ -334,16 +334,7 @@ static int text_normalize_pickup_suffix(lua_State* L) {
 }
 
 static int text_split_acronym_head(lua_State* L) {
-    size_t len = 0;
-    const char* s = luaL_checklstring(L, 1, &len);
-    size_t split = 0;
-    if (mdr_text_split_acronym_head(s, len, &split) != 0) {
-        lua_pushnil(L);
-        return 1;
-    }
-    lua_pushlstring(L, s, split);
-    lua_pushlstring(L, s + split, len - split);
-    return 2;
+    return push_text_split(L, mdr_text_split_acronym_head);
 }
 
 /* ---- one-time global registration ------------------------------------ */
