@@ -60,5 +60,12 @@ shells started after the change.
 
 ## Notes
 
-- The snippet talks to the running macOS host over a Unix socket. Linux has no
-  shell server yet, so shell-native conversion is macOS-only.
+- The per-keystroke widgets call a lean `modore-shell` client that relays the
+  request to the running host over a Unix socket. It links nothing from the
+  engine, so each keypress is a ~ms process spawn rather than a 25 MB dylib
+  load. The host bakes the socket path into the snippet (exported as
+  `MODORE_SHELL_SOCKET`), so the client never has to guess where the daemon
+  listens.
+- The one-time bootstrap sourced at shell start still calls
+  `modore-host --print-shell-bootstrap` to generate the snippet.
+- Linux has no shell server yet, so shell-native conversion is macOS-only.

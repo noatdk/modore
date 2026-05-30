@@ -143,6 +143,14 @@ set_target_properties(mozc_bridge PROPERTIES
     CXX_VISIBILITY_PRESET default
 )
 
+# Lean shell-native client. Speaks the shell-convert socket protocol directly
+# and links nothing from Mozc, so the per-keystroke shell widgets spawn a tiny
+# binary (~ms) instead of loading the engine dylib just to relay one request.
+add_executable(modore_shell src/shell_client_main.cc)
+set_target_properties(modore_shell PROPERTIES OUTPUT_NAME modore-shell)
+target_compile_features(modore_shell PRIVATE cxx_std_17)
+target_compile_options(modore_shell PRIVATE -Wall -Wextra)
+
 # fcitx5-mozc's `MOZC_TARGET` variable is set in their subdirectory scope and
 # doesn't propagate to ours, so we name its members explicitly. mozc-static
 # also doesn't declare its absl deps via target_link_libraries — every absl

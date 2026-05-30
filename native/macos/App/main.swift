@@ -135,16 +135,27 @@ if CommandLine.arguments.contains("--print-shell-bootstrap") {
     do {
         let hotkey = ModoreConfig.loadConversionHotkey().displayName
         let hostPath = Bundle.main.executablePath
+        // The per-keystroke widgets call the lean `modore-shell` client (a
+        // sibling of modore-host) so they relay a socket request without
+        // loading the engine dylib; fall back to modore-host if it isn't
+        // bundled. The socket path is baked in here — the host is the
+        // authority on where the daemon listens, so the client never guesses.
+        let clientPath: String? = {
+            guard let hp = hostPath else { return nil }
+            let sibling = (hp as NSString).deletingLastPathComponent + "/modore-shell"
+            return FileManager.default.isExecutableFile(atPath: sibling) ? sibling : hp
+        }()
         // Shell knobs reach the bridge's snippet renderer via env, the same
         // way bridge runtime tuning does (see applyBridgeRuntimeEnv).
         let picker = ModoreConfig.loadShellPicker()
         let candidateWindow = ModoreConfig.loadShellCandidateWindow()
         setenv("MODORE_SHELL_CFG_PICKER", picker.displayName, 1)
         setenv("MODORE_SHELL_CFG_CANDIDATE_WINDOW", candidateWindow ? "1" : "0", 1)
-        Log.shell("printing bootstrap hotkey=\(hotkey) host=\(hostPath ?? "?") picker=\(picker.displayName) candidate_window=\(candidateWindow)")
+        setenv("MODORE_SHELL_CFG_SOCKET", shellConvertSocketPath(), 1)
+        Log.shell("printing bootstrap hotkey=\(hotkey) client=\(clientPath ?? "?") picker=\(picker.displayName) candidate_window=\(candidateWindow)")
         let bootstrap = try MozcBridge.shellBootstrap(
             hotkeyDisplayName: hotkey,
-            hostExecutablePath: hostPath)
+            hostExecutablePath: clientPath)
         Log.shell("bootstrap script:\n\(bootstrap)")
         Log.shell("bootstrap bytes=\(bootstrap.utf8.count)")
         print(bootstrap, terminator: "")

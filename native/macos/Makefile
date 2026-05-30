@@ -19,6 +19,9 @@ BRIDGE_SRC_DIR  := $(REPO_ROOT)/bridge
 BRIDGE_BUILD    := $(BRIDGE_SRC_DIR)/build
 BRIDGE_LIB      := $(BRIDGE_BUILD)/libmozc_bridge.dylib
 BUNDLE_DYLIB    := $(APP)/Contents/Frameworks/libmozc_bridge.dylib
+# Lean shell-native client, built alongside the bridge by the same cmake run.
+SHELL_CLIENT     := $(BRIDGE_BUILD)/modore-shell
+BUNDLE_SHELL     := $(APP)/Contents/MacOS/modore-shell
 BRIDGE_HEADER   := $(BRIDGE_SRC_DIR)/include/mozc_bridge.h
 BRIDGE_HEADERS  := $(wildcard $(BRIDGE_SRC_DIR)/include/*.h)
 BRIDGE_SOURCES  := $(wildcard $(BRIDGE_SRC_DIR)/src/*.cc) \
@@ -75,13 +78,14 @@ all: $(APP)
 signing:
 	@bash scripts/setup-signing.sh
 
-$(APP): $(BIN) $(PLIST) $(BUNDLE_DYLIB) $(BUNDLE_ENGINE) $(BUNDLE_MODEL) $(BUNDLE_DICT) | signing
+$(APP): $(BIN) $(PLIST) $(BUNDLE_DYLIB) $(BUNDLE_ENGINE) $(BUNDLE_SHELL) $(BUNDLE_MODEL) $(BUNDLE_DICT) | signing
 	rm -f "$(APP)/Contents/MacOS/unit-tests"
-	# Re-sign the whole bundle. The dylib must be signed before the executable
-	# (codesign verifies inner content), but copying it in via $(BUNDLE_DYLIB)
-	# above is a clean-target dep, so by here it's already in place.
+	# Re-sign the whole bundle. Inner Mach-O (dylibs + the modore-shell client)
+	# must be signed before the bundle seal; copying them in above are clean-
+	# target deps, so by here they're already in place.
 	codesign --force --sign "$(SIGN_ID)" --identifier $(BUNDLE_ID).bridge "$(BUNDLE_DYLIB)"
 	codesign --force --sign "$(SIGN_ID)" --identifier $(BUNDLE_ID).script "$(BUNDLE_ENGINE)"
+	codesign --force --sign "$(SIGN_ID)" --identifier $(BUNDLE_ID).shell "$(BUNDLE_SHELL)"
 	codesign --force --sign "$(SIGN_ID)" --identifier $(BUNDLE_ID) "$(APP)"
 	@echo "Built $(APP)"
 
@@ -141,6 +145,12 @@ $(BIN): $(SRC) $(BRIDGE_LIB) $(ENGINE_LIB) $(BRIDGING_HEADER)
 $(BUNDLE_DYLIB): $(BRIDGE_LIB)
 	mkdir -p "$(APP)/Contents/Frameworks"
 	cp "$(BRIDGE_LIB)" "$(BUNDLE_DYLIB)"
+
+# The cmake run behind $(BRIDGE_LIB) builds modore-shell too (it's a default
+# target), so depend on the dylib to guarantee it exists, then copy it in.
+$(BUNDLE_SHELL): $(BRIDGE_LIB)
+	mkdir -p "$(APP)/Contents/MacOS"
+	cp "$(SHELL_CLIENT)" "$(BUNDLE_SHELL)"
 
 # Same for the scripting engine. install_name is rewritten so the .app
 # resolves it via @rpath rather than the build-tree path.
