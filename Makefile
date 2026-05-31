@@ -32,7 +32,8 @@ export PATH := $(CURDIR)/$(BRIDGE_DIR)/build-tools:$(PATH)
 .PHONY: help build run open bridge clean clean-bridge distclean signing \
         check-platform macos linux install-user-bin test-puppeteer \
         fetch-luajit engine engine-test clean-engine \
-        macos-e2e macos-e2e-smoke macos-e2e-full macos-e2e-quarantine
+        macos-e2e macos-e2e-smoke macos-e2e-full macos-e2e-quarantine \
+        rerank-setup rerank-eval
 
 .DEFAULT_GOAL := help
 
@@ -127,6 +128,33 @@ LUAJIT_SHA     := 18b087cd2cd4ddc4a79782bf155383a689d5093d
 ENGINE_DIR     := engine
 ENGINE_BUILD   := build/engine
 
+# BERT kana-kanji reranking experiment (tools/rerank/). Opt-in, heavy deps:
+# the venv + model are NOT pulled by the default build. Capture real data by
+# setting `[experiment] log_conversions = on` in modore.conf first.
+RERANK_DIR  := tools/rerank
+RERANK_VENV := $(RERANK_DIR)/.venv
+RERANK_PY   := $(if $(wildcard $(CURDIR)/$(RERANK_VENV)/bin/python),$(CURDIR)/$(RERANK_VENV)/bin/python,python3)
+RERANK_ARGS ?= --rerankers B0 B1 B2
+
+rerank-setup:
+	@python3 -m venv $(RERANK_VENV)
+	@$(RERANK_VENV)/bin/pip install -q --upgrade pip
+	@$(RERANK_VENV)/bin/pip install -q -r $(RERANK_DIR)/requirements.txt
+	@echo "rerank: deps in $(RERANK_VENV). Model (~440MB) downloads on first R1/R2 run."
+
+# Baselines (B0/B1/B2) run on system python3; BERT (R1/R2) needs rerank-setup.
+# Override args: make rerank-eval RERANK_ARGS="--rerankers B0 R1 R2 --sweep"
+rerank-eval:
+	@cd $(RERANK_DIR) && $(RERANK_PY) eval.py $(RERANK_ARGS)
+
+# Live reranker sidecar (needs rerank-setup). The host connects opt-in via
+# `[experiment] reranker = r2`; keep this running while you use modore.
+# Separate args var from rerank-eval — serve.py takes --socket/--history-weight,
+# not --rerankers. Override: make rerank-serve RERANK_SERVE_ARGS="--history-weight 0.3"
+RERANK_SERVE_ARGS ?=
+rerank-serve:
+	@cd $(RERANK_DIR) && $(RERANK_PY) serve.py $(RERANK_SERVE_ARGS)
+
 fetch-luajit:
 	@if [ -d $(LUAJIT_DIR)/.git ]; then \
 	    have=$$(git -C $(LUAJIT_DIR) rev-parse HEAD); \
@@ -212,6 +240,9 @@ help:
 	@echo "  make distclean  also wipe bridge/build (forces ~5min rebuild)"
 	@echo
 	@echo "Other:"
+	@echo "  make rerank-setup  lazy venv for the BERT reranking experiment (tools/rerank/)"
+	@echo "  make rerank-eval   run the offline reranker eval (RERANK_ARGS=... to tune)"
+	@echo "  make rerank-serve  run the live reranker sidecar ([experiment] reranker = r2)"
 	@echo "  make signing    one-time: create self-signed identity (macOS)"
 	@echo "  make test-puppeteer  Linux: Chromium E2E vs running modore-host (see test/puppeteer/)"
 	@echo "  make macos-e2e-smoke  macOS GUI E2E smoke suite (opens real apps)"

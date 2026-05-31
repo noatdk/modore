@@ -1,0 +1,6 @@
+# BERT rerankers (R1/R2) only. Baselines (B0/B1/B2) run on a bare interpreter.
+# cl-tohoku/bert-base-japanese-v3 tokenizes with MeCab -> needs fugashi + unidic-lite.
+torch>=2.2
+transformers>=4.40
+fugashi>=1.3
+unidic-lite>=1.0.8

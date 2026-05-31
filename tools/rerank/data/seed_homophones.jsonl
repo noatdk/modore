@@ -1,0 +1,40 @@
+# SYNTHETIC seed set — validates harness mechanics + gives a preliminary
+# context-rerank signal. NOT real usage data and NOT real Mozc candidate
+# orders (candidates are hand-ordered by rough frequency, gold marked via
+# decided_idx). The real win is measured on captured conversions.jsonl.
+#
+# Two groups:
+#   com.apple.TextEdit  — context-disambiguated homophones (tests the BERT
+#                         context win; history can't help, readings differ).
+#   com.*.app           — per-app consistency runs (tests B1/B2 history: the
+#                         same reading is repeatedly settled on a non-default
+#                         candidate within one app).
+{"ts": 1000, "app_id": "com.apple.TextEdit", "reading": "きしゃ", "candidates": ["記者", "汽車", "帰社", "貴社"], "mozc_top_idx": 0, "decided_idx": 0, "decided_value": "記者", "context_before": "新聞社の", "context_after": "が取材に来た", "backing": "ax"}
+{"ts": 1001, "app_id": "com.apple.TextEdit", "reading": "きしゃ", "candidates": ["記者", "汽車", "帰社", "貴社"], "mozc_top_idx": 0, "decided_idx": 1, "decided_value": "汽車", "context_before": "田舎へ", "context_after": "で帰省する", "backing": "ax"}
+{"ts": 1002, "app_id": "com.apple.TextEdit", "reading": "きしゃ", "candidates": ["記者", "汽車", "帰社", "貴社"], "mozc_top_idx": 0, "decided_idx": 3, "decided_value": "貴社", "context_before": "", "context_after": "のますますのご発展をお祈りします", "backing": "ax"}
+{"ts": 1003, "app_id": "com.apple.TextEdit", "reading": "はし", "candidates": ["橋", "箸", "端"], "mozc_top_idx": 0, "decided_idx": 0, "decided_value": "橋", "context_before": "川に", "context_after": "を架ける", "backing": "ax"}
+{"ts": 1004, "app_id": "com.apple.TextEdit", "reading": "はし", "candidates": ["橋", "箸", "端"], "mozc_top_idx": 0, "decided_idx": 1, "decided_value": "箸", "context_before": "ご飯を", "context_after": "で食べる", "backing": "ax"}
+{"ts": 1005, "app_id": "com.apple.TextEdit", "reading": "はし", "candidates": ["橋", "箸", "端"], "mozc_top_idx": 0, "decided_idx": 2, "decided_value": "端", "context_before": "道路の", "context_after": "を歩く", "backing": "ax"}
+{"ts": 1006, "app_id": "com.apple.TextEdit", "reading": "あめ", "candidates": ["雨", "飴"], "mozc_top_idx": 0, "decided_idx": 0, "decided_value": "雨", "context_before": "今日は朝から", "context_after": "が降っている", "backing": "ax"}
+{"ts": 1007, "app_id": "com.apple.TextEdit", "reading": "あめ", "candidates": ["雨", "飴"], "mozc_top_idx": 0, "decided_idx": 1, "decided_value": "飴", "context_before": "子供に", "context_after": "をあげた", "backing": "ax"}
+{"ts": 1008, "app_id": "com.apple.TextEdit", "reading": "せいかく", "candidates": ["性格", "正確"], "mozc_top_idx": 0, "decided_idx": 0, "decided_value": "性格", "context_before": "彼女は明るい", "context_after": "だ", "backing": "ax"}
+{"ts": 1009, "app_id": "com.apple.TextEdit", "reading": "せいかく", "candidates": ["性格", "正確"], "mozc_top_idx": 0, "decided_idx": 1, "decided_value": "正確", "context_before": "この時計は", "context_after": "な時刻を示す", "backing": "ax"}
+{"ts": 1010, "app_id": "com.apple.TextEdit", "reading": "かんしん", "candidates": ["関心", "感心", "歓心"], "mozc_top_idx": 0, "decided_idx": 0, "decided_value": "関心", "context_before": "政治に", "context_after": "がある", "backing": "ax"}
+{"ts": 1011, "app_id": "com.apple.TextEdit", "reading": "かんしん", "candidates": ["関心", "感心", "歓心"], "mozc_top_idx": 0, "decided_idx": 1, "decided_value": "感心", "context_before": "彼の努力に", "context_after": "した", "backing": "ax"}
+{"ts": 1012, "app_id": "com.apple.TextEdit", "reading": "こうえん", "candidates": ["公園", "講演", "公演", "後援"], "mozc_top_idx": 0, "decided_idx": 0, "decided_value": "公園", "context_before": "近所の", "context_after": "で散歩する", "backing": "ax"}
+{"ts": 1013, "app_id": "com.apple.TextEdit", "reading": "こうえん", "candidates": ["公園", "講演", "公演", "後援"], "mozc_top_idx": 0, "decided_idx": 1, "decided_value": "講演", "context_before": "大学教授の", "context_after": "を聞きに行く", "backing": "ax"}
+{"ts": 1014, "app_id": "com.apple.TextEdit", "reading": "こうえん", "candidates": ["公園", "講演", "公演", "後援"], "mozc_top_idx": 0, "decided_idx": 2, "decided_value": "公演", "context_before": "劇団の", "context_after": "を観に行った", "backing": "ax"}
+{"ts": 1015, "app_id": "com.apple.TextEdit", "reading": "いどう", "candidates": ["移動", "異動"], "mozc_top_idx": 0, "decided_idx": 0, "decided_value": "移動", "context_before": "電車で", "context_after": "する", "backing": "ax"}
+{"ts": 1016, "app_id": "com.apple.TextEdit", "reading": "いどう", "candidates": ["移動", "異動"], "mozc_top_idx": 0, "decided_idx": 1, "decided_value": "異動", "context_before": "四月の人事", "context_after": "で部署が変わった", "backing": "ax"}
+{"ts": 1017, "app_id": "com.apple.TextEdit", "reading": "かてい", "candidates": ["家庭", "過程", "仮定", "課程"], "mozc_top_idx": 0, "decided_idx": 0, "decided_value": "家庭", "context_before": "温かい", "context_after": "を築く", "backing": "ax"}
+{"ts": 1018, "app_id": "com.apple.TextEdit", "reading": "かてい", "candidates": ["家庭", "過程", "仮定", "課程"], "mozc_top_idx": 0, "decided_idx": 1, "decided_value": "過程", "context_before": "子供の成長の", "context_after": "を見守る", "backing": "ax"}
+{"ts": 1019, "app_id": "com.apple.TextEdit", "reading": "google", "candidates": ["グーグル", "googleで検索"], "mozc_top_idx": 0, "decided_idx": -1, "decided_value": "google", "context_before": "検索は", "context_after": "でする", "backing": "ax"}
+{"ts": 1100, "app_id": "com.transit.app", "reading": "きしゃ", "candidates": ["記者", "汽車", "帰社", "貴社"], "mozc_top_idx": 0, "decided_idx": 1, "decided_value": "汽車", "context_before": null, "context_after": null, "backing": "clipboard"}
+{"ts": 1101, "app_id": "com.transit.app", "reading": "きしゃ", "candidates": ["記者", "汽車", "帰社", "貴社"], "mozc_top_idx": 0, "decided_idx": 1, "decided_value": "汽車", "context_before": null, "context_after": null, "backing": "clipboard"}
+{"ts": 1102, "app_id": "com.transit.app", "reading": "きしゃ", "candidates": ["記者", "汽車", "帰社", "貴社"], "mozc_top_idx": 0, "decided_idx": 1, "decided_value": "汽車", "context_before": null, "context_after": null, "backing": "clipboard"}
+{"ts": 1103, "app_id": "com.transit.app", "reading": "きしゃ", "candidates": ["記者", "汽車", "帰社", "貴社"], "mozc_top_idx": 0, "decided_idx": 1, "decided_value": "汽車", "context_before": null, "context_after": null, "backing": "clipboard"}
+{"ts": 1200, "app_id": "com.medical.app", "reading": "せいかく", "candidates": ["性格", "正確"], "mozc_top_idx": 0, "decided_idx": 1, "decided_value": "正確", "context_before": null, "context_after": null, "backing": "clipboard"}
+{"ts": 1201, "app_id": "com.medical.app", "reading": "せいかく", "candidates": ["性格", "正確"], "mozc_top_idx": 0, "decided_idx": 1, "decided_value": "正確", "context_before": null, "context_after": null, "backing": "clipboard"}
+{"ts": 1202, "app_id": "com.medical.app", "reading": "せいかく", "candidates": ["性格", "正確"], "mozc_top_idx": 0, "decided_idx": 1, "decided_value": "正確", "context_before": null, "context_after": null, "backing": "clipboard"}
+{"ts": 1300, "app_id": "com.news.app", "reading": "きしゃ", "candidates": ["記者", "汽車", "帰社", "貴社"], "mozc_top_idx": 0, "decided_idx": 0, "decided_value": "記者", "context_before": null, "context_after": null, "backing": "clipboard"}
+{"ts": 1301, "app_id": "com.news.app", "reading": "きしゃ", "candidates": ["記者", "汽車", "帰社", "貴社"], "mozc_top_idx": 0, "decided_idx": 0, "decided_value": "記者", "context_before": null, "context_after": null, "backing": "clipboard"}
