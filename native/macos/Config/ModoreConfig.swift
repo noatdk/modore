@@ -392,6 +392,76 @@ enum ModoreConfig {
         return (enabled, issues)
     }
 
+    /// Parse `[experiment] log_conversions`. Wrapper that logs issues.
+    /// Default `false` — conversion logging records what the user types, so
+    /// it is opt-in; omitting the key keeps no data on disk.
+    static func loadConversionLogEnabled() -> Bool {
+        logging(parseConversionLogEnabled)
+    }
+
+    static func parseConversionLogEnabled() -> (Bool, [String]) {
+        var enabled = false
+        var issues: [String] = []
+        let url = configFileURL()
+        _ = forEachKeyValue(url) { section, key, value in
+            guard section == "experiment" && key == "log_conversions" else { return }
+            switch value.lowercased() {
+            case "on", "true", "1", "yes":
+                enabled = true
+            case "off", "false", "0", "no", "":
+                enabled = false
+            default:
+                issues.append("ignoring [experiment] log_conversions=\(value) (expected on|off)")
+            }
+        }
+        return (enabled, issues)
+    }
+
+    /// Parse `[experiment] reranker` (off|r2). Default `.off` — live reranking
+    /// is opt-in and needs the sidecar (`make rerank-serve`) running.
+    static func loadRerankerMode() -> RerankerMode {
+        logging(parseRerankerMode)
+    }
+
+    static func parseRerankerMode() -> (RerankerMode, [String]) {
+        var mode: RerankerMode = .off
+        var issues: [String] = []
+        let url = configFileURL()
+        _ = forEachKeyValue(url) { section, key, value in
+            guard section == "experiment" && key == "reranker" else { return }
+            switch value.lowercased() {
+            case "off", "false", "0", "no", "", "none":
+                mode = .off
+            case "r2", "preempt", "on", "true", "1", "yes":
+                mode = .r2
+            default:
+                issues.append("ignoring [experiment] reranker=\(value) (expected off|r2)")
+            }
+        }
+        return (mode, issues)
+    }
+
+    /// Parse `[experiment] reranker_min_margin`. Confidence gate (log-prob
+    /// top1−top2) below which the host never overrides Mozc. Default 2.0.
+    static func loadRerankerMinMargin() -> Double {
+        logging(parseRerankerMinMargin)
+    }
+
+    static func parseRerankerMinMargin() -> (Double, [String]) {
+        var margin = 2.0
+        var issues: [String] = []
+        let url = configFileURL()
+        _ = forEachKeyValue(url) { section, key, value in
+            guard section == "experiment" && key == "reranker_min_margin" else { return }
+            if let v = Double(value) {
+                margin = v
+            } else {
+                issues.append("ignoring [experiment] reranker_min_margin=\(value) (expected number)")
+            }
+        }
+        return (margin, issues)
+    }
+
     /// Parse `[bridge] mozc_backend` with `[conversion]` as a compatibility
     /// fallback. Wrapper that logs issues.
     /// Default bundled Mozc preserves the long-standing built-in behavior.

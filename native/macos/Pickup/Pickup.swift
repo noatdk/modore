@@ -329,6 +329,13 @@ private func commitSession(_ session: ConversionSession) {
     if gCandidatePanelMode == .onConvert {
         CandidatePanel.shared.show(session: session)
     }
+    // Async, off the latency path: ask the sidecar whether context/history
+    // favours a different candidate, and swap it in if confident. No-op unless
+    // `[experiment] reranker = r2`. Reads the session back from the store so
+    // it picks up the app id + context stamped in `set`.
+    if let live = ConversionSessionStore.currentSnapshot() {
+        RerankClient.maybeRerank(session: live)
+    }
 }
 
 // MARK: - Shadow-buffer pickup (zero-latency fallback before clipboard)
@@ -1367,6 +1374,11 @@ func runConversionOnAcquiredText(
 // MARK: - Pickup pipeline
 
 func doPickup(_ request: PickupRequest = .init()) {
+    // Reset per-pickup context capture. Repopulated below only on the AX
+    // branch (where the full field value + span are known); stays nil for the
+    // cycle/clipboard/scripted-acquire paths that return before then.
+    gPendingPickupContext = nil
+
     // Single-key cycle: if an active session exists and gates hold, the
     // primary chord advances the candidate instead of doing a fresh
     // conversion. Katakana presses either convert katakana or cycle
@@ -1482,6 +1494,14 @@ func doPickup(_ request: PickupRequest = .init()) {
         return
     }
         Log.pickup("pick [\(pickupStart)..\(pickupEnd)] \(spanText)")
+
+        // Capture surrounding field text once, here — every convert branch
+        // below funnels through commitSession → ConversionSessionStore.set(),
+        // which stamps the committed session from this. No per-branch wiring.
+        gPendingPickupContext = PendingPickupContext(
+            appId: appId,
+            before: sliceUTF16(field.value, start: 0, end: pickupStart),
+            after: sliceUTF16(field.value, start: pickupEnd, end: field.value.utf16.count))
 
         // Strip any non-ASCII prefix before handing off to Mozc — same
         // reason as the clipboard path. `wordBounds` already does this on

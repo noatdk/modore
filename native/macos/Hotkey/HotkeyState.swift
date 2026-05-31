@@ -109,6 +109,30 @@ var gShadowBufferEnabled: Bool = false
 /// `[conversion] classifier = on` in the config file.
 var gClassifierEnabled: Bool = false
 
+/// When true, each settled conversion (reading, candidate batch, the index
+/// the user actually chose, surrounding context) is appended as JSONL to
+/// `<configDir>/conversions.jsonl` — the data-capture half of the BERT
+/// reranking experiment (tools/rerank/). Records what the user types and
+/// converts, so it is strictly opt-in via `[experiment] log_conversions = on`
+/// and defaults off.
+var gConversionLogEnabled: Bool = false
+
+/// Live candidate reranking. `.off` (default) leaves Mozc's top untouched;
+/// `.r2` asks the sidecar (tools/rerank/serve.py) to rerank by context/history
+/// after the fact and swaps in a better candidate when confident. Opt-in via
+/// `[experiment] reranker = r2`.
+var gRerankerMode: RerankerMode = .off
+
+/// Confidence gate for `.r2`: the sidecar's top-1 minus top-2 score (log-prob)
+/// must clear this before the host overrides Mozc's pick — the guard against
+/// regressing conversions Mozc already got right. `[experiment]
+/// reranker_min_margin`, default 2.0.
+var gRerankerMinMargin: Double = 2.0
+
+/// Unix socket the reranker sidecar listens on. Defaults to
+/// `<configDir>/reranker.sock`; set once at boot.
+var gRerankerSocketPath: String = ""
+
 /// Launch-time bridge tuning. The bridge reads these once at init, so reloads
 /// can update the process env for the next bridge start but cannot affect the
 /// already-running session. Defaults are applied deterministically at boot.

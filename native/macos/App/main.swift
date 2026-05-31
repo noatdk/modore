@@ -518,6 +518,26 @@ if gClassifierEnabled {
     Log.boot("ML classifier: disabled (set [conversion] classifier = on to enable)")
 }
 
+// Conversion-decision logging for the BERT reranking experiment (tools/rerank/).
+// Opt-in via `[experiment] log_conversions = on`; default off.
+gConversionLogEnabled = ModoreConfig.loadConversionLogEnabled()
+Log.boot(gConversionLogEnabled
+    ? "conversion log: on → \(ConversionLog.path())"
+    : "conversion log: off (set [experiment] log_conversions = on to capture training data)")
+
+// Live candidate reranking via the sidecar. Opt-in via `[experiment] reranker
+// = r2`; default off. Async + confidence-gated, so it never adds latency and
+// only overrides Mozc when confident.
+gRerankerMode = ModoreConfig.loadRerankerMode()
+gRerankerMinMargin = ModoreConfig.loadRerankerMinMargin()
+gRerankerSocketPath = "\(ModoreConfig.configDir())/reranker.sock"
+switch gRerankerMode {
+case .r2:
+    Log.boot("reranker: r2 (sidecar \(gRerankerSocketPath), min_margin \(gRerankerMinMargin)) — start it with `make rerank-serve`")
+case .off:
+    Log.boot("reranker: off (set [experiment] reranker = r2 to enable)")
+}
+
 // Lua scripting engine. Loaded after Mozc so any startup log lines from
 // scripts (`modore.log.*` at top level) interleave below the rest of the
 // boot sequence. Engine is opt-in via the presence of files in the dir;

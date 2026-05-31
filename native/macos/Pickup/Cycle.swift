@@ -153,6 +153,40 @@ func cyclePrevious(verbose: Bool) -> Bool {
     return true
 }
 
+/// Swap the live session to a specific candidate index — the live reranker's
+/// apply step. Runs on the worker queue (dispatched from RerankClient). Same
+/// gates as cycle, plus a session-id check so a reranker reply that arrives
+/// after the user has already started a *new* conversion is dropped instead of
+/// clobbering it. Re-commits via `update`, so the history/log entry reflects
+/// the reranked choice. Returns true only when the swap actually landed.
+@discardableResult
+func applyRerankToIndex(_ target: Int, forSession id: UUID, verbose: Bool) -> Bool {
+    guard let snap = ConversionSessionStore.peek(windowMs: gUndoWindowMs) else { return false }
+    guard snap.id == id else { return false }            // a newer conversion took over
+    guard target >= 0, target < snap.candidates.count, target != snap.candidateIndex else { return false }
+    let to = snap.candidates[target].value
+
+    let swapped: Bool
+    switch snap.backing {
+    case .ax(let element, let spanStart):
+        swapped = cycleOnAX(snap, element: element, spanStart: spanStart, to: to, verbose: verbose)
+    case .clipboard(let bundleId, let pid):
+        swapped = cycleOnClipboard(snap, bundleId: bundleId, pid: pid, to: to, verbose: verbose)
+    }
+    guard swapped else { return false }
+
+    var refreshed: ConversionSession? = nil
+    ConversionSessionStore.update { session in
+        session.candidateIndex = target
+        session.timestamp = Date()
+        refreshed = session
+    }
+    if gCandidatePanelMode != .none, let session = refreshed {
+        CandidatePanel.shared.show(session: session)
+    }
+    return true
+}
+
 /// AX-backed cycle. Same validation gates as the undo path: same focused
 /// element, current text at the recorded span. Refuses on any mismatch
 /// rather than clobber whatever the user is now editing.
