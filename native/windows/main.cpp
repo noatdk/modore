@@ -150,6 +150,7 @@ void request_reload() {
 
 void watcher_thread() {
     auto last_write = std::filesystem::file_time_type::min();
+    bool last_exists = false;
     bool first = true;
     while (!g_stop_watcher.load(std::memory_order_relaxed)) {
         const auto path = modore::windows::config_file_path();
@@ -157,11 +158,14 @@ void watcher_thread() {
         const bool exists = std::filesystem::exists(path, ec);
         if (exists) {
             const auto now = std::filesystem::last_write_time(path, ec);
-            if (first || now != last_write) {
+            if (first || !last_exists || now != last_write) {
                 last_write = now;
                 request_reload();
             }
+        } else if (first || last_exists) {
+            request_reload();
         }
+        last_exists = exists;
         first = false;
         std::this_thread::sleep_for(300ms);
     }
