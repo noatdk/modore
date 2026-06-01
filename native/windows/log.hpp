@@ -44,5 +44,6 @@ private:
 };
 
 std::wstring join_disabled_roots(const std::vector<std::wstring>& roots);
+std::wstring escape_for_log(const std::wstring& text);
 
 } // namespace modore::windows

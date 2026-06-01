@@ -3,6 +3,7 @@
 #include <chrono>
 #include <fstream>
 #include <iomanip>
+#include <iostream>
 #include <sstream>
 
 #include <windows.h>
@@ -73,6 +74,20 @@ std::wstring root_of_tag(LogTag tag) {
     return L"";
 }
 
+void write_console_line(const std::wstring& line) {
+    const HANDLE handle = GetStdHandle(STD_OUTPUT_HANDLE);
+    if (handle == nullptr || handle == INVALID_HANDLE_VALUE) {
+        return;
+    }
+    DWORD mode = 0;
+    if (GetFileType(handle) != FILE_TYPE_CHAR || !GetConsoleMode(handle, &mode)) {
+        return;
+    }
+    DWORD written = 0;
+    const std::wstring text = line + L"\n";
+    WriteConsoleW(handle, text.c_str(), static_cast<DWORD>(text.size()), &written, nullptr);
+}
+
 } // namespace
 
 Logger& Logger::instance() {
@@ -100,6 +115,30 @@ std::wstring join_disabled_roots(const std::vector<std::wstring>& roots) {
             out += L",";
         }
         out += roots[i];
+    }
+    return out;
+}
+
+std::wstring escape_for_log(const std::wstring& text) {
+    std::wstring out;
+    out.reserve(text.size() + 2);
+    for (wchar_t ch : text) {
+        switch (ch) {
+        case L'\\': out += L"\\\\"; break;
+        case L'"': out += L"\\\""; break;
+        case L'\n': out += L"\\n"; break;
+        case L'\r': out += L"\\r"; break;
+        case L'\t': out += L"\\t"; break;
+        default:
+            if (ch < 0x20) {
+                out += L"\\x";
+                const wchar_t hex[] = L"0123456789ABCDEF";
+                out += hex[(ch >> 4) & 0xF];
+                out += hex[ch & 0xF];
+            } else {
+                out.push_back(ch);
+            }
+        }
     }
     return out;
 }
@@ -152,6 +191,7 @@ void Logger::write(LogTag tag, const std::wstring& message) {
 
     const std::wstring line = std::wstring(L"[") + tag_name(tag) + L"] " + message;
     OutputDebugStringW((line + L"\n").c_str());
+    write_console_line(now_stamp() + L" " + line);
 
     std::filesystem::path path;
     {

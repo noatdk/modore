@@ -42,10 +42,6 @@ std::atomic<bool> g_reload_requested{false};
 std::atomic<bool> g_stop_watcher{false};
 std::thread g_watcher;
 
-void show_message_box(const std::wstring& title, const std::wstring& message) {
-    MessageBoxW(g_state.window, message.c_str(), title.c_str(), MB_OK | MB_ICONINFORMATION);
-}
-
 void open_path(const std::filesystem::path& path) {
     ShellExecuteW(nullptr, L"open", path.wstring().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 }
@@ -170,7 +166,7 @@ void watcher_thread() {
 std::wstring current_executable_name() {
     const auto path = modore::windows::executable_path();
     if (path.empty()) {
-        return L"modore-host.exe";
+        return L"modore.exe";
     }
     return path.filename().wstring();
 }
@@ -211,7 +207,7 @@ void print_paths() {
     std::wcout << modore::windows::format_paths() << L"\n";
 }
 
-void create_tray_icon(HWND window) {
+bool create_tray_icon(HWND window) {
     g_state.nid = {};
     g_state.nid.cbSize = sizeof(g_state.nid);
     g_state.nid.hWnd = window;
@@ -220,7 +216,11 @@ void create_tray_icon(HWND window) {
     g_state.nid.uCallbackMessage = kTrayMessage;
     g_state.nid.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
     wcsncpy_s(g_state.nid.szTip, L"modore", _TRUNCATE);
-    Shell_NotifyIconW(NIM_ADD, &g_state.nid);
+    if (!Shell_NotifyIconW(NIM_ADD, &g_state.nid)) {
+        return false;
+    }
+    g_state.nid.uVersion = NOTIFYICON_VERSION_4;
+    return Shell_NotifyIconW(NIM_SETVERSION, &g_state.nid) != 0;
 }
 
 void destroy_tray_icon() {
@@ -244,7 +244,12 @@ void show_tray_menu(HWND window) {
 LRESULT CALLBACK window_proc(HWND window, UINT msg, WPARAM wparam, LPARAM lparam) {
     switch (msg) {
     case WM_CREATE:
-        create_tray_icon(window);
+        if (!create_tray_icon(window)) {
+            modore::windows::Logger::instance().write(modore::windows::LogTag::Boot, L"tray icon registration failed");
+            return -1;
+        } else {
+            modore::windows::Logger::instance().write(modore::windows::LogTag::Boot, L"tray icon registered");
+        }
         return 0;
     case WM_COMMAND:
         switch (LOWORD(wparam)) {
@@ -285,8 +290,6 @@ LRESULT CALLBACK window_proc(HWND window, UINT msg, WPARAM wparam, LPARAM lparam
     case kTrayMessage:
         if (lparam == WM_RBUTTONUP || lparam == WM_CONTEXTMENU) {
             show_tray_menu(window);
-        } else if (lparam == WM_LBUTTONUP) {
-            show_message_box(L"modore", L"modore is running.");
         }
         return 0;
     case WM_DESTROY:
@@ -318,7 +321,7 @@ int run_host() {
     RegisterClassW(&wc);
 
     HWND window = CreateWindowExW(
-        0, class_name, L"", WS_OVERLAPPEDWINDOW,
+        0, class_name, L"modore", WS_OVERLAPPEDWINDOW,
         CW_USEDEFAULT, CW_USEDEFAULT, 100, 100,
         nullptr, nullptr, instance, nullptr);
     if (!window) {
@@ -326,6 +329,7 @@ int run_host() {
         return 1;
     }
     g_state.window = window;
+    logger.write(modore::windows::LogTag::Boot, L"window created");
 
     if (!register_hotkey(window, snapshot.hotkey)) {
         logger.write(modore::windows::LogTag::Hotkey, std::wstring(L"hotkey registration failed for ") + snapshot.hotkey.display_name);
@@ -343,6 +347,7 @@ int run_host() {
             + L" restore=" + std::to_wstring(snapshot.clipboard.restore_clipboard_delay_ms) + L"ms");
 
     ShowWindow(window, SW_HIDE);
+    UpdateWindow(window);
 
     g_stop_watcher.store(false, std::memory_order_relaxed);
     g_watcher = std::thread(watcher_thread);

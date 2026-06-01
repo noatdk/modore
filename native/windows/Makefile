@@ -10,7 +10,7 @@ build:
 	@cmake --build "$(BUILD)" --config "$(CONFIG)"
 
 run: build
-	@"$(BUILD)/$(CONFIG)/modore-host.exe"
+	@"$(BUILD)/$(CONFIG)/modore.exe"
 
 clean:
 	@cmake --build "$(BUILD)" --config "$(CONFIG)" --target clean
