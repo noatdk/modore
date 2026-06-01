@@ -65,10 +65,10 @@ The Linux columns are the same binary on different display servers;
 | `~/.config/modore/modore.conf` (XDG)          |   ✓   |     ✓       |       ✓         |    ✗    |
 | Auto-reload on config change                  |   ✓¹² |     ◐²³     |       ◐²³       |    ✗    |
 | Tunable clipboard-fallback timings            |   ✓¹⁴ |     ✓²³     |       ✓²³       |    ✗    |
-| `--check-config` preflight (no engine start)  |   ✓¹⁵ |     ✗       |       ✗         |    ✗    |
+| `--check-config` preflight (no engine start)  |   ✓¹⁵ |     ✗       |       ✗         |    ✓    |
 | Menu-bar status item ("running" indicator)    |   ✓¹⁶ |     ✗       |       ✗         |    ✗    |
 | SecureInput awareness (sudo/password prompts) |   ✓¹⁷ |     —       |       —         |    —    |
-| Log file on disk (`modore.log`)               |   ✗¹⁰ |     ✓       |       ✓         |    ✗    |
+| Log file on disk (`modore.log`)               |   ✗¹⁰ |     ✓       |       ✓         |    ✓    |
 | First-run permission prompt                   |   ✓   |     —¹¹     |       —¹¹       |    ✗    |
 | systemd user unit shipped                     |   —   |     ✓       |       ✓         |    ✗    |
 

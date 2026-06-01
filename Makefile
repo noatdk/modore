@@ -30,7 +30,7 @@ BRIDGE_DIR := bridge
 export PATH := $(CURDIR)/$(BRIDGE_DIR)/build-tools:$(PATH)
 
 .PHONY: help build run open bridge clean clean-bridge distclean signing \
-        check-platform macos linux install-user-bin test-puppeteer \
+        check-platform macos linux windows install-user-bin test-puppeteer \
         fetch-luajit engine engine-test clean-engine \
         macos-e2e macos-e2e-smoke macos-e2e-full macos-e2e-quarantine
 
@@ -45,6 +45,9 @@ macos:
 
 linux:
 	@$(MAKE) --no-print-directory -C native/linux MODORE_ENABLE_SCRIPTING=$(MODORE_ENABLE_SCRIPTING)
+
+windows:
+	@$(MAKE) --no-print-directory -C native/windows MODORE_ENABLE_SCRIPTING=$(MODORE_ENABLE_SCRIPTING)
 
 # Linux: install ~/.local/bin/modore-host + ~/.local/lib/modore/*.so
 # Same as: make -C native/linux install-user-bin (from this repo root, not …/modore/modore/…).
@@ -104,7 +107,11 @@ run: check-platform
 	@$(MAKE) --no-print-directory -C $(NATIVE_DIR) run MODORE_ENABLE_SCRIPTING=$(MODORE_ENABLE_SCRIPTING)
 
 open: check-platform
+ifeq ($(PLATFORM),windows)
+	@echo "make open is not defined on Windows; use 'make run' instead"; exit 1
+else
 	@$(MAKE) --no-print-directory -C $(NATIVE_DIR) open MODORE_ENABLE_SCRIPTING=$(MODORE_ENABLE_SCRIPTING)
+endif
 
 # Build just the cross-platform bridge (no host UI). Useful when iterating
 # on the C ABI from a non-native frontend.
@@ -180,12 +187,7 @@ endif
 check-platform:
 ifeq ($(PLATFORM),unsupported)
 	@echo "Unsupported host platform: $(UNAME_S)"; \
-	 echo "Currently supported: Darwin (macOS) and Linux (X11 host)."; \
-	 exit 1
-endif
-ifeq ($(PLATFORM),windows)
-	@echo "Windows host not wired up yet. The bridge builds cross-platform"; \
-	 echo "(see 'make bridge'), but no Windows frontend exists in this repo."; \
+	 echo "Currently supported: Darwin (macOS), Linux (X11 host), and Windows."; \
 	 exit 1
 endif
 
@@ -197,6 +199,7 @@ help:
 	@echo "                  add MODORE_ENABLE_SCRIPTING=1 to include Lua hooks"
 	@echo "  make macos      build the macOS host explicitly"
 	@echo "  make linux      build the Linux host explicitly"
+	@echo "  make windows    build the Windows host explicitly"
 	@echo "  make install-user-bin   Linux: install to ~/.local (modore-host + bridge .so)"
 	@echo "  make bridge     build only the cross-platform Mozc bridge"
 	@echo "  make fetch-luajit  lazy clone LuaJIT 2.1 into third_party/luajit/"

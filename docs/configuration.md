@@ -348,7 +348,7 @@ change (open a new shell or re-source the bootstrap).
 
 ## Preflight: `modore-host --check-config`
 
-**Available**: macOS
+**Available**: macOS, Windows
 
 Validate the config without starting the host. Reads the same file the
 running host would, prints what it found, and exits with a status that
@@ -368,7 +368,9 @@ config path: /Users/you/.config/modore/modore.conf
 | `2`       | A `[clipboard]` key was rejected (`hotkey` itself was fine).              |
 
 This is the "parse-before-swap" path made explicit: same code that runs
-on a live reload, but as a one-shot you can invoke from CI.
+on a live reload, but as a one-shot you can invoke from CI. On Windows,
+the config lives under `%APPDATA%\modore\modore.conf` and the same exit
+codes apply.
 
 ## Diagnostic: `modore-host --secure-input-status`
 
@@ -406,7 +408,7 @@ log tag records every transition.
 
 ## Path printers
 
-**Available**: macOS
+**Available**: macOS, Windows
 
 Two zero-side-effect flags for scripting and bug-report copy-paste:
 
@@ -425,7 +427,8 @@ executable:    /Users/you/.../modore.app/Contents/MacOS/modore-host
 
 Both exit `0`. `--print-config-path` prints only the path (no labels,
 nothing on stderr) so it slots into shell substitutions; `--print-paths`
-labels every line for humans.
+labels every line for humans. On Windows those paths resolve under
+`%APPDATA%\modore\` instead of XDG / `~/Library`.
 
 ## Auto-reload
 

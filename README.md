@@ -16,7 +16,7 @@ English: [README.en.md](README.en.md)
 | ------- | --------------------------------------------------------------------- |
 | macOS   | 試行中。ホットキー設定、候補サイクル、Escで取り消し、候補パネル対応   |
 | Linux   | 試行中。X11 grab + AT-SPI2 + Unixソケット IPC + Waylandフォールバック |
-| Windows | 未着手                                                                |
+| Windows | 実装中                                                                |
 
 機能比較表は [docs/PARITY.md](docs/PARITY.md)。機能の追加・削除と
 同じコミットで更新すること。
