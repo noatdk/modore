@@ -6,9 +6,11 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 add_executable(modore-host
+    app.cpp
     main.cpp
     config.cpp
     log.cpp
+    pickup.cpp
 )
 
 target_include_directories(modore-host PRIVATE
