@@ -103,19 +103,101 @@ struct ConversionSession {
     }
 }
 
+/// Batch session for multiline / multi-cursor conversions. Each line keeps its
+/// own conversion session so cycle and undo can advance the lines
+/// independently instead of collapsing the whole blob to one global candidate.
+struct BatchConversionSession {
+    let backing: ConversionBacking
+    var items: [ConversionSession]
+    var timestamp: Date
+
+    var originalReading: String {
+        items.map(\.originalReading).joined(separator: "\n")
+    }
+
+    var currentText: String {
+        items.map(\.currentText).joined(separator: "\n")
+    }
+}
+
+/// The active conversion may be a single-session pickup or a batch wrapper
+/// that carries several independent child sessions. The store keeps one slot,
+/// but the slot can fan out into multiple per-line sessions when the pickup
+/// path detected multi-cursor input.
+enum ActiveConversionSession {
+    case single(ConversionSession)
+    case batch(BatchConversionSession)
+
+    var backing: ConversionBacking {
+        switch self {
+        case .single(let session):
+            return session.backing
+        case .batch(let session):
+            return session.backing
+        }
+    }
+
+    var originalReading: String {
+        switch self {
+        case .single(let session):
+            return session.originalReading
+        case .batch(let session):
+            return session.originalReading
+        }
+    }
+
+    var currentText: String {
+        switch self {
+        case .single(let session):
+            return session.currentText
+        case .batch(let session):
+            return session.currentText
+        }
+    }
+
+    var timestamp: Date {
+        get {
+            switch self {
+            case .single(let session):
+                return session.timestamp
+            case .batch(let session):
+                return session.timestamp
+            }
+        }
+        set {
+            switch self {
+            case .single(var session):
+                session.timestamp = newValue
+                self = .single(session)
+            case .batch(var session):
+                session.timestamp = newValue
+                self = .batch(session)
+            }
+        }
+    }
+}
+
 /// Single-slot store for the most recent conversion. Holds at most one
 /// session at a time — every new successful conversion overwrites the
 /// previous one, which is correct: cycle/undo act on "the last thing
 /// modore did," not a stack of conversions.
 enum ConversionSessionStore {
     private static let lock = NSLock()
-    private static var current: ConversionSession? = nil
+    private static var current: ActiveConversionSession? = nil
 
     /// Record a fresh session. Called from `doPickup` /
     /// `doClipboardPickup` after a successful write.
     static func set(_ session: ConversionSession) {
         lock.lock(); defer { lock.unlock() }
-        current = session
+        current = .single(session)
+    }
+
+    /// Record a fresh batch session. Used by the multiline wrapper paths so
+    /// a single pickup can fan out into several independently cycled child
+    /// sessions without introducing a second store.
+    static func set(_ session: BatchConversionSession) {
+        lock.lock(); defer { lock.unlock() }
+        current = .batch(session)
     }
 
     /// Read the session if it's still within `windowMs` of its last
@@ -123,7 +205,7 @@ enum ConversionSessionStore {
     /// elapsed, so callers don't have to garbage-collect expired
     /// entries. Non-destructive when still valid — Esc/cycle peek first,
     /// then `update` to mutate.
-    static func peek(windowMs: Int) -> ConversionSession? {
+    static func peek(windowMs: Int) -> ActiveConversionSession? {
         lock.lock(); defer { lock.unlock() }
         guard let snap = current else { return nil }
         let ageMs = Date().timeIntervalSince(snap.timestamp) * 1000
@@ -142,16 +224,5 @@ enum ConversionSessionStore {
     static func clear() {
         lock.lock(); defer { lock.unlock() }
         current = nil
-    }
-
-    /// Mutate the session in place under the lock. Used by Esc-undo
-    /// (`candidateIndex = -1`), cycle (advance `candidateIndex`), and
-    /// the `timestamp` refresh both gestures do to keep the window
-    /// alive across a chain of presses. No-op when no session is set.
-    static func update(_ mutator: (inout ConversionSession) -> Void) {
-        lock.lock(); defer { lock.unlock() }
-        guard var snap = current else { return }
-        mutator(&snap)
-        current = snap
     }
 }

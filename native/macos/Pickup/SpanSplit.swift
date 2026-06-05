@@ -173,6 +173,19 @@ func splitTrailingASCIIPunctuation(_ ascii: String) -> (core: String, suffix: St
     )
 }
 
+/// Split a text blob into newline-delimited logical items when a multi-cursor
+/// editor copied one item per cursor.
+///
+/// Returns `nil` for single-line input. Trailing empty lines are preserved so
+/// a source ending in `\n` still round-trips as a final empty item.
+func splitMulticursorLines(_ s: String) -> [String]? {
+    let normalized = s
+        .replacingOccurrences(of: "\r\n", with: "\n")
+        .replacingOccurrences(of: "\r", with: "\n")
+    guard normalized.contains("\n") else { return nil }
+    return normalized.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+}
+
 /// True when the selection is a plain lowercase ASCII word.
 ///
 /// Shared between the clipboard fallback's expansion heuristics and the

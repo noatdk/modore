@@ -128,6 +128,43 @@ func postUnicode(_ s: String) {
     }
 }
 
+/// Put `text` on the pasteboard and synthesize Cmd+V. Callers are responsible
+/// for restoring the previous clipboard contents once the paste has had time to
+/// land.
+func postPasteFromClipboard(_ text: String) {
+    let pb = NSPasteboard.general
+    pb.clearContents()
+    pb.setString(text, forType: .string)
+    postKey(kVK_ANSI_V, flags: .maskCommand)
+}
+
+/// Paste `text` while preserving the user's clipboard contents. This is the
+/// batch/multicursor path: keep the existing selection live and let the host
+/// replace it with Cmd+V instead of destroying it with a backspace storm.
+func pastePreservingClipboard(_ text: String) {
+    let saved = snapshotClipboard()
+    postPasteFromClipboard(text)
+    let restoreDelayMs = max(750, gClipboardTimings.restoreClipboardDelayMs)
+    DispatchQueue.global(qos: .userInitiated).asyncAfter(
+        deadline: .now() + .milliseconds(restoreDelayMs)
+    ) {
+        restoreClipboard(saved)
+    }
+}
+
+/// Recreate a collapsed selection by extending it leftward, then paste over it
+/// while preserving the user's clipboard.
+func selectLeftAndPastePreservingClipboard(selecting graphemes: Int, text: String) {
+    guard graphemes > 0 else {
+        pastePreservingClipboard(text)
+        return
+    }
+    for _ in 0..<graphemes {
+        postKey(kVK_LeftArrow, flags: .maskShift)
+    }
+    pastePreservingClipboard(text)
+}
+
 /// Replace a known span by synthesized keystrokes, no AX writes involved.
 /// Sibling to `replaceRange` in `AccessibilityIO.swift`: same operation
 /// (`field[start..<end] = replacement`) against the synthetic-keystroke
@@ -156,9 +193,13 @@ func postUnicode(_ s: String) {
 /// (what one Backspace eats in most apps), i.e. `String.count`, not
 /// `.utf16.count`: a supplementary-plane char (emoji = 1 grapheme, 2 UTF-16
 /// units) would otherwise fire an extra Backspace and eat a neighbour.
-func replaceByBackspaceRetype(deleting count: Int, insert text: String) {
+func replaceByBackspaceRetype(deleting count: Int, insert text: String, preserveClipboard: Bool = false) {
     for _ in 0..<count { postKey(kVK_Backspace) }
-    postUnicode(text)
+    if preserveClipboard {
+        pastePreservingClipboard(text)
+    } else {
+        postUnicode(text)
+    }
 }
 
 func keystrokeReplaceSpan(

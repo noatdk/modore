@@ -89,6 +89,21 @@ struct SpanSplitTests {
         expectTuple(splitTrailingASCIIPunctuation("pa-ka-"),      ("pa-ka", "-"), "split hyphenated chouon suffix")
         expectTuple(splitTrailingASCIIPunctuation("C++"),         ("C", "++"),    "split trailing symbol run")
         expectTuple(splitTrailingASCIIPunctuation("API"),         ("API", ""),    "split no suffix")
+        expectEqual(
+            splitMulticursorLines("tesuto\ntesuto\ntesuto\ntesuto"),
+            ["tesuto", "tesuto", "tesuto", "tesuto"],
+            "split multicursor lines"
+        )
+        expectEqual(
+            splitMulticursorLines("tesuto\r\ntesuto\n"),
+            ["tesuto", "tesuto", ""],
+            "split multicursor lines preserves trailing empty"
+        )
+        expectEqual(
+            splitMulticursorLines("tesuto"),
+            nil,
+            "split multicursor lines single line"
+        )
 
         // The clipboard fallback sometimes has to decide whether to spend
         // one more selection probe on a plain lowercase word. Chromium

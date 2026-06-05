@@ -32,34 +32,91 @@ func performEscUndo() {
         return
     }
 
-    if snap.candidateIndex < 0 {
-        Log.undo("esc fell through: session already in undone state")
-        reinjectEscape()
-        return
-    }
-
-    // Backing-specific validate + swap. AX path can read the field and
-    // refuse if anything moved; clipboard path can only verify the
-    // frontmost app is still the same and trust the backspace count.
     let swapped: Bool
-    switch snap.backing {
-    case .ax(let element, let spanStart):
-        swapped = undoOnAX(snap, element: element, spanStart: spanStart)
-    case .clipboard(let bundleId, let pid):
-        swapped = undoOnClipboard(snap, bundleId: bundleId, pid: pid)
+    switch snap {
+    case .single(let session):
+        guard session.candidateIndex >= 0 else {
+            Log.undo("esc fell through: session already in undone state")
+            reinjectEscape()
+            return
+        }
+        swapped = undoSingle(session)
+    case .batch(let session):
+        guard session.currentText != session.originalReading else {
+            Log.undo("esc fell through: batch session already in undone state")
+            reinjectEscape()
+            return
+        }
+        swapped = undoBatch(session)
     }
     if !swapped {
         reinjectEscape()
         return
     }
-    ConversionSessionStore.update { session in
-        session.candidateIndex = -1
-        session.timestamp = Date()
+    switch snap {
+    case .single(var live):
+        live.candidateIndex = -1
+        live.timestamp = Date()
+        ConversionSessionStore.set(live)
+    case .batch(var live):
+        for idx in live.items.indices {
+            live.items[idx].candidateIndex = -1
+            live.items[idx].timestamp = Date()
+        }
+        live.timestamp = Date()
+        ConversionSessionStore.set(live)
     }
     // Esc means "undo, I'm done with this conversion" — drop the
     // candidate panel immediately so the user gets unambiguous feedback
     // that the gesture took effect. Cycling afterwards still re-shows.
     CandidatePanel.shared.hide()
+}
+
+private func undoSingle(_ snap: ConversionSession) -> Bool {
+    // Backing-specific validate + swap. AX path can read the field and
+    // refuse if anything moved; clipboard path can only verify the
+    // frontmost app is still the same and trust the backspace count.
+    switch snap.backing {
+    case .ax(let element, let spanStart):
+        return undoOnAX(snap, element: element, spanStart: spanStart)
+    case .clipboard(let bundleId, let pid):
+        return undoOnClipboard(snap, bundleId: bundleId, pid: pid)
+    }
+}
+
+private func undoBatch(_ snap: BatchConversionSession) -> Bool {
+    switch snap.backing {
+    case .clipboard(let bundleId, let pid):
+        guard let frontmost = FrontmostApp.describe() else {
+            Log.undo("esc fell through: no frontmost app to undo into")
+            return false
+        }
+        if frontmost.pid != pid {
+            Log.undo("esc fell through: frontmost app changed since conversion (was pid \(pid)/\(bundleId ?? "?"), now pid \(frontmost.pid)/\(frontmost.bundleID))")
+            return false
+        }
+        if snap.currentText.contains("\n") || snap.originalReading.contains("\n") {
+            selectLeftAndPastePreservingClipboard(
+                selecting: snap.currentText.count,
+                text: snap.originalReading)
+        } else {
+            guard swapCurrentText(
+                backing: snap.backing,
+                currentText: snap.currentText,
+                replacement: snap.originalReading,
+                verbose: false
+            ) else {
+                return false
+            }
+        }
+        let ageMs = Int(Date().timeIntervalSince(snap.timestamp) * 1000)
+        let backspaces = snap.currentText.count
+        Log.undo("reverted batch '\(snap.currentText)' → '\(snap.originalReading)' after \(ageMs)ms (clipboard, \(backspaces) backspaces, \(snap.items.count) items)")
+        return true
+    case .ax:
+        Log.undo("batch session on AX backing is unsupported")
+        return false
+    }
 }
 
 /// AX-backed undo. Validates exactly: same focused element, text at the
@@ -103,12 +160,6 @@ private func undoOnAX(
 /// just "same frontmost app pid as when we injected." Synthesizes
 /// `currentText.count` backspaces (grapheme count — what BackSpace eats
 /// in most apps) and types the original reading back via `postUnicode`.
-///
-/// Best-effort: if the user typed extra characters or moved the caret
-/// after the conversion, the backspaces will eat their typing. Acceptable
-/// trade-off — users almost always press Esc immediately after seeing the
-/// wrong conversion, and the alternative is "Esc-undo doesn't work in
-/// Electron apps" which is its own confusing footgun.
 private func undoOnClipboard(
     _ snap: ConversionSession,
     bundleId: String?,
@@ -124,7 +175,10 @@ private func undoOnClipboard(
     }
     let currentText = snap.currentText
     let backspaces = currentText.count
-    replaceByBackspaceRetype(deleting: backspaces, insert: snap.originalReading)
+    replaceByBackspaceRetype(
+        deleting: backspaces,
+        insert: snap.originalReading,
+        preserveClipboard: currentText.contains("\n") || snap.originalReading.contains("\n"))
     let ageMs = Int(Date().timeIntervalSince(snap.timestamp) * 1000)
     Log.undo("reverted '\(currentText)' → '\(snap.originalReading)' after \(ageMs)ms (clipboard, \(backspaces) backspaces)")
     return true

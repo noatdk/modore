@@ -152,6 +152,111 @@ private func convertTrailingASCIISuffix(
     return converted
 }
 
+/// Convert one standalone pickup line without touching the clipboard or
+/// session store. Used for multiline/multi-cursor picks where each line needs
+/// its own conversion result before the host reconstructs a pasteable blob.
+private struct StandalonePickupResult {
+    let replacement: String
+    let candidates: [MozcBridge.Candidate]
+}
+
+private func computeStandalonePickupResult(
+    _ pickedText: String,
+    request: PickupRequest,
+    appId: String?
+) -> StandalonePickupResult? {
+    let (asciiPrefix, rawTail, preservedSuffix) = splitConvertibleASCIIWindow(pickedText)
+    let (contextPrefix, romajiTail) = splitBeforeLastASCIIWord(rawTail)
+    let (romajiCore, romajiSuffix) = splitTrailingASCIIPunctuation(romajiTail)
+    let convertedSuffix = convertTrailingASCIISuffix(romajiSuffix, request: request) + preservedSuffix
+    if romajiCore.isEmpty {
+        let replacement = asciiPrefix + contextPrefix + convertedSuffix
+        guard replacement != pickedText else { return nil }
+        let baseCandidates = [candidateFromValue(replacement, group: .input)]
+        let scriptSpan = mdr_span_t(span_start_byte: 0, span_end_byte: 0,
+                                    romaji: nil, romaji_len: 0)
+        let finalReplacement = ModoreScript.replacement(
+            appId: appId, span: scriptSpan, candidates: candidateValues(baseCandidates)) ?? replacement
+        let snapshotCandidateValues = ModoreScript.candidates(
+            appId: appId, list: candidateValues(baseCandidates), currentIndex: 0)
+            ?? candidateValues(baseCandidates)
+        let snapshotCandidates = applyScriptCandidateValues(
+            snapshotCandidateValues, onto: baseCandidates)
+        return StandalonePickupResult(
+            replacement: finalReplacement,
+            candidates: snapshotCandidates)
+    }
+
+    let (leadingJunk, romajiBody) = splitLeadingASCIIJunkBeforeLowercase(romajiCore)
+    let (acronymHead, mozcInput) = splitAcronymHead(romajiBody)
+    let frozenPrefix = asciiPrefix + contextPrefix + leadingJunk + acronymHead
+
+    let baseReplacement: String
+    let baseCandidates: [MozcBridge.Candidate]
+    if gClassifierEnabled,
+       let segResult = classifierSegmentedConvert(mozcInput, request: request) {
+        baseReplacement = frozenPrefix + segResult.replacement + convertedSuffix
+        baseCandidates = mapCandidateValues(segResult.candidates) {
+            frozenPrefix + $0.value + convertedSuffix
+        }
+    } else {
+        guard let result = callBackend(mozcInput, request: request, wantCandidates: true) else {
+            return nil
+        }
+        baseReplacement = frozenPrefix + result.replacement + convertedSuffix
+        baseCandidates = result.candidates.isEmpty
+            ? [candidateFromValue(baseReplacement)]
+            : mapCandidateValues(result.candidates) {
+                frozenPrefix + $0.value + convertedSuffix
+            }
+    }
+
+    let scriptSpan = mdr_span_t(span_start_byte: 0, span_end_byte: 0,
+                                romaji: nil, romaji_len: 0)
+    let replacement = ModoreScript.replacement(
+        appId: appId, span: scriptSpan, candidates: candidateValues(baseCandidates)) ?? baseReplacement
+    let snapshotCandidateValues = ModoreScript.candidates(
+        appId: appId, list: candidateValues(baseCandidates), currentIndex: 0)
+        ?? candidateValues(baseCandidates)
+    let snapshotCandidates = applyScriptCandidateValues(
+        snapshotCandidateValues, onto: baseCandidates)
+    return StandalonePickupResult(replacement: replacement, candidates: snapshotCandidates)
+}
+
+private func buildMulticursorBatchSession(
+    lines: [String],
+    request: PickupRequest,
+    appId: String?
+) -> BatchConversionSession? {
+    let frontmost = FrontmostApp.describe()
+    let backing = ConversionBacking.clipboard(
+        frontmostBundleId: frontmost?.bundleID ?? appId,
+        frontmostPid: frontmost?.pid ?? FrontmostApp.currentPid() ?? 0)
+
+    var items: [ConversionSession] = []
+    items.reserveCapacity(lines.count)
+    for (idx, line) in lines.enumerated() {
+        guard let result = computeStandalonePickupResult(line, request: request, appId: appId) else {
+            Log.pickup("batch line[\(idx)] pickup failed: \(line)")
+            return nil
+        }
+        let sessionSeed = normalizeCommittedCandidateState(
+            replacement: result.replacement,
+            candidates: result.candidates)
+        Log.pickup("batch line[\(idx)] pick -> \(line) | replace -> \(result.replacement) | alts=\(sessionSeed.candidates.count)")
+        items.append(
+            ConversionSession(
+                backing: backing,
+                originalReading: line,
+                candidates: sessionSeed.candidates,
+                candidateIndex: sessionSeed.currentIndex,
+                timestamp: Date()))
+    }
+    let batch = BatchConversionSession(backing: backing, items: items, timestamp: Date())
+    Log.pickup("batch pickup values: \(batch.originalReading) -> \(batch.currentText)")
+    return batch
+}
+
 /// Strip leading ASCII punctuation only when the first real alnum is lowercase.
 ///
 /// This keeps quoted HTML text like `"gion` from tripping the acronym split
@@ -329,6 +434,11 @@ private func commitSession(_ session: ConversionSession) {
     if gCandidatePanelMode == .onConvert {
         CandidatePanel.shared.show(session: session)
     }
+}
+
+private func commitSession(_ session: BatchConversionSession) {
+    ConversionSessionStore.set(session)
+    CandidatePanel.shared.hide()
 }
 
 // MARK: - Shadow-buffer pickup (zero-latency fallback before clipboard)
@@ -1073,6 +1183,31 @@ func doClipboardPickup(_ request: PickupRequest = .init()) {
     if pickedText.hasSuffix("\n") { pickedText.removeLast() }
     if pickedText.hasSuffix("\r") { pickedText.removeLast() }
 
+    if let lines = splitMulticursorLines(pickedText), lines.count > 1 {
+        guard let batch = buildMulticursorBatchSession(
+            lines: lines,
+            request: request,
+            appId: frontmostBundleID
+        ) else {
+            Log.clipboard("nothing to convert (multi-cursor batch could not be built)")
+            if didForceSelect {
+                postKey(kVK_RightArrow)
+            }
+            return
+        }
+        guard batch.currentText != pickedText else {
+            Log.clipboard("nothing to convert (multi-cursor batch already converted)")
+            if didForceSelect {
+                postKey(kVK_RightArrow)
+            }
+            return
+        }
+        Log.clipboard("multicursor replace -> \(batch.currentText) (lines=\(lines.count), items=\(batch.items.count))")
+        postPasteFromClipboard(batch.currentText)
+        commitSession(batch)
+        return
+    }
+
     let clipboardSelection = pickedText
     let (clipboardPrefix, clipboardTarget) = splitTrailingClipboardTarget(
         pickedText,
@@ -1255,6 +1390,29 @@ func runConversionOnAcquiredText(
         Log.pickup("scripted acquire: empty text — nothing to convert")
         return
     }
+
+    if let lines = splitMulticursorLines(pickedText), lines.count > 1 {
+        guard let batch = buildMulticursorBatchSession(
+            lines: lines,
+            request: request,
+            appId: appId
+        ) else {
+            Log.pickup("scripted acquire: multicursor batch could not be built")
+            return
+        }
+        guard batch.currentText != pickedText else {
+            Log.pickup("scripted acquire: multicursor batch already converted")
+            return
+        }
+        Log.pickup("scripted acquire multicursor replace -> \(batch.currentText) (lines=\(lines.count), items=\(batch.items.count))")
+        let (_, restoreSavedClipboard) = guardClipboard(
+            restoreDelayMs: gClipboardTimings.restoreClipboardDelayMs)
+        defer { restoreSavedClipboard() }
+        postPasteFromClipboard(batch.currentText)
+        commitSession(batch)
+        return
+    }
+
     Log.pickup("scripted acquire pick: \(pickedText)")
 
     let (asciiPrefix, rawTail, preservedSuffix) = splitConvertibleASCIIWindow(pickedText)

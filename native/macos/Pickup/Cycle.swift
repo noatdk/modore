@@ -16,6 +16,17 @@
 import ApplicationServices
 import Cocoa
 
+private enum CycleDirection {
+    case next
+    case previous
+}
+
+private struct CycleTransition {
+    let session: ConversionSession
+    let from: String
+    let to: String
+}
+
 /// Worker-queue entry point for the dedicated cycle chord (e.g. when
 /// `[conversion] cycle_modifier` binds Alt on top of the conversion
 /// hotkey). Always logs a reason on no-op so a triage thread can tell
@@ -57,52 +68,12 @@ func cycleNext(verbose: Bool) -> Bool {
         }
         return false
     }
-
-    // Past this point a session *is* in scope, so any no-op is a real
-    // failure we want surfaced even on the primary-chord path. Without
-    // this, single-key cycle silently degrades to fresh-convert and the
-    // user only sees "stuck on first candidate."
-    if snap.candidateIndex < 0 && gCycleFromUndone == .pass {
-        Log.cycle("session is in undone state; cycle_from_undone=pass — no-op")
-        return false
+    switch snap {
+    case .single(let session):
+        return cycleNext(single: session, verbose: verbose)
+    case .batch(let session):
+        return cycleBatch(session, direction: .next, verbose: verbose)
     }
-
-    guard let nextIndex = snap.nextCandidateIndex() else {
-        Log.cycle("session has no candidates to cycle through (single-result conversion)")
-        return false
-    }
-
-    let from = snap.currentText
-    let to = (nextIndex < snap.candidates.count) ? snap.candidates[nextIndex].value : from
-
-    // Session-in-scope failures (focus changed, span shifted, frontmost
-    // app changed) are always logged — see comment above the
-    // candidate-index gates.
-    let swapped: Bool
-    switch snap.backing {
-    case .ax(let element, let spanStart):
-        swapped = cycleOnAX(snap, element: element, spanStart: spanStart, to: to, verbose: true)
-    case .clipboard(let bundleId, let pid):
-        swapped = cycleOnClipboard(snap, bundleId: bundleId, pid: pid, to: to, verbose: true)
-    }
-    if !swapped { return false }
-
-    var refreshed: ConversionSession? = nil
-    ConversionSessionStore.update { session in
-        session.candidateIndex = nextIndex
-        session.timestamp = Date()
-        refreshed = session
-    }
-    let totalN = snap.candidates.count
-    Log.cycle("'\(from)' → '\(to)' (\(nextIndex + 1)/\(totalN))")
-    // Both panel modes show on cycle (on_cycle = "first cycle reveals";
-    // on_convert was already visible from the convert path). show() is
-    // idempotent — repeated calls during a cycle chain just refresh the
-    // highlighted row.
-    if gCandidatePanelMode != .none, let session = refreshed {
-        CandidatePanel.shared.show(session: session)
-    }
-    return true
 }
 
 /// Reverse cycle the active session. Mirrors `cycleNext` but steps to
@@ -116,51 +87,161 @@ func cyclePrevious(verbose: Bool) -> Bool {
         }
         return false
     }
-    guard snap.candidateIndex >= 0 else {
-        if verbose {
-            Log.cycle("session is in undone state; katakana chord keeps katakana behavior")
-        }
+    switch snap {
+    case .single(let session):
+        return cyclePrevious(single: session, verbose: verbose)
+    case .batch(let session):
+        return cycleBatch(session, direction: .previous, verbose: verbose)
+    }
+}
+
+@discardableResult
+private func cycleNext(single snap: ConversionSession, verbose: Bool) -> Bool {
+    guard let transition = makeCycleTransition(snap, direction: .next, verbose: verbose) else {
         return false
     }
-    guard let prevIndex = snap.previousCandidateIndex() else {
-        Log.cycle("session has no candidates to cycle backward through (single-result conversion)")
+    guard swapCurrentText(
+        backing: snap.backing,
+        currentText: transition.from,
+        replacement: transition.to,
+        verbose: verbose
+    ) else {
         return false
     }
-
-    let from = snap.currentText
-    let to = snap.candidates[prevIndex].value
-
-    let swapped: Bool
-    switch snap.backing {
-    case .ax(let element, let spanStart):
-        swapped = cycleOnAX(snap, element: element, spanStart: spanStart, to: to, verbose: true)
-    case .clipboard(let bundleId, let pid):
-        swapped = cycleOnClipboard(snap, bundleId: bundleId, pid: pid, to: to, verbose: true)
-    }
-    if !swapped { return false }
-
-    var refreshed: ConversionSession? = nil
-    ConversionSessionStore.update { session in
-        session.candidateIndex = prevIndex
-        session.timestamp = Date()
-        refreshed = session
-    }
+    ConversionSessionStore.set(transition.session)
     let totalN = snap.candidates.count
-    Log.cycle("'\(from)' ← '\(to)' (\(prevIndex + 1)/\(totalN))")
-    if gCandidatePanelMode != .none, let session = refreshed {
-        CandidatePanel.shared.show(session: session)
+    Log.cycle("'\(transition.from)' → '\(transition.to)' (\(transition.session.candidateIndex + 1)/\(totalN))")
+    if gCandidatePanelMode != .none {
+        CandidatePanel.shared.show(session: transition.session)
     }
     return true
+}
+
+@discardableResult
+private func cyclePrevious(single snap: ConversionSession, verbose: Bool) -> Bool {
+    guard let transition = makeCycleTransition(snap, direction: .previous, verbose: verbose) else {
+        return false
+    }
+    guard swapCurrentText(
+        backing: snap.backing,
+        currentText: transition.from,
+        replacement: transition.to,
+        verbose: verbose
+    ) else {
+        return false
+    }
+    ConversionSessionStore.set(transition.session)
+    let totalN = snap.candidates.count
+    Log.cycle("'\(transition.from)' ← '\(transition.to)' (\(transition.session.candidateIndex + 1)/\(totalN))")
+    if gCandidatePanelMode != .none {
+        CandidatePanel.shared.show(session: transition.session)
+    }
+    return true
+}
+
+@discardableResult
+private func cycleBatch(_ snap: BatchConversionSession, direction: CycleDirection, verbose: Bool) -> Bool {
+    let from = snap.currentText
+    var updated = snap
+    var anyChanged = false
+    for idx in updated.items.indices {
+        guard let transition = makeCycleTransition(updated.items[idx], direction: direction, verbose: verbose) else {
+            continue
+        }
+        Log.cycle("batch item[\(idx)] '\(transition.from)' \(direction == .next ? "→" : "←") '\(transition.to)'")
+        updated.items[idx] = transition.session
+        anyChanged = true
+    }
+    guard anyChanged else {
+        Log.cycle("batch session has no candidates to cycle \(direction == .next ? "through" : "backward through")")
+        return false
+    }
+
+    let to = updated.currentText
+    guard swapCurrentText(
+        backing: snap.backing,
+        currentText: from,
+        replacement: to,
+        verbose: verbose
+    ) else {
+        return false
+    }
+    updated.timestamp = Date()
+    ConversionSessionStore.set(updated)
+    Log.cycle("batch '\(from)' \(direction == .next ? "→" : "←") '\(to)' (\(updated.items.count) items)")
+    CandidatePanel.shared.hide()
+    return true
+}
+
+private func makeCycleTransition(
+    _ snap: ConversionSession,
+    direction: CycleDirection,
+    verbose: Bool
+) -> CycleTransition? {
+    switch direction {
+    case .next:
+        if snap.candidateIndex < 0 && gCycleFromUndone == .pass {
+            Log.cycle("session is in undone state; cycle_from_undone=pass — no-op")
+            return nil
+        }
+        guard let nextIndex = snap.nextCandidateIndex() else {
+            Log.cycle("session has no candidates to cycle through (single-result conversion)")
+            return nil
+        }
+        var updated = snap
+        updated.candidateIndex = nextIndex
+        updated.timestamp = Date()
+        return CycleTransition(session: updated, from: snap.currentText, to: snap.candidates[nextIndex].value)
+    case .previous:
+        guard snap.candidateIndex >= 0 else {
+            if verbose {
+                Log.cycle("session is in undone state; katakana chord keeps katakana behavior")
+            }
+            return nil
+        }
+        guard let prevIndex = snap.previousCandidateIndex() else {
+            Log.cycle("session has no candidates to cycle backward through (single-result conversion)")
+            return nil
+        }
+        var updated = snap
+        updated.candidateIndex = prevIndex
+        updated.timestamp = Date()
+        return CycleTransition(session: updated, from: snap.currentText, to: snap.candidates[prevIndex].value)
+    }
+}
+
+func swapCurrentText(
+    backing: ConversionBacking,
+    currentText: String,
+    replacement: String,
+    verbose: Bool
+) -> Bool {
+    switch backing {
+    case .ax(let element, let spanStart):
+        return swapOnAX(
+            currentText: currentText,
+            element: element,
+            spanStart: spanStart,
+            replacement: replacement,
+            verbose: verbose)
+    case .clipboard(let bundleId, let pid):
+        return swapOnClipboard(
+            currentText: currentText,
+            bundleId: bundleId,
+            pid: pid,
+            replacement: replacement,
+            verbose: verbose)
+    }
 }
 
 /// AX-backed cycle. Same validation gates as the undo path: same focused
 /// element, current text at the recorded span. Refuses on any mismatch
 /// rather than clobber whatever the user is now editing.
-private func cycleOnAX(
-    _ snap: ConversionSession,
+private func swapOnAX(
+    currentText: String,
     element: AXUIElement,
     spanStart: Int,
-    to next: String,
+    replacement next: String,
     verbose: Bool
 ) -> Bool {
     guard let field = readFocusedField() else {
@@ -175,13 +256,12 @@ private func cycleOnAX(
     if field.autocomplete == "both",
        isChromiumOmnibox(field: field, appId: appId) {
         return cycleChromiumOmnibox(
-            snap,
+            currentText: currentText,
             field: field,
             spanStart: spanStart,
-            to: next,
+            replacement: next,
             verbose: verbose)
     }
-    let currentText = snap.currentText
     let currentLen = currentText.utf16.count
     let spanEnd = spanStart + currentLen
     guard let textAtSpan = sliceUTF16(field.value, start: spanStart, end: spanEnd) else {
@@ -207,13 +287,12 @@ private func cycleOnAX(
 /// converted word may not be at position 0 when the user has built a
 /// multi-word omnibox query across successive conversions.
 private func cycleChromiumOmnibox(
-    _ snap: ConversionSession,
+    currentText: String,
     field: FocusedField,
     spanStart: Int,
-    to next: String,
+    replacement next: String,
     verbose: Bool
 ) -> Bool {
-    let currentText = snap.currentText
     let spanEnd = spanStart + currentText.utf16.count
     guard let textAtSpan = sliceUTF16(field.value, start: spanStart, end: spanEnd),
           textAtSpan == currentText else {
@@ -248,17 +327,13 @@ private func cycleChromiumOmnibox(
     return true
 }
 
-/// Clipboard-fallback cycle. Same weak gates as the clipboard-undo path
-/// (frontmost app pid match) and the same backspace + retype trick. The
-/// risk is identical: if the user typed extra characters after the
-/// conversion, our backspaces eat them. In practice the
-/// "any-non-chord-keystroke clears the session" rule in the tap callback
-/// rules out the typed-after case for the primary-chord cycle path.
-private func cycleOnClipboard(
-    _ snap: ConversionSession,
+/// Clipboard-fallback swap. Same weak gates as the clipboard-undo path
+/// (frontmost app pid match) and the same backspace + retype trick.
+private func swapOnClipboard(
+    currentText: String,
     bundleId: String?,
     pid: pid_t,
-    to next: String,
+    replacement next: String,
     verbose: Bool
 ) -> Bool {
     guard let frontmost = FrontmostApp.describe() else {
@@ -269,7 +344,13 @@ private func cycleOnClipboard(
         if verbose { Log.cycle("fell through: frontmost app changed since conversion (was pid \(pid)/\(bundleId ?? "?"), now pid \(frontmost.pid)/\(frontmost.bundleID))") }
         return false
     }
-    let currentText = snap.currentText
-    replaceByBackspaceRetype(deleting: currentText.count, insert: next)
+    if currentText.contains("\n") || next.contains("\n") {
+        selectLeftAndPastePreservingClipboard(selecting: currentText.count, text: next)
+    } else {
+        replaceByBackspaceRetype(
+            deleting: currentText.count,
+            insert: next,
+            preserveClipboard: false)
+    }
     return true
 }
