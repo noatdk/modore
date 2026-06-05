@@ -20,6 +20,7 @@ mkdir -p ~/.config/modore/scripts
 cp scripts/example-obsidian.lua ~/.config/modore/scripts/md.obsidian.lua
 cp scripts/example-discord.lua ~/.config/modore/scripts/com.hnc.Discord.lua
 cp scripts/example-chrome.lua ~/.config/modore/scripts/com.google.Chrome.lua
+cp scripts/example-vscode.lua ~/.config/modore/scripts/com.microsoft.VSCode.lua
 ```
 
 The shipped examples are intentionally opinionated about the quirks we
@@ -31,6 +32,8 @@ have already observed:
   suggestion model stays aligned with the committed text.
 - `example-discord.lua` keeps Discord on the selection-sync route and
   prefers the focused selection when it exists.
+- `example-vscode.lua` keeps VS Code on the keystroke route so Monaco
+  avoids the generic AX value-write path entirely.
 - `example-obsidian.lua` keeps Obsidian on the AX route and leaves AX
   write fallback to the host baseline.
 

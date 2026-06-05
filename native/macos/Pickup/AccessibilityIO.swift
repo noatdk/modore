@@ -30,6 +30,137 @@ private struct AXFocusBurst {
 
 private var gAXFocusBurst = AXFocusBurst()
 
+private final class AXWriteWaitContext {
+    let runLoop: CFRunLoop
+    var notified = false
+
+    init(runLoop: CFRunLoop) {
+        self.runLoop = runLoop
+    }
+}
+
+private func axWriteObserverCallback(
+    _ observer: AXObserver,
+    _ element: AXUIElement,
+    _ notification: CFString,
+    _ refcon: UnsafeMutableRawPointer?
+) {
+    guard let refcon else { return }
+    let ctx = Unmanaged<AXWriteWaitContext>.fromOpaque(refcon).takeUnretainedValue()
+    ctx.notified = true
+    Log.ax("write observer fired notification=\(notification as String)")
+    CFRunLoopStop(ctx.runLoop)
+}
+
+private func axAttributeIsSettable(_ element: AXUIElement, _ attr: CFString) -> Bool {
+    var settable = DarwinBoolean(false)
+    let rc = AXUIElementIsAttributeSettable(element, attr, &settable)
+    return rc == .success && settable.boolValue
+}
+
+private func axCopyTextState(_ element: AXUIElement) -> (value: String, selectedRange: CFRange?)? {
+    let attrs = [
+        kAXValueAttribute as CFString,
+        kAXSelectedTextRangeAttribute as CFString,
+    ] as CFArray
+    var valuesRef: CFArray?
+    let rc = AXUIElementCopyMultipleAttributeValues(
+        element,
+        attrs,
+        AXCopyMultipleAttributeOptions(rawValue: 0),
+        &valuesRef
+    )
+    guard rc == .success,
+          let values = valuesRef as NSArray?,
+          values.count > 0 else {
+        return nil
+    }
+    guard let value = values[0] as? String else { return nil }
+    var selectedRange: CFRange?
+    if values.count > 1, let axValue = values[1] as! AXValue? {
+        var cfRange = CFRange(location: 0, length: 0)
+        if AXValueGetValue(axValue, .cfRange, &cfRange) {
+            selectedRange = cfRange
+        }
+    }
+    return (value: value, selectedRange: selectedRange)
+}
+
+private func axWaitForTextCommit(
+    element: AXUIElement,
+    expected: String,
+    timeout: TimeInterval
+) -> Bool {
+    let deadline = Date().addingTimeInterval(timeout)
+    var pid: pid_t = 0
+    guard AXUIElementGetPid(element, &pid) == .success else {
+        Log.ax("write wait: failed to resolve pid")
+        return false
+    }
+
+    var observer: AXObserver?
+    let observerRC = AXObserverCreate(pid, axWriteObserverCallback, &observer)
+    guard observerRC == .success, let observer else {
+        Log.ax("write wait: observer create failed rc=\(observerRC.rawValue); falling back to run-loop poll")
+        // Fall back to a short run-loop wait without notifications.
+        while Date() < deadline {
+            if let snap = axCopyTextState(element), snap.value == expected {
+                Log.ax("write wait: settled during fallback poll")
+                return true
+            }
+            RunLoop.current.run(mode: .default, before: min(Date().addingTimeInterval(0.02), deadline))
+        }
+        Log.ax("write wait: fallback poll timed out")
+        return false
+    }
+
+    let ctx = AXWriteWaitContext(runLoop: CFRunLoopGetCurrent())
+    let refcon = Unmanaged.passUnretained(ctx).toOpaque()
+    let notifications = [kAXValueChangedNotification, kAXSelectedTextChangedNotification]
+
+    var observerRegistered = false
+    for notification in notifications {
+        let rc = AXObserverAddNotification(observer, element, notification as CFString, refcon)
+        if rc == .success || rc == .notificationAlreadyRegistered {
+            observerRegistered = true
+            Log.ax("write wait: observing \(notification) rc=\(rc.rawValue)")
+        } else {
+            Log.ax("write wait: observe \(notification) failed rc=\(rc.rawValue)")
+        }
+    }
+    guard observerRegistered else {
+        Log.ax("write wait: no notifications registered")
+        return false
+    }
+
+    let source = AXObserverGetRunLoopSource(observer)
+    CFRunLoopAddSource(CFRunLoopGetCurrent(), source, .defaultMode)
+    Log.ax("write wait: observer armed timeout=\(Int(timeout * 1000))ms")
+    defer {
+        CFRunLoopRemoveSource(CFRunLoopGetCurrent(), source, .defaultMode)
+        for notification in notifications {
+            _ = AXObserverRemoveNotification(observer, element, notification as CFString)
+        }
+    }
+
+    while Date() < deadline {
+        if let snap = axCopyTextState(element), snap.value == expected {
+            Log.ax("write wait: settled without notification")
+            return true
+        }
+        let remaining = deadline.timeIntervalSinceNow
+        if remaining <= 0 { break }
+        let slice = min(0.02, remaining)
+        _ = RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(slice))
+        if ctx.notified, let snap = axCopyTextState(element), snap.value == expected {
+            Log.ax("write wait: settled after notification")
+            return true
+        }
+    }
+    Log.ax("write wait: timed out expectedLen=\(expected.utf16.count)")
+    return false
+}
+
 struct FocusedField {
     let element: AXUIElement
     let value: String
@@ -209,23 +340,25 @@ func replaceRange(in element: AXUIElement, start: Int, end: Int, replacement: St
     // starts from a contaminated [start..end] selection that its
     // Shift+Opt+Left logic doesn't know how to handle, and ends up
     // pasting at the caret without replacing the original span.
-    var beforeRef: CFTypeRef?
-    let rb = AXUIElementCopyAttributeValue(
-        element,
-        kAXValueAttribute as CFString,
-        &beforeRef
-    )
-    guard rb == .success, let before = beforeRef as? String else { return false }
+    let messagingTimeout: Float = 0.1
+    _ = AXUIElementSetMessagingTimeout(element, messagingTimeout)
+    Log.ax("replace begin start=\(start) end=\(end) replLen=\(replacement.utf16.count) timeout=\(messagingTimeout)s\(FrontmostApp.logSuffix())")
+
+    guard axAttributeIsSettable(element, kAXSelectedTextRangeAttribute as CFString),
+          axAttributeIsSettable(element, kAXSelectedTextAttribute as CFString) else {
+        Log.ax("replace preflight failed: attributes not settable\(FrontmostApp.logSuffix())")
+        return false
+    }
+
+    guard let beforeSnap = axCopyTextState(element) else { return false }
+    let before = beforeSnap.value
     let beforeU16 = Array(before.utf16)
     guard start >= 0, end <= beforeU16.count, start <= end else { return false }
 
-    var origRangeRef: CFTypeRef?
-    let rrc = AXUIElementCopyAttributeValue(
-        element,
-        kAXSelectedTextRangeAttribute as CFString,
-        &origRangeRef
-    )
-    let origRangeValue: AXValue? = (rrc == .success) ? (origRangeRef as! AXValue?) : nil
+    let origRangeValue: AXValue? = beforeSnap.selectedRange.flatMap {
+        var range = $0
+        return AXValueCreate(.cfRange, &range)
+    }
 
     var range = CFRange(location: start, length: end - start)
     guard let rangeValue = AXValueCreate(.cfRange, &range) else { return false }
@@ -234,46 +367,41 @@ func replaceRange(in element: AXUIElement, start: Int, end: Int, replacement: St
         kAXSelectedTextRangeAttribute as CFString,
         rangeValue
     )
-    guard r1 == .success else { return false }
+    guard r1 == .success else {
+        Log.ax("replace set selected range failed rc=\(r1.rawValue)\(FrontmostApp.logSuffix())")
+        return false
+    }
+    Log.ax("replace set selected range rc=\(r1.rawValue)")
     let r2 = AXUIElementSetAttributeValue(
         element,
         kAXSelectedTextAttribute as CFString,
         replacement as CFString
     )
     guard r2 == .success else {
+        Log.ax("replace set selected text failed rc=\(r2.rawValue)\(FrontmostApp.logSuffix())")
         if let orv = origRangeValue {
             _ = AXUIElementSetAttributeValue(
                 element, kAXSelectedTextRangeAttribute as CFString, orv)
         }
         return false
     }
+    Log.ax("replace set selected text rc=\(r2.rawValue)")
 
-    var afterRef: CFTypeRef?
-    let ra = AXUIElementCopyAttributeValue(
-        element,
-        kAXValueAttribute as CFString,
-        &afterRef
-    )
-    guard ra == .success, let after = afterRef as? String else {
-        if let orv = origRangeValue {
-            _ = AXUIElementSetAttributeValue(
-                element, kAXSelectedTextRangeAttribute as CFString, orv)
-        }
-        return false
-    }
     let expected = String(utf16CodeUnits: beforeU16, count: start)
         + replacement
         + String(utf16CodeUnits: Array(beforeU16[end..<beforeU16.count]),
                  count: beforeU16.count - end)
-    guard after == expected else {
-        Log.ax("replace verify failed: AX write returned success but value did not match expected (got len=\(after.utf16.count), want len=\(expected.utf16.count))\(FrontmostApp.logSuffix())")
-        if let orv = origRangeValue {
-            _ = AXUIElementSetAttributeValue(
-                element, kAXSelectedTextRangeAttribute as CFString, orv)
-        }
-        return false
+    if axWaitForTextCommit(element: element, expected: expected, timeout: 0.12) {
+        Log.ax("replace verified ok expectedLen=\(expected.utf16.count)")
+        return true
     }
-    return true
+
+    Log.ax("replace verify failed: AX write returned success but value did not match expected (want len=\(expected.utf16.count))\(FrontmostApp.logSuffix())")
+    if let orv = origRangeValue {
+        _ = AXUIElementSetAttributeValue(
+            element, kAXSelectedTextRangeAttribute as CFString, orv)
+    }
+    return false
 }
 
 /// Diagnostic-only snapshot of the focused field's AX state. Reads role,
