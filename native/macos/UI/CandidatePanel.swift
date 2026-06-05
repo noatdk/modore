@@ -8,10 +8,10 @@
 //
 // Rendering shape: a non-activating borderless NSPanel, positioned near the
 // caret on the AX path (via `kAXBoundsForRangeParameterizedAttribute`) and
-// near the mouse cursor on the clipboard-fallback path (where we have no
-// AX element to query). The panel never becomes key — the user keeps typing
-// into their app, and the cycle hotkey continues to drive selection. This
-// file owns *display only*; gesture wiring lives in Pickup/Cycle/Undo.
+// under the menu-bar status item when cursor geometry can't be recovered.
+// The panel never becomes key — the user keeps typing into their app, and
+// the cycle hotkey continues to drive selection. This file owns *display
+// only*; gesture wiring lives in Pickup/Cycle/Undo.
 //
 // Threading: every public entry point is safe from any queue (the worker
 // queue `kHotkeyTapQueue` is the usual caller). Anchor resolution can run
@@ -44,16 +44,18 @@ final class CandidatePanel {
     /// session clear). nil when no auto-hide is scheduled.
     private var autoHideWork: DispatchWorkItem?
 
-    /// Anchor for positioning the panel. AX path carries a screen-coord rect
-    /// (top-left origin, AX-style); clipboard path carries an AppKit point
-    /// (bottom-left origin). Resolving once at call time keeps the AppKit
-    /// hop free of AX/AppKit coordinate juggling.
+    /// Anchor for positioning the panel. The AX path carries a screen-coord
+    /// rect (top-left origin, AX-style); fallback paths carry AppKit screen
+    /// coords. Resolving once at call time keeps the AppKit hop free of
+    /// AX/AppKit coordinate juggling.
     enum Anchor {
         /// AX-derived span rect, in AX global coords (top-left origin from
         /// the primary screen). Converted to AppKit on the main thread.
         case axRect(CGRect)
         /// Mouse cursor in AppKit screen coords (bottom-left origin).
         case mousePoint(NSPoint)
+        /// Menu-bar button frame in AppKit screen coords (bottom-left origin).
+        case statusItemButtonFrame(NSRect)
     }
 
     /// Show the candidate list for a session. Safe from any queue.
@@ -92,10 +94,9 @@ final class CandidatePanel {
             // implement this.
             switch caretRect(in: element, start: spanStart, length: len) {
             case .ok(let rect):
-                Log.panel("anchor=axRect via AXBoundsForRange role=\(role) rect=\(formatRect(rect))\(FrontmostApp.logSuffix())")
                 return .axRect(rect)
-            case .fail(let reason):
-                Log.panel("AXBoundsForRange failed: \(reason) — falling through (role=\(role))")
+            case .fail:
+                break
             }
             // Next best: the focused element's own frame. Chromium-based
             // apps (Chrome, Edge, Electron) refuse the per-range
@@ -103,15 +104,19 @@ final class CandidatePanel {
             // input element.
             switch elementFrame(of: element) {
             case .ok(let rect):
-                Log.panel("anchor=axRect via element frame role=\(role) rect=\(formatRect(rect))\(FrontmostApp.logSuffix())")
-                return .axRect(rect)
-            case .fail(let reason):
-                Log.panel("element frame failed: \(reason) — falling through (role=\(role))")
+                if isMeaningfulCaretFrame(rect, role: role) {
+                    return .axRect(rect)
+                }
+            case .fail:
+                break
             }
-            // Last resort: mouse cursor. Usually nowhere near the caret,
-            // but better than off-screen.
+            if let frame = statusItemButtonFrame() {
+                return .statusItemButtonFrame(frame)
+            }
+            // Absolute last resort: mouse cursor. Usually nowhere near the
+            // caret, but better than off-screen if the menu-bar button isn't
+            // ready yet.
             let mouse = NSEvent.mouseLocation
-            Log.panel("anchor=mouse fallback x=\(Int(mouse.x)) y=\(Int(mouse.y))\(FrontmostApp.logSuffix())")
             return .mousePoint(mouse)
         case .clipboard(_, let pid):
             // Clipboard backing means the pickup path bailed before
@@ -129,13 +134,12 @@ final class CandidatePanel {
                 let role = axStringAttr(focused, kAXRoleAttribute) ?? "(role unknown)"
                 switch elementFrame(of: focused) {
                 case .ok(let rect):
-                    Log.panel("anchor=axRect via per-app focused-element role=\(role) rect=\(formatRect(rect))\(FrontmostApp.logSuffix())")
-                    return .axRect(rect)
-                case .fail(let reason):
-                    Log.panel("per-app focused-element frame failed: \(reason) role=\(role)")
+                    if isMeaningfulCaretFrame(rect, role: role) {
+                        return .axRect(rect)
+                    }
+                case .fail:
+                    break
                 }
-            } else if pid > 0 {
-                Log.panel("per-app focused-element lookup returned nil pid=\(pid)")
             }
             // System-wide focused element: cheaper than per-app (no pid),
             // but several apps publish focus only through the per-app path,
@@ -144,17 +148,58 @@ final class CandidatePanel {
                 let role = axStringAttr(focused, kAXRoleAttribute) ?? "(role unknown)"
                 switch elementFrame(of: focused) {
                 case .ok(let rect):
-                    Log.panel("anchor=axRect via system focused-element role=\(role) rect=\(formatRect(rect))\(FrontmostApp.logSuffix())")
-                    return .axRect(rect)
-                case .fail(let reason):
-                    Log.panel("system focused-element frame failed: \(reason) role=\(role)")
+                    if isMeaningfulCaretFrame(rect, role: role) {
+                        return .axRect(rect)
+                    }
+                case .fail:
+                    break
                 }
-            } else {
-                Log.panel("system focused-element lookup returned nil")
+            }
+            if let frame = statusItemButtonFrame() {
+                return .statusItemButtonFrame(frame)
             }
             let mouse = NSEvent.mouseLocation
-            Log.panel("anchor=mouse (clipboard backing) x=\(Int(mouse.x)) y=\(Int(mouse.y))\(FrontmostApp.logSuffix())")
             return .mousePoint(mouse)
+        }
+    }
+
+    /// Heuristic for deciding whether an AX rect is actually near a caret.
+    /// Window-sized frames from AXWindow are a common failure mode and should
+    /// not be used as a panel anchor.
+    private func isMeaningfulCaretFrame(_ rect: CGRect, role: String) -> Bool {
+        if role == "AXWindow" {
+            return false
+        }
+        guard let screen = NSScreen.screens.first(where: { $0.frame.intersects(rect) }) ?? NSScreen.main else {
+            return true
+        }
+        let visible = screen.visibleFrame
+        let screenArea = max(1, visible.width * visible.height)
+        let rectArea = rect.width * rect.height
+        // Reject huge frames that are likely the entire editor/window.
+        if rectArea >= screenArea * 0.20 {
+            return false
+        }
+        // Reject frames that hug the top-left origin and span most of the
+        // window, a common "focused window" result from Accessibility.
+        if rect.minX <= visible.minX + 8,
+           rect.minY <= visible.minY + 32,
+           rect.width >= visible.width * 0.5,
+           rect.height >= visible.height * 0.5 {
+            return false
+        }
+        return rect.width > 0 && rect.height > 0
+    }
+
+    /// Current status-item button frame in AppKit screen coords. The
+    /// candidate panel uses this as the fallback anchor when the active text
+    /// cursor can't be recovered meaningfully.
+    private func statusItemButtonFrame() -> NSRect? {
+        if Thread.isMainThread {
+            return gStatusItem?.buttonScreenFrame
+        }
+        return DispatchQueue.main.sync {
+            gStatusItem?.buttonScreenFrame
         }
     }
 
@@ -473,6 +518,27 @@ final class CandidatePanel {
                 y = belowY
             }
             target = NSPoint(x: p.x + 12, y: y)
+        case .statusItemButtonFrame(let buttonFrame):
+            // Menu-bar items typically drop down with a trailing-edge bias
+            // when they live on the right side of the bar. Use the item's
+            // actual button frame so the panel reads like a native menu.
+            let panelGap: CGFloat = 6
+            let visible = screen(containing: NSPoint(x: buttonFrame.midX,
+                                                     y: buttonFrame.minY))?
+                .visibleFrame ?? NSScreen.main?.visibleFrame
+                ?? NSScreen.screens.first?.visibleFrame
+                ?? .zero
+            let idealX: CGFloat
+            if buttonFrame.midX > visible.midX {
+                idealX = buttonFrame.maxX - size.width
+            } else {
+                idealX = buttonFrame.minX
+            }
+            let x = min(max(idealX, visible.minX + 4), visible.maxX - size.width - 4)
+            let y = min(max(buttonFrame.minY - size.height - panelGap,
+                            visible.minY + 4),
+                        visible.maxY - size.height - 4)
+            target = NSPoint(x: x, y: y)
         }
         return clamp(target, size: size)
     }

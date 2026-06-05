@@ -433,8 +433,12 @@ final class ModoreStatusItem: NSObject {
     /// origin). Used to anchor the debug overlay just below the menu-bar icon.
     /// Returns nil if the button's backing window isn't on screen yet.
     var buttonScreenFrame: NSRect? {
-        guard let button = item.button, let window = button.window else { return nil }
-        return window.convertToScreen(button.frame)
+        guard let button = item.button,
+              let window = button.window else { return nil }
+        // `button.frame` is view-local; convert the button bounds into window
+        // coordinates first, then project that rect into screen coordinates.
+        let windowRect = button.convert(button.bounds, to: nil)
+        return window.convertToScreen(windowRect)
     }
 
     @objc private func handleRevealConfig() {
