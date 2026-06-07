@@ -289,7 +289,7 @@ if let probeArg = CommandLine.arguments.first(where: { $0.hasPrefix("--probe-wor
         let data = (line + "\n").data(using: .utf8) ?? Data()
         if FileManager.default.fileExists(atPath: probeLogPath) {
             if let handle = try? FileHandle(forWritingTo: URL(fileURLWithPath: probeLogPath)) {
-                try? handle.seekToEnd()
+                _ = try? handle.seekToEnd()
                 try? handle.write(contentsOf: data)
                 try? handle.close()
             }
