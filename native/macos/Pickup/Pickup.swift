@@ -1261,10 +1261,33 @@ func doClipboardPickup(_ request: PickupRequest = .init()) {
             }
             return
         }
-        Log.clipboard("punctuation-only pickup -> \(replacement)")
+        let baseCandidates = [candidateFromValue(replacement, group: .input)]
+        let scriptSpan = mdr_span_t(span_start_byte: 0, span_end_byte: 0,
+                                    romaji: nil, romaji_len: 0)
+        let finalReplacement = ModoreScript.replacement(
+            appId: frontmostBundleID, span: scriptSpan, candidates: candidateValues(baseCandidates)) ?? replacement
+        let snapshotCandidateValues = ModoreScript.candidates(
+            appId: frontmostBundleID, list: candidateValues(baseCandidates), currentIndex: 0)
+            ?? candidateValues(baseCandidates)
+        let snapshotCandidates = applyScriptCandidateValues(
+            snapshotCandidateValues, onto: baseCandidates)
+        Log.clipboard("punctuation-only pickup -> \(finalReplacement) (alts=\(snapshotCandidates.count))")
+        let sessionSeed = normalizeCommittedCandidateState(
+            replacement: finalReplacement,
+            candidates: snapshotCandidates)
         postClipboardReplacement(
-            replacement,
+            finalReplacement,
             deleteBeforeInsert: deleteBeforeInsertCount)
+        let frontmost = FrontmostApp.describe()
+        let session = ConversionSession(
+            backing: .clipboard(
+                frontmostBundleId: frontmost?.bundleID,
+                frontmostPid: frontmost?.pid ?? 0),
+            originalReading: clipboardSelection,
+            candidates: sessionSeed.candidates,
+            candidateIndex: sessionSeed.currentIndex,
+            timestamp: Date())
+        commitSession(session)
         if didForceSelect {
             postKey(kVK_RightArrow)
         }
