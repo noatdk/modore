@@ -39,6 +39,22 @@ private final class AXWriteWaitContext {
     }
 }
 
+private func axElement(from ref: CFTypeRef?) -> AXUIElement? {
+    guard let ref, CFGetTypeID(ref) == AXUIElementGetTypeID() else { return nil }
+    return unsafeBitCast(ref, to: AXUIElement.self)
+}
+
+private func axValue(from ref: CFTypeRef?) -> AXValue? {
+    guard let ref, CFGetTypeID(ref) == AXValueGetTypeID() else { return nil }
+    return unsafeBitCast(ref, to: AXValue.self)
+}
+
+private func axValue(from any: Any?) -> AXValue? {
+    guard let any else { return nil }
+    let ref = any as CFTypeRef
+    return axValue(from: ref)
+}
+
 private func axWriteObserverCallback(
     _ observer: AXObserver,
     _ element: AXUIElement,
@@ -77,7 +93,7 @@ private func axCopyTextState(_ element: AXUIElement) -> (value: String, selected
     }
     guard let value = values[0] as? String else { return nil }
     var selectedRange: CFRange?
-    if values.count > 1, let axValue = values[1] as! AXValue? {
+    if values.count > 1, let axValue = axValue(from: values[1]) {
         var cfRange = CFRange(location: 0, length: 0)
         if AXValueGetValue(axValue, .cfRange, &cfRange) {
             selectedRange = cfRange
@@ -233,7 +249,10 @@ func readFocusedField() -> FocusedField? {
         Log.ax("returned no focused element\(FrontmostApp.logSuffix())")
         return nil
     }
-    let element = focused as! AXUIElement
+    guard let element = axElement(from: focused) else {
+        Log.ax("focused element is not an AXUIElement\(FrontmostApp.logSuffix())")
+        return nil
+    }
 
     // Identify the element for diagnostics
     var roleRef: CFTypeRef?
@@ -251,7 +270,8 @@ func readFocusedField() -> FocusedField? {
         return nil
     }
     guard let s = valueRef as? String else {
-        Log.ax("value on role=\(role) is not a String (type=\(String(describing: type(of: valueRef!))))\(FrontmostApp.logSuffix())")
+        let valueType = valueRef.map { String(describing: type(of: $0)) } ?? "nil"
+        Log.ax("value on role=\(role) is not a String (type=\(valueType))\(FrontmostApp.logSuffix())")
         return nil
     }
 
@@ -263,9 +283,9 @@ func readFocusedField() -> FocusedField? {
         kAXSelectedTextRangeAttribute as CFString,
         &rangeRef
     )
-    if r3 == .success, let rv = rangeRef {
+    if r3 == .success, let rv = axValue(from: rangeRef) {
         var cfRange = CFRange(location: 0, length: 0)
-        if AXValueGetValue(rv as! AXValue, .cfRange, &cfRange) {
+        if AXValueGetValue(rv, .cfRange, &cfRange) {
             selStart = cfRange.location
             selEnd = cfRange.location + cfRange.length
         }
@@ -421,7 +441,10 @@ func axSelectionSnapshot(label: String) {
         Log.ax("snap[\(label)] focused-element lookup failed: \(r1.rawValue)")
         return
     }
-    let element = focused as! AXUIElement
+    guard let element = axElement(from: focused) else {
+        Log.ax("snap[\(label)] focused element is not an AXUIElement")
+        return
+    }
 
     // Element identity. CFHash isn't a stable address but two AXUIElements
     // for the same underlying view hash equal, so this is enough to spot
@@ -449,8 +472,7 @@ func axSelectionSnapshot(label: String) {
     var parentRef: CFTypeRef?
     if AXUIElementCopyAttributeValue(
         element, kAXParentAttribute as CFString, &parentRef) == .success,
-       let parent = parentRef {
-        let parentEl = parent as! AXUIElement
+       let parentEl = axElement(from: parentRef) {
         var pRoleRef: CFTypeRef?
         if AXUIElementCopyAttributeValue(
             parentEl, kAXRoleAttribute as CFString, &pRoleRef) == .success {
@@ -475,9 +497,9 @@ func axSelectionSnapshot(label: String) {
     var rangeRef: CFTypeRef?
     if AXUIElementCopyAttributeValue(
         element, kAXSelectedTextRangeAttribute as CFString, &rangeRef) == .success,
-       let rv = rangeRef {
+       let rv = axValue(from: rangeRef) {
         var cfRange = CFRange(location: 0, length: 0)
-        if AXValueGetValue(rv as! AXValue, .cfRange, &cfRange) {
+        if AXValueGetValue(rv, .cfRange, &cfRange) {
             selDesc = "[\(cfRange.location),\(cfRange.location + cfRange.length)] len=\(cfRange.length)"
         }
     }
@@ -515,8 +537,8 @@ func systemWideFocusedElement() -> AXUIElement? {
     var focusedRef: CFTypeRef?
     let r = AXUIElementCopyAttributeValue(
         systemWide, kAXFocusedUIElementAttribute as CFString, &focusedRef)
-    guard r == .success, let focused = focusedRef else { return nil }
-    return (focused as! AXUIElement)
+    guard r == .success, let focused = axElement(from: focusedRef) else { return nil }
+    return focused
 }
 
 /// Read `kAXSelectedTextAttribute` from the system-wide focused element.
