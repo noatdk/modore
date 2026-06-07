@@ -190,6 +190,23 @@ private func computeStandalonePickupResult(
     let (leadingJunk, romajiBody) = splitLeadingASCIIJunkBeforeLowercase(romajiCore)
     let (acronymHead, mozcInput) = splitAcronymHead(romajiBody)
     let frozenPrefix = asciiPrefix + contextPrefix + leadingJunk + acronymHead
+    if mozcInput.first?.isLowercase != true {
+        let replacement = frozenPrefix + mozcInput + convertedSuffix
+        guard replacement != pickedText else { return nil }
+        let baseCandidates = [candidateFromValue(replacement, group: .input)]
+        let scriptSpan = mdr_span_t(span_start_byte: 0, span_end_byte: 0,
+                                    romaji: nil, romaji_len: 0)
+        let finalReplacement = ModoreScript.replacement(
+            appId: appId, span: scriptSpan, candidates: candidateValues(baseCandidates)) ?? replacement
+        let snapshotCandidateValues = ModoreScript.candidates(
+            appId: appId, list: candidateValues(baseCandidates), currentIndex: 0)
+            ?? candidateValues(baseCandidates)
+        let snapshotCandidates = applyScriptCandidateValues(
+            snapshotCandidateValues, onto: baseCandidates)
+        return StandalonePickupResult(
+            replacement: finalReplacement,
+            candidates: snapshotCandidates)
+    }
 
     let baseReplacement: String
     let baseCandidates: [MozcBridge.Candidate]
@@ -1454,6 +1471,38 @@ func runConversionOnAcquiredText(
     let (leadingJunk, romajiBody) = splitLeadingASCIIJunkBeforeLowercase(romajiCore)
     let (acronymHead, mozcInput) = splitAcronymHead(romajiBody)
     let frozenPrefix = asciiPrefix + contextPrefix + leadingJunk + acronymHead
+    if mozcInput.first?.isLowercase != true {
+        let replacement = frozenPrefix + mozcInput + convertedSuffix
+        guard replacement != pickedText else {
+            Log.pickup("scripted acquire: no romaji tail after acronym split (\(mozcInput))")
+            return
+        }
+        let baseCandidates = [candidateFromValue(replacement, group: .input)]
+        let scriptSpan = mdr_span_t(span_start_byte: 0, span_end_byte: 0,
+                                    romaji: nil, romaji_len: 0)
+        let finalReplacement = ModoreScript.replacement(
+            appId: appId, span: scriptSpan, candidates: candidateValues(baseCandidates)) ?? replacement
+        let snapshotCandidateValues = ModoreScript.candidates(
+            appId: appId, list: candidateValues(baseCandidates), currentIndex: 0)
+            ?? candidateValues(baseCandidates)
+        let snapshotCandidates = applyScriptCandidateValues(
+            snapshotCandidateValues, onto: baseCandidates)
+        Log.pickup("scripted acquire replace -> \(finalReplacement) (alts=\(snapshotCandidates.count))")
+        let sessionSeed = normalizeCommittedCandidateState(
+            replacement: finalReplacement,
+            candidates: snapshotCandidates)
+        postUnicode(finalReplacement)
+        let session = ConversionSession(
+            backing: .clipboard(
+                frontmostBundleId: appId,
+                frontmostPid: FrontmostApp.currentPid() ?? 0),
+            originalReading: pickedText,
+            candidates: sessionSeed.candidates,
+            candidateIndex: sessionSeed.currentIndex,
+            timestamp: Date())
+        commitSession(session)
+        return
+    }
 
     let baseReplacement: String
     let baseCandidates: [MozcBridge.Candidate]
