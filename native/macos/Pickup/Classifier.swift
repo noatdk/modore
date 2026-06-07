@@ -66,7 +66,10 @@ enum Classifier {
         let utf8 = Array(text.utf8)
         guard !utf8.isEmpty else { return nil }
 
-        var segs = [mdr_segment_t](repeating: mdr_segment_t(), count: 16)
+        // A run cannot be shorter than one byte, so `utf8.count` is the hard
+        // segment ceiling. The extra slot lets us detect a full buffer rather
+        // than silently accepting truncated output if the C side regresses.
+        var segs = [mdr_segment_t](repeating: mdr_segment_t(), count: utf8.count + 1)
         let n: Int32 = utf8.withUnsafeBufferPointer { buf in
             buf.baseAddress!.withMemoryRebound(to: CChar.self, capacity: buf.count) { cptr in
                 segs.withUnsafeMutableBufferPointer { segBuf in
@@ -75,7 +78,7 @@ enum Classifier {
                 }
             }
         }
-        guard n > 0 else { return nil }
+        guard n > 0, Int(n) < segs.count else { return nil }
 
         var result: [Segment] = []
         result.reserveCapacity(Int(n))
