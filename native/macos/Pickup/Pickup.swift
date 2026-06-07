@@ -160,52 +160,73 @@ private struct StandalonePickupResult {
     let candidates: [MozcBridge.Candidate]
 }
 
-private func computeStandalonePickupResult(
+private struct PreparedPickupConversion {
+    let replacement: String
+    let candidates: [MozcBridge.Candidate]
+}
+
+private func zeroScriptSpan() -> mdr_span_t {
+    mdr_span_t(span_start_byte: 0, span_end_byte: 0,
+               romaji: nil, romaji_len: 0)
+}
+
+private func applyScriptOverrides(
+    appId: String?,
+    scriptSpan: mdr_span_t,
+    baseReplacement: String,
+    baseCandidates: [MozcBridge.Candidate]
+) -> PreparedPickupConversion {
+    let replacement = ModoreScript.replacement(
+        appId: appId, span: scriptSpan, candidates: candidateValues(baseCandidates)) ?? baseReplacement
+    let snapshotCandidateValues = ModoreScript.candidates(
+        appId: appId, list: candidateValues(baseCandidates), currentIndex: 0)
+        ?? candidateValues(baseCandidates)
+    let snapshotCandidates = applyScriptCandidateValues(
+        snapshotCandidateValues, onto: baseCandidates)
+    return PreparedPickupConversion(
+        replacement: replacement,
+        candidates: snapshotCandidates)
+}
+
+private func preparePickupConversion(
     _ pickedText: String,
     request: PickupRequest,
-    appId: String?
-) -> StandalonePickupResult? {
+    appId: String?,
+    scriptSpan: mdr_span_t,
+    outputPrefix: String = "",
+    keepLastASCIIWordOnly: Bool = false
+) -> PreparedPickupConversion? {
     let (asciiPrefix, rawTail, preservedSuffix) = splitConvertibleASCIIWindow(pickedText)
-    let (contextPrefix, romajiTail) = splitBeforeLastASCIIWord(rawTail)
+    let (contextPrefix, romajiTail) = keepLastASCIIWordOnly
+        ? splitBeforeLastASCIIWord(rawTail)
+        : ("", rawTail)
     let (romajiCore, romajiSuffix) = splitTrailingASCIIPunctuation(romajiTail)
     let convertedSuffix = convertTrailingASCIISuffix(romajiSuffix, request: request) + preservedSuffix
+    let originalOutput = outputPrefix + pickedText
+
     if romajiCore.isEmpty {
-        let replacement = asciiPrefix + contextPrefix + convertedSuffix
-        guard replacement != pickedText else { return nil }
+        let replacement = outputPrefix + asciiPrefix + contextPrefix + convertedSuffix
+        guard replacement != originalOutput else { return nil }
         let baseCandidates = [candidateFromValue(replacement, group: .input)]
-        let scriptSpan = mdr_span_t(span_start_byte: 0, span_end_byte: 0,
-                                    romaji: nil, romaji_len: 0)
-        let finalReplacement = ModoreScript.replacement(
-            appId: appId, span: scriptSpan, candidates: candidateValues(baseCandidates)) ?? replacement
-        let snapshotCandidateValues = ModoreScript.candidates(
-            appId: appId, list: candidateValues(baseCandidates), currentIndex: 0)
-            ?? candidateValues(baseCandidates)
-        let snapshotCandidates = applyScriptCandidateValues(
-            snapshotCandidateValues, onto: baseCandidates)
-        return StandalonePickupResult(
-            replacement: finalReplacement,
-            candidates: snapshotCandidates)
+        return applyScriptOverrides(
+            appId: appId,
+            scriptSpan: scriptSpan,
+            baseReplacement: replacement,
+            baseCandidates: baseCandidates)
     }
 
     let (leadingJunk, romajiBody) = splitLeadingASCIIJunkBeforeLowercase(romajiCore)
     let (acronymHead, mozcInput) = splitAcronymHead(romajiBody)
-    let frozenPrefix = asciiPrefix + contextPrefix + leadingJunk + acronymHead
+    let frozenPrefix = outputPrefix + asciiPrefix + contextPrefix + leadingJunk + acronymHead
     if mozcInput.first?.isLowercase != true {
         let replacement = frozenPrefix + mozcInput + convertedSuffix
-        guard replacement != pickedText else { return nil }
+        guard replacement != originalOutput else { return nil }
         let baseCandidates = [candidateFromValue(replacement, group: .input)]
-        let scriptSpan = mdr_span_t(span_start_byte: 0, span_end_byte: 0,
-                                    romaji: nil, romaji_len: 0)
-        let finalReplacement = ModoreScript.replacement(
-            appId: appId, span: scriptSpan, candidates: candidateValues(baseCandidates)) ?? replacement
-        let snapshotCandidateValues = ModoreScript.candidates(
-            appId: appId, list: candidateValues(baseCandidates), currentIndex: 0)
-            ?? candidateValues(baseCandidates)
-        let snapshotCandidates = applyScriptCandidateValues(
-            snapshotCandidateValues, onto: baseCandidates)
-        return StandalonePickupResult(
-            replacement: finalReplacement,
-            candidates: snapshotCandidates)
+        return applyScriptOverrides(
+            appId: appId,
+            scriptSpan: scriptSpan,
+            baseReplacement: replacement,
+            baseCandidates: baseCandidates)
     }
 
     let baseReplacement: String
@@ -228,16 +249,30 @@ private func computeStandalonePickupResult(
             }
     }
 
-    let scriptSpan = mdr_span_t(span_start_byte: 0, span_end_byte: 0,
-                                romaji: nil, romaji_len: 0)
-    let replacement = ModoreScript.replacement(
-        appId: appId, span: scriptSpan, candidates: candidateValues(baseCandidates)) ?? baseReplacement
-    let snapshotCandidateValues = ModoreScript.candidates(
-        appId: appId, list: candidateValues(baseCandidates), currentIndex: 0)
-        ?? candidateValues(baseCandidates)
-    let snapshotCandidates = applyScriptCandidateValues(
-        snapshotCandidateValues, onto: baseCandidates)
-    return StandalonePickupResult(replacement: replacement, candidates: snapshotCandidates)
+    return applyScriptOverrides(
+        appId: appId,
+        scriptSpan: scriptSpan,
+        baseReplacement: baseReplacement,
+        baseCandidates: baseCandidates)
+}
+
+private func computeStandalonePickupResult(
+    _ pickedText: String,
+    request: PickupRequest,
+    appId: String?
+) -> StandalonePickupResult? {
+    guard let prepared = preparePickupConversion(
+        pickedText,
+        request: request,
+        appId: appId,
+        scriptSpan: zeroScriptSpan(),
+        keepLastASCIIWordOnly: true
+    ) else {
+        return nil
+    }
+    return StandalonePickupResult(
+        replacement: prepared.replacement,
+        candidates: prepared.candidates)
 }
 
 private func buildMulticursorBatchSession(
@@ -1249,133 +1284,26 @@ func doClipboardPickup(_ request: PickupRequest = .init()) {
     // sends each byte of UTF-8 to Mozc as a separate `key_code`. Also handle
     // mixed selections where the acquired token includes Japanese text after
     // the caret-side ASCII run (`tesutoテスト` with the caret after `o`).
-    let (asciiPrefix, romajiTail, preservedSuffix) = splitConvertibleASCIIWindow(pickedText)
-    let (romajiCore, romajiSuffix) = splitTrailingASCIIPunctuation(romajiTail)
-    let convertedSuffix = convertTrailingASCIISuffix(romajiSuffix, request: request) + preservedSuffix
-    guard !romajiCore.isEmpty else {
-        let replacement = clipboardPrefix + asciiPrefix + convertedSuffix
-        guard replacement != clipboardSelection else {
-            Log.clipboard("nothing to convert (no trailing romaji in \(pickedText))")
-            if didForceSelect {
-                postKey(kVK_RightArrow)
-            }
-            return
-        }
-        let baseCandidates = [candidateFromValue(replacement, group: .input)]
-        let scriptSpan = mdr_span_t(span_start_byte: 0, span_end_byte: 0,
-                                    romaji: nil, romaji_len: 0)
-        let finalReplacement = ModoreScript.replacement(
-            appId: frontmostBundleID, span: scriptSpan, candidates: candidateValues(baseCandidates)) ?? replacement
-        let snapshotCandidateValues = ModoreScript.candidates(
-            appId: frontmostBundleID, list: candidateValues(baseCandidates), currentIndex: 0)
-            ?? candidateValues(baseCandidates)
-        let snapshotCandidates = applyScriptCandidateValues(
-            snapshotCandidateValues, onto: baseCandidates)
-        Log.clipboard("punctuation-only pickup -> \(finalReplacement) (alts=\(snapshotCandidates.count))")
-        let sessionSeed = normalizeCommittedCandidateState(
-            replacement: finalReplacement,
-            candidates: snapshotCandidates)
-        postClipboardReplacement(
-            finalReplacement,
-            deleteBeforeInsert: deleteBeforeInsertCount)
-        let frontmost = FrontmostApp.describe()
-        let session = ConversionSession(
-            backing: .clipboard(
-                frontmostBundleId: frontmost?.bundleID,
-                frontmostPid: frontmost?.pid ?? 0),
-            originalReading: clipboardSelection,
-            candidates: sessionSeed.candidates,
-            candidateIndex: sessionSeed.currentIndex,
-            timestamp: Date())
-        commitSession(session)
+    // Script overrides use a zero span on the clipboard path; scripts that care
+    // about position should branch on app_id instead.
+    guard let prepared = preparePickupConversion(
+        pickedText,
+        request: request,
+        appId: frontmostBundleID,
+        scriptSpan: zeroScriptSpan(),
+        outputPrefix: clipboardPrefix
+    ) else {
+        Log.clipboard("nothing to convert (no romaji or backend result in \(pickedText))")
         if didForceSelect {
             postKey(kVK_RightArrow)
         }
         return
     }
-
-    let (leadingJunk, romajiBody) = splitLeadingASCIIJunkBeforeLowercase(romajiCore)
-    let (acronymHead, mozcInput) = splitAcronymHead(romajiBody)
-    let frozenPrefix = asciiPrefix + leadingJunk + acronymHead
-    if mozcInput.first?.isLowercase != true {
-        let replacement = clipboardPrefix + frozenPrefix + mozcInput + convertedSuffix
-        guard replacement != clipboardSelection else {
-            Log.clipboard("skipping: no romaji tail after acronym split (\(mozcInput))")
-            if didForceSelect {
-                postKey(kVK_RightArrow)
-            }
-            return
-        }
-        let baseCandidates = [candidateFromValue(replacement, group: .input)]
-        let scriptSpan = mdr_span_t(span_start_byte: 0, span_end_byte: 0,
-                                    romaji: nil, romaji_len: 0)
-        let finalReplacement = ModoreScript.replacement(
-            appId: frontmostBundleID, span: scriptSpan, candidates: candidateValues(baseCandidates)) ?? replacement
-        let snapshotCandidateValues = ModoreScript.candidates(
-            appId: frontmostBundleID, list: candidateValues(baseCandidates), currentIndex: 0)
-            ?? candidateValues(baseCandidates)
-        let snapshotCandidates = applyScriptCandidateValues(
-            snapshotCandidateValues, onto: baseCandidates)
-        Log.clipboard("replace -> \(finalReplacement) (alts=\(snapshotCandidates.count))")
-        let sessionSeed = normalizeCommittedCandidateState(
-            replacement: finalReplacement,
-            candidates: snapshotCandidates)
-        postClipboardReplacement(
-            finalReplacement,
-            deleteBeforeInsert: deleteBeforeInsertCount)
-        let frontmost = FrontmostApp.describe()
-        let session = ConversionSession(
-            backing: .clipboard(
-                frontmostBundleId: frontmost?.bundleID,
-                frontmostPid: frontmost?.pid ?? 0),
-            originalReading: clipboardSelection,
-            candidates: sessionSeed.candidates,
-            candidateIndex: sessionSeed.currentIndex,
-            timestamp: Date())
-        commitSession(session)
-        return
-    }
-
-    let baseReplacement: String
-    let baseCandidates: [MozcBridge.Candidate]
-    if gClassifierEnabled,
-       let segResult = classifierSegmentedConvert(mozcInput, request: request) {
-        baseReplacement = clipboardPrefix + frozenPrefix + segResult.replacement + convertedSuffix
-        baseCandidates = mapCandidateValues(segResult.candidates) {
-            clipboardPrefix + frozenPrefix + $0.value + convertedSuffix
-        }
-    } else {
-        // Fallback: heuristic acronym split.
-        guard let result = callBackend(mozcInput, request: request, wantCandidates: true) else {
-            Log.clipboard("backend returned no result")
-            if didForceSelect {
-                postKey(kVK_RightArrow)
-            }
-            return
-        }
-        baseReplacement = clipboardPrefix + frozenPrefix + result.replacement + convertedSuffix
-        baseCandidates = result.candidates.isEmpty
-            ? [candidateFromValue(clipboardPrefix + frozenPrefix + result.replacement + convertedSuffix)]
-            : mapCandidateValues(result.candidates) {
-                clipboardPrefix + frozenPrefix + $0.value + convertedSuffix
-            }
-    }
-    // Script overrides — no AX span on the clipboard path, so span byte
-    // offsets are zeroed. Scripts that care about position should branch
-    // on app_id instead.
-    let scriptSpan = mdr_span_t(span_start_byte: 0, span_end_byte: 0,
-                                romaji: nil, romaji_len: 0)
-        let replacement = ModoreScript.replacement(
-            appId: frontmostBundleID, span: scriptSpan, candidates: candidateValues(baseCandidates)) ?? baseReplacement
-    let snapshotCandidateValues = ModoreScript.candidates(
-        appId: frontmostBundleID, list: candidateValues(baseCandidates), currentIndex: 0)
-        ?? candidateValues(baseCandidates)
-    let snapshotCandidates = applyScriptCandidateValues(
-        snapshotCandidateValues, onto: baseCandidates)
-    Log.clipboard("replace -> \(replacement) (alts=\(snapshotCandidates.count))")
+    let replacement = prepared.replacement
+    Log.clipboard("replace -> \(replacement) (alts=\(prepared.candidates.count))")
     let sessionSeed = normalizeCommittedCandidateState(
         replacement: replacement,
-        candidates: snapshotCandidates)
+        candidates: prepared.candidates)
 
     // Replace the active selection by injecting the replacement as a Unicode
     // keystroke into the session event tap. No clipboard touch on the replace
@@ -1455,113 +1383,22 @@ func runConversionOnAcquiredText(
 
     Log.pickup("scripted acquire pick: \(pickedText)")
 
-    let (asciiPrefix, rawTail, preservedSuffix) = splitConvertibleASCIIWindow(pickedText)
-    let (contextPrefix, romajiTail) = splitBeforeLastASCIIWord(rawTail)
-    let (romajiCore, romajiSuffix) = splitTrailingASCIIPunctuation(romajiTail)
-    let convertedSuffix = convertTrailingASCIISuffix(romajiSuffix, request: request) + preservedSuffix
-    if romajiCore.isEmpty {
-        let replacement = asciiPrefix + contextPrefix + convertedSuffix
-        guard replacement != pickedText else {
-            Log.pickup("scripted acquire: no trailing romaji in \(pickedText)")
-            return
-        }
-        let baseCandidates = [candidateFromValue(replacement, group: .input)]
-        let scriptSpan = mdr_span_t(span_start_byte: 0, span_end_byte: 0,
-                                    romaji: nil, romaji_len: 0)
-        let finalReplacement = ModoreScript.replacement(
-            appId: appId, span: scriptSpan, candidates: candidateValues(baseCandidates)) ?? replacement
-        let snapshotCandidateValues = ModoreScript.candidates(
-            appId: appId, list: candidateValues(baseCandidates), currentIndex: 0)
-            ?? candidateValues(baseCandidates)
-        let snapshotCandidates = applyScriptCandidateValues(
-            snapshotCandidateValues, onto: baseCandidates)
-        Log.pickup("scripted acquire punctuation-only pickup -> \(finalReplacement) (alts=\(snapshotCandidates.count))")
-        let sessionSeed = normalizeCommittedCandidateState(
-            replacement: finalReplacement,
-            candidates: snapshotCandidates)
-        postUnicode(finalReplacement)
-        let session = ConversionSession(
-            backing: .clipboard(
-                frontmostBundleId: appId,
-                frontmostPid: FrontmostApp.currentPid() ?? 0),
-            originalReading: pickedText,
-            candidates: sessionSeed.candidates,
-            candidateIndex: sessionSeed.currentIndex,
-            timestamp: Date())
-        commitSession(session)
-        return
-    }
-    let (leadingJunk, romajiBody) = splitLeadingASCIIJunkBeforeLowercase(romajiCore)
-    let (acronymHead, mozcInput) = splitAcronymHead(romajiBody)
-    let frozenPrefix = asciiPrefix + contextPrefix + leadingJunk + acronymHead
-    if mozcInput.first?.isLowercase != true {
-        let replacement = frozenPrefix + mozcInput + convertedSuffix
-        guard replacement != pickedText else {
-            Log.pickup("scripted acquire: no romaji tail after acronym split (\(mozcInput))")
-            return
-        }
-        let baseCandidates = [candidateFromValue(replacement, group: .input)]
-        let scriptSpan = mdr_span_t(span_start_byte: 0, span_end_byte: 0,
-                                    romaji: nil, romaji_len: 0)
-        let finalReplacement = ModoreScript.replacement(
-            appId: appId, span: scriptSpan, candidates: candidateValues(baseCandidates)) ?? replacement
-        let snapshotCandidateValues = ModoreScript.candidates(
-            appId: appId, list: candidateValues(baseCandidates), currentIndex: 0)
-            ?? candidateValues(baseCandidates)
-        let snapshotCandidates = applyScriptCandidateValues(
-            snapshotCandidateValues, onto: baseCandidates)
-        Log.pickup("scripted acquire replace -> \(finalReplacement) (alts=\(snapshotCandidates.count))")
-        let sessionSeed = normalizeCommittedCandidateState(
-            replacement: finalReplacement,
-            candidates: snapshotCandidates)
-        postUnicode(finalReplacement)
-        let session = ConversionSession(
-            backing: .clipboard(
-                frontmostBundleId: appId,
-                frontmostPid: FrontmostApp.currentPid() ?? 0),
-            originalReading: pickedText,
-            candidates: sessionSeed.candidates,
-            candidateIndex: sessionSeed.currentIndex,
-            timestamp: Date())
-        commitSession(session)
+    guard let prepared = preparePickupConversion(
+        pickedText,
+        request: request,
+        appId: appId,
+        scriptSpan: zeroScriptSpan(),
+        keepLastASCIIWordOnly: true
+    ) else {
+        Log.pickup("scripted acquire: nothing to convert in \(pickedText)")
         return
     }
 
-    let baseReplacement: String
-    let baseCandidates: [MozcBridge.Candidate]
-    if gClassifierEnabled,
-       let segResult = classifierSegmentedConvert(mozcInput, request: request) {
-        baseReplacement = frozenPrefix + segResult.replacement + convertedSuffix
-        baseCandidates = mapCandidateValues(segResult.candidates) {
-            frozenPrefix + $0.value + convertedSuffix
-        }
-    } else {
-        guard let result = callBackend(mozcInput, request: request, wantCandidates: true) else {
-            Log.pickup("scripted acquire: backend returned no result")
-            return
-        }
-        baseReplacement = frozenPrefix + result.replacement + convertedSuffix
-        baseCandidates = result.candidates.isEmpty
-            ? [candidateFromValue(baseReplacement)]
-            : mapCandidateValues(result.candidates) {
-                frozenPrefix + $0.value + convertedSuffix
-            }
-    }
-
-    let scriptSpan = mdr_span_t(span_start_byte: 0, span_end_byte: 0,
-                                romaji: nil, romaji_len: 0)
-    let replacement = ModoreScript.replacement(
-        appId: appId, span: scriptSpan, candidates: candidateValues(baseCandidates)) ?? baseReplacement
-    let snapshotCandidateValues = ModoreScript.candidates(
-        appId: appId, list: candidateValues(baseCandidates), currentIndex: 0)
-        ?? candidateValues(baseCandidates)
-    let snapshotCandidates = applyScriptCandidateValues(
-        snapshotCandidateValues, onto: baseCandidates)
-
-    Log.pickup("scripted acquire replace → \(replacement) (alts=\(snapshotCandidates.count))")
+    let replacement = prepared.replacement
+    Log.pickup("scripted acquire replace → \(replacement) (alts=\(prepared.candidates.count))")
     let sessionSeed = normalizeCommittedCandidateState(
         replacement: replacement,
-        candidates: snapshotCandidates)
+        candidates: prepared.candidates)
 
     // Observability for CodeMirror one-row-drift investigation: capture the
     // AX selection range immediately before postUnicode, and again ~80ms
