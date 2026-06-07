@@ -38,6 +38,14 @@ func restoreClipboard(_ items: [NSPasteboardItem]) {
     }
 }
 
+func restoreClipboardAsync(_ items: [NSPasteboardItem], delayMs: Int) {
+    DispatchQueue.global(qos: .userInitiated).asyncAfter(
+        deadline: .now() + .milliseconds(max(0, delayMs))
+    ) {
+        restoreClipboard(items)
+    }
+}
+
 /// Returns snapshot of the current clipboard and a closure that restores it after
 /// `delayMs`. Intended use:
 ///

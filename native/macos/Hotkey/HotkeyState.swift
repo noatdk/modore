@@ -25,6 +25,7 @@ import Cocoa
 /// plain swap is race-free.
 var gConversionKeyCode: CGKeyCode = CGKeyCode(kVK_ANSI_Semicolon)
 var gConversionCoreFlags: CGEventFlags = .maskCommand
+var gConversionDisplayName: String = ModoreConfig.defaultConversionHotkey().displayName
 
 /// Secondary-chord flags (primary + the configured katakana modifier).
 /// `nil` means no secondary chord is bound — same state as the pre-feature
@@ -51,6 +52,13 @@ var gUsingCarbonHotkey: Bool = false
 /// at startup (we then rely on the tap-based detector). Assigned in
 /// main.swift, mutated only here.
 var gCarbonHotkey: CarbonHotkey?
+
+/// Per-role Carbon registration state. The primary chord can register while
+/// a derived chord fails (or vice versa), so the tap fallback must branch on
+/// the role that matched rather than using the primary's delivery state for
+/// every chord.
+var gUsingKatakanaCarbonHotkey: Bool = false
+var gUsingCycleCarbonHotkey: Bool = false
 
 /// One ConfigWatcher per *.lua script file. Rebuilt by main.swift on every
 /// dir-watcher fire so newly-added files start being watched live. Keyed by
@@ -160,18 +168,22 @@ func applyKatakanaSecondaryChord(
 
     if let secondary = secondary {
         gKatakanaChordFlags = secondary.coreFlags
+        var registered = false
         if let ck = gCarbonHotkey {
             let ok = ck.register(role: "katakana", chord: secondary) {
                 kHotkeyTapQueue.async { handleKatakanaHotkeyTrigger() }
             }
+            registered = ok
             if !ok {
                 Log.hotkey("RegisterEventHotKey failed for katakana chord \(secondary.displayName) — tap fallback will still match if the primary tap path is in use")
             } else if prevFlags != secondary.coreFlags {
                 Log.hotkey("katakana chord registered: \(secondary.displayName)")
             }
         }
+        gUsingKatakanaCarbonHotkey = registered
     } else {
         gKatakanaChordFlags = nil
+        gUsingKatakanaCarbonHotkey = false
         gCarbonHotkey?.unregister(role: "katakana")
         if modifier != .none && prevFlags != nil {
             Log.hotkey("katakana chord cleared (collides with primary modifiers)")
@@ -225,18 +237,22 @@ func applyCycleChord(
 
     if let chord = chord {
         gCycleChordFlags = chord.coreFlags
+        var registered = false
         if let ck = gCarbonHotkey {
             let ok = ck.register(role: "cycle", chord: chord) {
                 kHotkeyTapQueue.async { handleCycleHotkeyTrigger() }
             }
+            registered = ok
             if !ok {
                 Log.hotkey("RegisterEventHotKey failed for cycle chord \(chord.displayName)")
             } else if prevFlags != chord.coreFlags {
                 Log.hotkey("cycle chord registered: \(chord.displayName)")
             }
         }
+        gUsingCycleCarbonHotkey = registered
     } else {
         gCycleChordFlags = nil
+        gUsingCycleCarbonHotkey = false
         gCarbonHotkey?.unregister(role: "cycle")
         if cycle != .none && prevFlags != nil {
             Log.hotkey("cycle chord cleared (collides with primary or katakana modifier)")
@@ -251,7 +267,10 @@ func applyCycleChord(
 /// The current primary chord, reconstructed from the live globals. The
 /// reload paths need it to rebuild derived chords and refresh the menu bar.
 func currentPrimaryChord() -> ModoreConfig.ConversionHotkey {
-    ModoreConfig.ConversionHotkey(keyCode: gConversionKeyCode, coreFlags: gConversionCoreFlags)
+    rememberedPrimaryChord(
+        keyCode: gConversionKeyCode,
+        coreFlags: gConversionCoreFlags,
+        displayName: gConversionDisplayName)
 }
 
 /// Push the current chord state to the menu-bar item, surfacing only the
@@ -270,6 +289,7 @@ func refreshStatusItem(primary: ModoreConfig.ConversionHotkey) {
 func applyConversionHotkeyChord(_ chord: ModoreConfig.ConversionHotkey) {
     gConversionKeyCode = chord.keyCode
     gConversionCoreFlags = chord.coreFlags
+    gConversionDisplayName = chord.displayName
     if let ck = gCarbonHotkey {
         let ok = ck.register(role: "primary", chord: chord) {
             kHotkeyTapQueue.async { handlePrimaryHotkeyTrigger() }
@@ -278,6 +298,8 @@ func applyConversionHotkeyChord(_ chord: ModoreConfig.ConversionHotkey) {
         if !ok {
             Log.hotkey("RegisterEventHotKey failed — falling back to tap-based detection")
         }
+    } else {
+        gUsingCarbonHotkey = false
     }
     // Derived chords ride on top of the primary, so any primary
     // re-registration rebinds them too.

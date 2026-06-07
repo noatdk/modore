@@ -216,8 +216,24 @@ final class CandidatePanel {
             app,
             kAXFocusedUIElementAttribute as CFString,
             &ref)
-        guard err == .success, let any = ref else { return nil }
-        return (any as! AXUIElement)
+        guard err == .success else { return nil }
+        return axElement(from: ref)
+    }
+
+    private func axElement(from ref: CFTypeRef?) -> AXUIElement? {
+        guard let ref, cfTypeMatches(ref, AXUIElementGetTypeID()) else {
+            return nil
+        }
+        return unsafeBitCast(ref, to: AXUIElement.self)
+    }
+
+    private func axValue(from any: AnyObject?) -> AXValue? {
+        guard let any else { return nil }
+        let ref = any as CFTypeRef
+        guard cfTypeMatches(ref, AXValueGetTypeID()) else {
+            return nil
+        }
+        return unsafeBitCast(ref, to: AXValue.self)
     }
 
     /// Tagged outcome for an AX-attribute read. Lets the resolver log a
@@ -245,7 +261,9 @@ final class CandidatePanel {
         guard let any = result else {
             return .fail("attribute value was nil despite AXError.success")
         }
-        let axValue = any as! AXValue
+        guard let axValue = axValue(from: any) else {
+            return .fail("attribute value was not an AXValue")
+        }
         var rect = CGRect.zero
         guard AXValueGetValue(axValue, .cgRect, &rect) else {
             return .fail("AXValueGetValue(.cgRect) returned false")
@@ -277,8 +295,12 @@ final class CandidatePanel {
         }
         var origin = CGPoint.zero
         var size = CGSize.zero
-        let pv = pAny as! AXValue
-        let sv = sAny as! AXValue
+        guard let pv = axValue(from: pAny) else {
+            return .fail("AXPosition was not an AXValue")
+        }
+        guard let sv = axValue(from: sAny) else {
+            return .fail("AXSize was not an AXValue")
+        }
         guard AXValueGetValue(pv, .cgPoint, &origin) else {
             return .fail("AXValueGetValue(.cgPoint) returned false on AXPosition")
         }

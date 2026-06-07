@@ -144,12 +144,9 @@ func postPasteFromClipboard(_ text: String) {
 func pastePreservingClipboard(_ text: String) {
     let saved = snapshotClipboard()
     postPasteFromClipboard(text)
-    let restoreDelayMs = max(750, gClipboardTimings.restoreClipboardDelayMs)
-    DispatchQueue.global(qos: .userInitiated).asyncAfter(
-        deadline: .now() + .milliseconds(restoreDelayMs)
-    ) {
-        restoreClipboard(saved)
-    }
+    let restoreDelayMs = clipboardPasteRestoreDelayMs(
+        configuredMs: gClipboardTimings.restoreClipboardDelayMs)
+    restoreClipboardAsync(saved, delayMs: restoreDelayMs)
 }
 
 /// Recreate a collapsed selection by extending it leftward, then paste over it

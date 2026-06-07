@@ -13,8 +13,9 @@
 //
 // Globals read by the callback:
 //   - gUsingCarbonHotkey, gConversionKeyCode, gConversionCoreFlags,
-//     gKatakanaChordFlags (HotkeyState.swift) — main-thread-only writers,
-//     plain swap is race-free for the tap-thread reader.
+//     gKatakanaChordFlags, gUsingKatakanaCarbonHotkey,
+//     gUsingCycleCarbonHotkey (HotkeyState.swift) — main-thread-only
+//     writers, plain swap is race-free for the tap-thread reader.
 
 import Cocoa
 
@@ -45,6 +46,10 @@ let tapCallback: CGEventTapCallBack = { _, type, event, _ in
 
     let keyCode = CGKeyCode(event.getIntegerValueField(.keyboardEventKeycode))
     let coreFlags = event.flags.intersection(kCoreModifierFlags)
+    let delivery = HotkeyTapDeliveryState(
+        primaryUsesCarbon: gUsingCarbonHotkey,
+        katakanaUsesCarbon: gUsingKatakanaCarbonHotkey,
+        cycleUsesCarbon: gUsingCycleCarbonHotkey)
 
     // Esc undo. Independent of Carbon — Carbon only grabs the conversion
     // chord, Esc is always delivered to the tap. Gate cheaply on the
@@ -68,28 +73,28 @@ let tapCallback: CGEventTapCallBack = { _, type, event, _ in
     // Carbon ever gets to cycle it — that was the "stuck on first
     // candidate" bug.
     if keyCode == gConversionKeyCode {
-            if coreFlags == gConversionCoreFlags {
-            if !gUsingCarbonHotkey {
+        if coreFlags == gConversionCoreFlags {
+            if delivery.shouldDispatchFromTap(role: .primary) {
                 kHotkeyTapQueue.async { handlePrimaryHotkeyTrigger() }
                 return nil // swallow — host app must not see the "/"
             }
-                // Carbon will dispatch; we just don't clear.
-                return Unmanaged.passUnretained(event)
+            // Carbon will dispatch; we just don't clear.
+            return Unmanaged.passUnretained(event)
+        }
+        if let secondary = gKatakanaChordFlags, coreFlags == secondary {
+            if delivery.shouldDispatchFromTap(role: .katakana) {
+                kHotkeyTapQueue.async { handleKatakanaHotkeyTrigger() }
+                return nil
             }
-            if let secondary = gKatakanaChordFlags, coreFlags == secondary {
-                if !gUsingCarbonHotkey {
-                    kHotkeyTapQueue.async { handleKatakanaHotkeyTrigger() }
-                    return nil
-                }
-                return Unmanaged.passUnretained(event)
+            return Unmanaged.passUnretained(event)
+        }
+        if let cycle = gCycleChordFlags, coreFlags == cycle {
+            if delivery.shouldDispatchFromTap(role: .cycle) {
+                kHotkeyTapQueue.async { handleCycleHotkeyTrigger() }
+                return nil
             }
-            if let cycle = gCycleChordFlags, coreFlags == cycle {
-                if !gUsingCarbonHotkey {
-                    kHotkeyTapQueue.async { handleCycleHotkeyTrigger() }
-                    return nil
-                }
-                return Unmanaged.passUnretained(event)
-            }
+            return Unmanaged.passUnretained(event)
+        }
     }
 
     updateChromiumOmniboxTypedInputLog(for: event)

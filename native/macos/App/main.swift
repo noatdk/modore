@@ -359,6 +359,7 @@ BootGuards.enforce()
 let modoreHotkey = ModoreConfig.loadConversionHotkey()
 gConversionKeyCode = modoreHotkey.keyCode
 gConversionCoreFlags = modoreHotkey.coreFlags
+gConversionDisplayName = modoreHotkey.displayName
 
 gKatakanaModifier = ModoreConfig.loadKatakanaModifier()
 Log.config("katakana modifier: \(gKatakanaModifier.displayName)")

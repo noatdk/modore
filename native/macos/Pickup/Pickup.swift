@@ -1145,8 +1145,14 @@ func doClipboardPickup(_ request: PickupRequest = .init()) {
 
     // Snapshot the user's clipboard now; `defer` guarantees we restore it on
     // every exit path. No manual cleanup at the early-returns below.
-    let (_, restoreSavedClipboard) = guardClipboard(restoreDelayMs: timings.restoreClipboardDelayMs)
-    defer { restoreSavedClipboard() }
+    let (savedClipboard, restoreSavedClipboard) = guardClipboard(
+        restoreDelayMs: timings.restoreClipboardDelayMs)
+    var restoreClipboardOnReturn = true
+    defer {
+        if restoreClipboardOnReturn {
+            restoreSavedClipboard()
+        }
+    }
 
     let pb = NSPasteboard.general
     var picked: String? = nil
@@ -1256,6 +1262,11 @@ func doClipboardPickup(_ request: PickupRequest = .init()) {
         }
         Log.clipboard("multicursor replace -> \(batch.currentText) (lines=\(lines.count), items=\(batch.items.count))")
         postPasteFromClipboard(batch.currentText)
+        restoreClipboardOnReturn = false
+        restoreClipboardAsync(
+            savedClipboard,
+            delayMs: clipboardPasteRestoreDelayMs(
+                configuredMs: timings.restoreClipboardDelayMs))
         commitSession(batch)
         return
     }
@@ -1373,10 +1384,20 @@ func runConversionOnAcquiredText(
             return
         }
         Log.pickup("scripted acquire multicursor replace -> \(batch.currentText) (lines=\(lines.count), items=\(batch.items.count))")
-        let (_, restoreSavedClipboard) = guardClipboard(
+        let (savedClipboard, restoreSavedClipboard) = guardClipboard(
             restoreDelayMs: gClipboardTimings.restoreClipboardDelayMs)
-        defer { restoreSavedClipboard() }
+        var restoreClipboardOnReturn = true
+        defer {
+            if restoreClipboardOnReturn {
+                restoreSavedClipboard()
+            }
+        }
         postPasteFromClipboard(batch.currentText)
+        restoreClipboardOnReturn = false
+        restoreClipboardAsync(
+            savedClipboard,
+            delayMs: clipboardPasteRestoreDelayMs(
+                configuredMs: gClipboardTimings.restoreClipboardDelayMs))
         commitSession(batch)
         return
     }
