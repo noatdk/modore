@@ -218,6 +218,8 @@ struct SpanSplitTests {
         expectEqual(sliceUTF16("hi", start: -1, end: 2),      nil,   "sliceUTF16 negative start -> nil")
 
         runRegressionTests()
+        runKnownAppsTests()
+        runConfigTests()
 
         // MARK: - Report
 

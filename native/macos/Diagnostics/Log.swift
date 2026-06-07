@@ -1,3 +1,5 @@
+// @testable
+//
 // Logging facade for the macOS host.
 //
 // Each subsystem has its own entry point (`Log.boot`, `Log.config`, …). The

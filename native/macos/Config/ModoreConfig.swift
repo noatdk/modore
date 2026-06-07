@@ -1,3 +1,5 @@
+// @testable
+//
 // Loads ~/.config/modore/modore.conf (same path on macOS/Linux via XDG layout).
 //
 // Sections:
@@ -404,21 +406,34 @@ enum ModoreConfig {
     /// issue string. `[bridge] mozc_backend` wins over the legacy
     /// `[conversion]` location if both are set.
     static func parseMozcBackend() -> (MozcBackend, [String]) {
-        var backend: MozcBackend = .oss
+        var bridgeBackend: MozcBackend? = nil
+        var legacyBackend: MozcBackend? = nil
+        var sawBridgeBackend = false
         var issues: [String] = []
         let url = configFileURL()
         _ = forEachKeyValue(url) { section, key, value in
             guard key == "mozc_backend" else { return }
             guard section == "bridge" || section == "conversion" else { return }
+            if section == "bridge" {
+                sawBridgeBackend = true
+            }
+            let parsed: MozcBackend
             switch value.lowercased() {
             case "oss", "built-in", "built_in", "":
-                backend = .oss
+                parsed = .oss
             case "google_ime", "google-ime", "googleime":
-                backend = .googleIme
+                parsed = .googleIme
             default:
                 issues.append("ignoring [\(section)] mozc_backend=\(value) (expected built-in|google_ime)")
+                return
+            }
+            if section == "bridge" {
+                bridgeBackend = parsed
+            } else {
+                legacyBackend = parsed
             }
         }
+        let backend = sawBridgeBackend ? (bridgeBackend ?? .oss) : (legacyBackend ?? .oss)
         return (backend, issues)
     }
 
