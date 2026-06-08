@@ -57,6 +57,38 @@ std::wstring last_error_wide() {
     return utf8_to_wide(err, std::strlen(err));
 }
 
+std::optional<std::wstring> run_line_convert(
+    const std::string& input,
+    unsigned int flags,
+    Logger& logger) {
+    size_t out_cap = std::max<size_t>(input.size() * 4 + 64, 256);
+    size_t out_len = 0;
+
+    for (;;) {
+        std::string output(out_cap, '\0');
+        const int rc = mozc_bridge_convert_line(
+            input.data(),
+            input.size(),
+            input.size(),
+            output.data(),
+            output.size(),
+            &out_len,
+            flags);
+        if (rc == 0) {
+            return utf8_to_wide(output.data(), out_len);
+        }
+        if (rc < 0) {
+            logger.write(LogTag::Ime, std::wstring(L"bridge line convert failed: ") + last_error_wide());
+            return std::nullopt;
+        }
+        if (static_cast<size_t>(rc) > (1u << 20)) {
+            logger.write(LogTag::Ime, L"bridge line convert returned unreasonably large output");
+            return std::nullopt;
+        }
+        out_cap = static_cast<size_t>(rc) + 1;
+    }
+}
+
 bool run_warmup_convert(Logger& logger) {
     const char* input = "a";
     char commit_buf[32] = {};
@@ -131,28 +163,7 @@ std::optional<std::wstring> convert_with_ime(const std::wstring& text, bool kata
     }
 
     const unsigned int flags = katakana ? MOZC_CONVERT_FLAG_KATAKANA : 0u;
-    size_t commit_cap = std::max<size_t>(input.size() * 4 + 64, 256);
-    size_t commit_len = 0;
-
-    for (;;) {
-        std::string commit_storage(commit_cap, '\0');
-        int rc = mozc_bridge_convert_ex(
-            input.data(), input.size(),
-            commit_storage.data(), commit_storage.size(), &commit_len,
-            flags);
-        if (rc == 0) {
-            return utf8_to_wide(commit_storage.data(), commit_len);
-        }
-        if (rc < 0) {
-            logger.write(LogTag::Ime, std::wstring(L"bridge convert failed: ") + last_error_wide());
-            return std::nullopt;
-        }
-        if (static_cast<size_t>(rc) > (1u << 20)) {
-            logger.write(LogTag::Ime, L"bridge convert returned unreasonably large output");
-            return std::nullopt;
-        }
-        commit_cap = static_cast<size_t>(rc) + 1;
-    }
+    return run_line_convert(input, flags, logger);
 }
 
 } // namespace modore::windows
