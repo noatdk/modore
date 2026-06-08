@@ -25,6 +25,7 @@ using namespace std::chrono_literals;
 namespace {
 
 constexpr UINT kTrayMessage = WM_APP + 1;
+constexpr UINT kUndoRequestMessage = WM_APP + 3;
 constexpr UINT kMenuOpenConfig = 1001;
 constexpr UINT kMenuRevealConfig = 1002;
 constexpr UINT kMenuOpenLog = 1003;
@@ -47,6 +48,55 @@ RuntimeState g_state;
 std::atomic<bool> g_reload_requested{false};
 std::atomic<bool> g_stop_watcher{false};
 std::thread g_watcher;
+HHOOK g_keyboard_hook = nullptr;
+std::atomic<bool> g_ctrl_down{false};
+
+void reinject_ctrl_z() {
+    INPUT inputs[4]{};
+
+    inputs[0].type = INPUT_KEYBOARD;
+    inputs[0].ki.wVk = VK_CONTROL;
+
+    inputs[1].type = INPUT_KEYBOARD;
+    inputs[1].ki.wVk = 'Z';
+
+    inputs[2].type = INPUT_KEYBOARD;
+    inputs[2].ki.wVk = 'Z';
+    inputs[2].ki.dwFlags = KEYEVENTF_KEYUP;
+
+    inputs[3].type = INPUT_KEYBOARD;
+    inputs[3].ki.wVk = VK_CONTROL;
+    inputs[3].ki.dwFlags = KEYEVENTF_KEYUP;
+
+    SendInput(4, inputs, sizeof(INPUT));
+}
+
+LRESULT CALLBACK keyboard_hook_proc(int nCode, WPARAM wparam, LPARAM lparam) {
+    if (nCode == HC_ACTION && (wparam == WM_KEYDOWN || wparam == WM_SYSKEYDOWN)) {
+        const auto* info = reinterpret_cast<const KBDLLHOOKSTRUCT*>(lparam);
+        if (info) {
+            if (info->vkCode == VK_CONTROL || info->vkCode == VK_LCONTROL || info->vkCode == VK_RCONTROL) {
+                g_ctrl_down.store(true, std::memory_order_relaxed);
+            }
+            if (!(info->flags & LLKHF_INJECTED) && info->vkCode == 'Z') {
+                const bool alt_down = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
+                const bool win_down = (GetAsyncKeyState(VK_LWIN) & 0x8000) != 0 || (GetAsyncKeyState(VK_RWIN) & 0x8000) != 0;
+                if (g_ctrl_down.load(std::memory_order_relaxed) && !alt_down && !win_down && modore::windows::has_cycle_session()) {
+                    if (g_state.window) {
+                        PostMessageW(g_state.window, kUndoRequestMessage, 0, 0);
+                    }
+                    return 1;
+                }
+            }
+        }
+    } else if (nCode == HC_ACTION && (wparam == WM_KEYUP || wparam == WM_SYSKEYUP)) {
+        const auto* info = reinterpret_cast<const KBDLLHOOKSTRUCT*>(lparam);
+        if (info && (info->vkCode == VK_CONTROL || info->vkCode == VK_LCONTROL || info->vkCode == VK_RCONTROL)) {
+            g_ctrl_down.store(false, std::memory_order_relaxed);
+        }
+    }
+    return CallNextHookEx(g_keyboard_hook, nCode, wparam, lparam);
+}
 
 void open_path(const std::filesystem::path& path) {
     ShellExecuteW(nullptr, L"open", path.wstring().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
@@ -347,6 +397,15 @@ LRESULT CALLBACK window_proc(HWND window, UINT msg, WPARAM wparam, LPARAM lparam
             apply_runtime_config(next);
         }
         return 0;
+    case kUndoRequestMessage:
+        {
+            auto& logger = modore::windows::Logger::instance();
+            logger.write(modore::windows::LogTag::Undo, L"undo hotkey fired");
+            if (!modore::windows::undo_last_pickup(logger)) {
+                reinject_ctrl_z();
+            }
+        }
+        return 0;
     case kTrayMessage:
         if (lparam == WM_RBUTTONUP || lparam == WM_CONTEXTMENU) {
             show_tray_menu(window);
@@ -422,6 +481,13 @@ int run_host() {
     ShowWindow(window, SW_HIDE);
     UpdateWindow(window);
 
+    g_keyboard_hook = SetWindowsHookExW(WH_KEYBOARD_LL, keyboard_hook_proc, GetModuleHandleW(nullptr), 0);
+    if (!g_keyboard_hook) {
+        logger.write(modore::windows::LogTag::Undo, L"keyboard hook registration failed for Ctrl+Z undo");
+    } else {
+        logger.write(modore::windows::LogTag::Undo, L"keyboard hook registered for Ctrl+Z undo");
+    }
+
     g_stop_watcher.store(false, std::memory_order_relaxed);
     g_watcher = std::thread(watcher_thread);
 
@@ -434,6 +500,10 @@ int run_host() {
     g_stop_watcher.store(true, std::memory_order_relaxed);
     if (g_watcher.joinable()) {
         g_watcher.join();
+    }
+    if (g_keyboard_hook) {
+        UnhookWindowsHookEx(g_keyboard_hook);
+        g_keyboard_hook = nullptr;
     }
     unregister_hotkeys(window);
     return 0;

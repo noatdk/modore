@@ -272,11 +272,7 @@ bool perform_pickup(const ConfigSnapshot& config, Logger& logger, const PickupCo
                 L" native_ms=" + std::to_wstring(elapsed_ms(native_started, pasted_at)));
             if (field_before_replace) {
                 if (auto updated = replace_unique_occurrence(*field_before_replace, *picked, conversion->committed)) {
-                    if (conversion->candidates.size() > 1) {
-                        remember_cycle(*updated, *conversion);
-                    } else {
-                        reset_cycle();
-                    }
+                        remember_cycle(*updated, *picked, *conversion);
                 }
             }
         } else {
@@ -301,11 +297,7 @@ bool perform_pickup(const ConfigSnapshot& config, Logger& logger, const PickupCo
                 }
                 if (field_before_replace) {
                     if (auto updated = replace_unique_occurrence(*field_before_replace, *picked, conversion->committed)) {
-                        if (conversion->candidates.size() > 1) {
-                            remember_cycle(*updated, *conversion);
-                        } else {
-                            reset_cycle();
-                        }
+                        remember_cycle(*updated, *picked, *conversion);
                     }
                 }
             } else {

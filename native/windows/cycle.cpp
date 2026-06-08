@@ -15,9 +15,10 @@ using Clock = std::chrono::steady_clock;
 
 struct CycleSession {
     std::wstring field_text;
+    std::wstring original_text;
     std::wstring committed_text;
     std::vector<std::wstring> candidates;
-    size_t current_index = 0;
+    int current_index = 0;
     Clock::time_point touched = Clock::now();
 };
 
@@ -28,6 +29,12 @@ constexpr auto kCycleSessionTtl = std::chrono::seconds(10);
 
 void clear_cycle_session_locked() {
     g_cycle_session.reset();
+}
+
+bool cycle_session_expired(const CycleSession& session, Clock::time_point now);
+
+bool has_active_cycle_session_locked(Clock::time_point now) {
+    return g_cycle_session && !cycle_session_expired(*g_cycle_session, now);
 }
 
 std::optional<std::wstring> replace_unique_occurrence(
@@ -53,11 +60,20 @@ bool cycle_session_expired(const CycleSession& session, Clock::time_point now) {
     return now - session.touched > kCycleSessionTtl;
 }
 
+bool update_cycle_session_after_replace(
+    const std::wstring& previous_text,
+    const std::wstring& next_text,
+    size_t next_index);
+
+bool update_cycle_session_after_undo(
+    const std::wstring& previous_text,
+    const std::wstring& next_text);
+
 std::optional<std::wstring> next_cycle_candidate(const CycleSession& session, size_t* next_index) {
     if (session.candidates.size() <= 1) {
         return std::nullopt;
     }
-    const size_t idx = (session.current_index + 1) % session.candidates.size();
+    const size_t idx = session.current_index < 0 ? 0 : (static_cast<size_t>(session.current_index) + 1) % session.candidates.size();
     if (next_index) {
         *next_index = idx;
     }
@@ -66,6 +82,9 @@ std::optional<std::wstring> next_cycle_candidate(const CycleSession& session, si
 
 std::optional<std::wstring> previous_cycle_candidate(const CycleSession& session, size_t* next_index) {
     if (session.candidates.size() <= 1) {
+        return std::nullopt;
+    }
+    if (session.current_index < 0) {
         return std::nullopt;
     }
     const size_t idx = (session.current_index + session.candidates.size() - 1) % session.candidates.size();
@@ -94,7 +113,30 @@ bool update_cycle_session_after_replace(
     }
     g_cycle_session->field_text.replace(pos, g_cycle_session->committed_text.size(), next_text);
     g_cycle_session->committed_text = next_text;
-    g_cycle_session->current_index = next_index;
+    g_cycle_session->current_index = static_cast<int>(next_index);
+    g_cycle_session->touched = Clock::now();
+    return true;
+}
+
+bool update_cycle_session_after_undo(
+    const std::wstring& previous_text,
+    const std::wstring& next_text) {
+    std::scoped_lock lock(g_cycle_mutex);
+    if (!g_cycle_session) {
+        return false;
+    }
+    if (g_cycle_session->field_text != previous_text) {
+        return false;
+    }
+
+    const size_t pos = g_cycle_session->field_text.find(g_cycle_session->committed_text);
+    if (pos == std::wstring::npos) {
+        clear_cycle_session_locked();
+        return false;
+    }
+    g_cycle_session->field_text.replace(pos, g_cycle_session->committed_text.size(), next_text);
+    g_cycle_session->committed_text = next_text;
+    g_cycle_session->current_index = -1;
     g_cycle_session->touched = Clock::now();
     return true;
 }
@@ -106,16 +148,19 @@ void reset_cycle() {
     clear_cycle_session_locked();
 }
 
+bool has_cycle_session() {
+    std::scoped_lock lock(g_cycle_mutex);
+    return has_active_cycle_session_locked(Clock::now());
+}
+
 void remember_cycle(
     const std::wstring& field_text,
+    const std::wstring& original_text,
     const PickupConversionResult& conversion) {
     std::scoped_lock lock(g_cycle_mutex);
-    if (conversion.candidates.empty()) {
-        clear_cycle_session_locked();
-        return;
-    }
     g_cycle_session = CycleSession{
         field_text,
+        original_text,
         conversion.committed,
         conversion.candidates,
         0,
@@ -163,7 +208,7 @@ bool cycle_last_pickup(Logger& logger) {
     }
 
     if (!update_cycle_session_after_replace(*current_field, *next, next_index)) {
-        return false;
+        reset_cycle();
     }
 
     logger.write(
@@ -213,13 +258,62 @@ bool cycle_previous_pickup(Logger& logger) {
     }
 
     if (!update_cycle_session_after_replace(*current_field, *next, next_index)) {
-        return false;
+        reset_cycle();
     }
 
     logger.write(
         LogTag::Cycle,
         std::wstring(L"cycled to \"") + escape_for_log(*next) + L"\" [" +
         std::to_wstring(next_index + 1) + L"/" + std::to_wstring(session->candidates.size()) + L"]");
+    return true;
+}
+
+bool undo_last_pickup(Logger& logger) {
+    const auto now = Clock::now();
+    std::optional<CycleSession> session;
+    {
+        std::scoped_lock lock(g_cycle_mutex);
+        if (!g_cycle_session) {
+            return false;
+        }
+        if (cycle_session_expired(*g_cycle_session, now)) {
+            clear_cycle_session_locked();
+            return false;
+        }
+        session = g_cycle_session;
+    }
+
+    if (!session) {
+        return false;
+    }
+    if (session->current_index < 0) {
+        return false;
+    }
+
+    const auto current_field = focused_editable_text();
+    if (!current_field || *current_field != session->field_text) {
+        return false;
+    }
+
+    if (!replace_focused_selection_text(session->committed_text, session->original_text)) {
+        return false;
+    }
+
+    const auto updated = replace_unique_occurrence(*current_field, session->committed_text, session->original_text);
+    if (!updated) {
+        return false;
+    }
+
+    if (!update_cycle_session_after_undo(*current_field, session->original_text)) {
+        reset_cycle();
+        logger.write(LogTag::Undo, L"undo bookkeeping failed after restore; session cleared");
+        return true;
+    }
+
+    logger.write(
+        LogTag::Undo,
+        std::wstring(L"reverted to \"") + escape_for_log(session->original_text) + L"\" from \"" +
+        escape_for_log(session->committed_text) + L"\"");
     return true;
 }
 
