@@ -217,6 +217,39 @@ std::optional<std::wstring> focused_selection_text() {
     return selection;
 }
 
+std::optional<std::wstring> focused_editable_text() {
+    HRESULT init = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+    const bool should_uninit = SUCCEEDED(init);
+    if (FAILED(init) && init != RPC_E_CHANGED_MODE) {
+        return std::nullopt;
+    }
+
+    IUIAutomation* automation = nullptr;
+    IUIAutomationElement* focused = nullptr;
+    std::optional<std::wstring> text;
+    auto cleanup = [&]() {
+        release_ptr(focused);
+        release_ptr(automation);
+        if (should_uninit) {
+            CoUninitialize();
+        }
+    };
+
+    if (FAILED(CoCreateInstance(CLSID_CUIAutomation, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&automation)))) {
+        cleanup();
+        return std::nullopt;
+    }
+
+    if (FAILED(automation->GetFocusedElement(&focused)) || !focused) {
+        cleanup();
+        return std::nullopt;
+    }
+
+    text = current_editable_text(focused);
+    cleanup();
+    return text;
+}
+
 bool replace_focused_selection_text(const std::wstring& selected_text, const std::wstring& replacement) {
     if (selected_text.empty()) {
         return false;

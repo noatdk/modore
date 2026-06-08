@@ -34,7 +34,7 @@ The Linux columns are the same binary on different display servers;
 | --------------------------------------------- | :---: | :---------: | :-------------: | :-----: |
 | Top-candidate Mozc conversion (in-process)    |   ✓   |     ✓       |       ✓         |    ✗    |
 | Acronym/code prefix preserved (`R&Diraisho`)  |   ✓¹⁸ |     ✗       |       ✗         |    ✗    |
-| Cycle through Mozc candidates (repeat hotkey) |   ✓   |     ✓       |       ✓         |    ✗    |
+| Cycle through Mozc candidates (repeat hotkey) |   ✓   |     ✓       |       ✓         |    ◐    |
 | Esc to undo last conversion                   |   ✓   |     ✗       |       ✗         |    ✗    |
 | Katakana modifier (Shift+hotkey → カタカナ)   |   ✓   |     ✗       |       ✗         |    ◐    |
 | Floating candidate panel                      |   ✓   |     ✗       |       ✗         |    ✗    |

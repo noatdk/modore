@@ -1,5 +1,6 @@
 #include "app.hpp"
 #include "config.hpp"
+#include "cycle.hpp"
 #include "log.hpp"
 #include "ime.hpp"
 #include "pickup.hpp"
@@ -12,6 +13,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <utility>
 #include <thread>
 #include <vector>
 
@@ -315,11 +317,27 @@ LRESULT CALLBACK window_proc(HWND window, UINT msg, WPARAM wparam, LPARAM lparam
             logger.write(
                 modore::windows::LogTag::Hotkey,
                 katakana ? L"katakana hotkey fired" : L"conversion hotkey fired");
+            if (katakana) {
+                if (modore::windows::cycle_previous_pickup(logger)) {
+                    return 0;
+                }
+            } else {
+                if (modore::windows::cycle_last_pickup(logger)) {
+                    return 0;
+                }
+            }
             modore::windows::perform_pickup(
                 g_state.config,
                 logger,
-                [katakana, &logger](const std::wstring& text) -> std::optional<std::wstring> {
-                    return modore::windows::convert_with_ime(text, katakana, logger);
+                [katakana, &logger](const std::wstring& text) -> std::optional<modore::windows::PickupConversionResult> {
+                    const auto converted = modore::windows::convert_with_ime_candidates(text, katakana, logger);
+                    if (!converted) {
+                        return std::nullopt;
+                    }
+                    return modore::windows::PickupConversionResult{
+                        std::move(converted->committed),
+                        std::move(converted->candidates),
+                    };
                 });
         }
         return 0;

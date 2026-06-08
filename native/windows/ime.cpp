@@ -7,6 +7,7 @@
 #include <cstring>
 #include <mutex>
 #include <string>
+#include <vector>
 
 #include <windows.h>
 
@@ -57,6 +58,23 @@ std::wstring last_error_wide() {
     return utf8_to_wide(err, std::strlen(err));
 }
 
+std::vector<std::wstring> split_nul_wide_list(const std::string& text) {
+    std::vector<std::wstring> out;
+    size_t pos = 0;
+    while (pos < text.size()) {
+        size_t next = text.find('\0', pos);
+        const size_t len = (next == std::string::npos) ? (text.size() - pos) : (next - pos);
+        if (len > 0) {
+            out.push_back(utf8_to_wide(text.data() + pos, len));
+        }
+        if (next == std::string::npos) {
+            break;
+        }
+        pos = next + 1;
+    }
+    return out;
+}
+
 std::optional<std::wstring> run_line_convert(
     const std::string& input,
     unsigned int flags,
@@ -86,6 +104,52 @@ std::optional<std::wstring> run_line_convert(
             return std::nullopt;
         }
         out_cap = static_cast<size_t>(rc) + 1;
+    }
+}
+
+std::optional<ConversionResult> run_convert_with_candidates(
+    const std::string& input,
+    unsigned int flags,
+    Logger& logger) {
+    size_t commit_cap = std::max<size_t>(input.size() * 4 + 64, 256);
+    size_t commit_len = 0;
+    size_t cands_cap = 4096;
+    size_t cands_len = 0;
+    int candidate_count = 0;
+
+    for (;;) {
+        std::string commit_storage(commit_cap, '\0');
+        std::string candidate_storage(cands_cap, '\0');
+        int rc = mozc_bridge_convert_with_candidates_ex(
+            input.data(),
+            input.size(),
+            commit_storage.data(),
+            commit_storage.size(),
+            &commit_len,
+            candidate_storage.data(),
+            candidate_storage.size(),
+            &cands_len,
+            16,
+            &candidate_count,
+            flags);
+        if (rc == 0) {
+            ConversionResult result;
+            result.committed = utf8_to_wide(commit_storage.data(), commit_len);
+            result.candidates = split_nul_wide_list(std::string(candidate_storage.data(), cands_len));
+            if (result.candidates.empty() || result.candidates.front() != result.committed) {
+                result.candidates.insert(result.candidates.begin(), result.committed);
+            }
+            return result;
+        }
+        if (rc < 0) {
+            logger.write(LogTag::Ime, std::wstring(L"bridge candidate convert failed: ") + last_error_wide());
+            return std::nullopt;
+        }
+        if (static_cast<size_t>(rc) > (1u << 20)) {
+            logger.write(LogTag::Ime, L"bridge candidate convert returned unreasonably large output");
+            return std::nullopt;
+        }
+        commit_cap = static_cast<size_t>(rc) + 1;
     }
 }
 
@@ -164,6 +228,25 @@ std::optional<std::wstring> convert_with_ime(const std::wstring& text, bool kata
 
     const unsigned int flags = katakana ? MOZC_CONVERT_FLAG_KATAKANA : 0u;
     return run_line_convert(input, flags, logger);
+}
+
+std::optional<ConversionResult> convert_with_ime_candidates(
+    const std::wstring& text, bool katakana, Logger& logger) {
+    if (text.empty()) {
+        return std::nullopt;
+    }
+    if (!bootstrap_ime(logger)) {
+        return std::nullopt;
+    }
+
+    const std::string input = wide_to_utf8(text);
+    if (input.empty() && !text.empty()) {
+        logger.write(LogTag::Ime, L"input encoding to UTF-8 failed");
+        return std::nullopt;
+    }
+
+    const unsigned int flags = katakana ? MOZC_CONVERT_FLAG_KATAKANA : 0u;
+    return run_convert_with_candidates(input, flags, logger);
 }
 
 } // namespace modore::windows

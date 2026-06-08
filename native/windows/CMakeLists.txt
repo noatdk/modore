@@ -13,6 +13,7 @@ add_executable(modore
     config.cpp
     log.cpp
     ime.cpp
+    cycle.cpp
     pickup.cpp
     textio.cpp
 )

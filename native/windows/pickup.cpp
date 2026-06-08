@@ -1,4 +1,5 @@
 #include "pickup.hpp"
+#include "cycle.hpp"
 #include "textio.hpp"
 
 #include <chrono>
@@ -22,6 +23,30 @@ using Clock = std::chrono::steady_clock;
 
 long long elapsed_ms(Clock::time_point start, Clock::time_point end) {
     return std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+}
+
+std::optional<std::wstring> replace_unique_occurrence(
+    const std::wstring& text,
+    const std::wstring& needle,
+    const std::wstring& replacement) {
+    if (needle.empty()) {
+        return std::nullopt;
+    }
+    const size_t first = text.find(needle);
+    if (first == std::wstring::npos) {
+        return std::nullopt;
+    }
+    if (text.find(needle, first + needle.size()) != std::wstring::npos) {
+        return std::nullopt;
+    }
+    std::wstring updated = text;
+    updated.replace(first, needle.size(), replacement);
+    return updated;
+}
+
+std::wstring conversion_destination_label(const PickupConversionResult& conversion) {
+    const size_t total = conversion.candidates.empty() ? 1 : conversion.candidates.size();
+    return std::wstring(L"\"") + escape_for_log(conversion.committed) + L"\" [1/" + std::to_wstring(total) + L"]";
 }
 
 bool open_clipboard_for(HWND owner) {
@@ -186,6 +211,8 @@ bool perform_pickup(const ConfigSnapshot& config, Logger& logger, const PickupCo
     Clock::time_point converted_at = trigger_at;
     Clock::time_point pasted_at = trigger_at;
 
+    reset_cycle();
+
     std::optional<std::wstring> picked = focused_selection_text();
     if (picked && !picked->empty()) {
         logger.write(LogTag::Pickup, std::wstring(L"pickup captured selection via UIA bytes=") + std::to_wstring(picked->size()));
@@ -229,19 +256,29 @@ bool perform_pickup(const ConfigSnapshot& config, Logger& logger, const PickupCo
         LogTag::Pickup,
         std::wstring(L"pickup text=\"") + escape_for_log(*picked) + L"\" bytes=" + std::to_wstring(picked->size()));
 
+    const auto field_before_replace = focused_editable_text();
     const auto convert_started = Clock::now();
-    if (auto replacement = convert(*picked)) {
+    if (auto conversion = convert(*picked)) {
         converted_at = Clock::now();
         const auto native_started = Clock::now();
-        if (replace_focused_selection_text(*picked, *replacement)) {
+        if (replace_focused_selection_text(*picked, conversion->committed)) {
             pasted_at = Clock::now();
             logger.write(
                 LogTag::Pickup,
-                std::wstring(L"pickup replaced text via native API bytes=") + std::to_wstring(replacement->size()) +
+                std::wstring(L"pickup replaced text via native API to=") + conversion_destination_label(*conversion) +
                 L" total_ms=" + std::to_wstring(elapsed_ms(trigger_at, pasted_at)) +
                 L" selection_ms=" + std::to_wstring(elapsed_ms(trigger_at, picked_at)) +
                 L" convert_ms=" + std::to_wstring(elapsed_ms(convert_started, converted_at)) +
                 L" native_ms=" + std::to_wstring(elapsed_ms(native_started, pasted_at)));
+            if (field_before_replace) {
+                if (auto updated = replace_unique_occurrence(*field_before_replace, *picked, conversion->committed)) {
+                    if (conversion->candidates.size() > 1) {
+                        remember_cycle(*updated, *conversion);
+                    } else {
+                        reset_cycle();
+                    }
+                }
+            }
         } else {
             if (!clipboard_restore_text) {
                 const auto clipboard_before = read_clipboard_text(owner);
@@ -249,18 +286,27 @@ bool perform_pickup(const ConfigSnapshot& config, Logger& logger, const PickupCo
                     clipboard_restore_text = std::move(clipboard_before.text);
                 }
             }
-            if (write_clipboard_text(owner, *replacement)) {
+            if (write_clipboard_text(owner, conversion->committed)) {
                 send_key_combo('V');
                 pasted_at = Clock::now();
                 logger.write(
                     LogTag::Pickup,
-                    std::wstring(L"pickup replaced text bytes=") + std::to_wstring(replacement->size()) +
+                    std::wstring(L"pickup replaced text to=") + conversion_destination_label(*conversion) +
                     L" total_ms=" + std::to_wstring(elapsed_ms(trigger_at, pasted_at)) +
                     L" selection_ms=" + std::to_wstring(elapsed_ms(trigger_at, picked_at)) +
                     L" convert_ms=" + std::to_wstring(elapsed_ms(convert_started, converted_at)) +
                     L" paste_ms=" + std::to_wstring(elapsed_ms(converted_at, pasted_at)));
                 if (clipboard_restore_text) {
                     restore_clipboard_later(owner, std::move(*clipboard_restore_text), config.clipboard.restore_clipboard_delay_ms);
+                }
+                if (field_before_replace) {
+                    if (auto updated = replace_unique_occurrence(*field_before_replace, *picked, conversion->committed)) {
+                        if (conversion->candidates.size() > 1) {
+                            remember_cycle(*updated, *conversion);
+                        } else {
+                            reset_cycle();
+                        }
+                    }
                 }
             } else {
                 logger.write(LogTag::Pickup, L"pickup replacement skipped: could not write replacement to clipboard");
