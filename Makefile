@@ -7,19 +7,23 @@
 # Plain `make` prints the target list — see `help` below. Use `make build`
 # (or an explicit `make macos` / `make bridge`) to actually compile.
 
-UNAME_S := $(shell uname -s)
 MODORE_ENABLE_SCRIPTING ?= 0
 
-ifeq ($(UNAME_S),Darwin)
-    PLATFORM := macos
-else ifeq ($(UNAME_S),Linux)
-    PLATFORM := linux
-else ifneq (,$(findstring MINGW,$(UNAME_S)))
-    PLATFORM := windows
-else ifneq (,$(findstring MSYS,$(UNAME_S)))
+ifeq ($(OS),Windows_NT)
     PLATFORM := windows
 else
-    PLATFORM := unsupported
+    UNAME_S := $(shell uname -s)
+    ifeq ($(UNAME_S),Darwin)
+        PLATFORM := macos
+    else ifeq ($(UNAME_S),Linux)
+        PLATFORM := linux
+    else ifneq (,$(findstring MINGW,$(UNAME_S)))
+        PLATFORM := windows
+    else ifneq (,$(findstring MSYS,$(UNAME_S)))
+        PLATFORM := windows
+    else
+        PLATFORM := unsupported
+    endif
 endif
 
 NATIVE_DIR := native/$(PLATFORM)
