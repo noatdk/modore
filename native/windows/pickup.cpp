@@ -3,6 +3,7 @@
 
 #include <chrono>
 #include <cstring>
+#include <utility>
 #include <optional>
 #include <string>
 #include <thread>
@@ -16,6 +17,12 @@ struct ClipboardSnapshot {
     std::wstring text;
     bool has_text = false;
 };
+
+using Clock = std::chrono::steady_clock;
+
+long long elapsed_ms(Clock::time_point start, Clock::time_point end) {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+}
 
 bool open_clipboard_for(HWND owner) {
     return OpenClipboard(owner) != 0;
@@ -68,6 +75,18 @@ bool write_clipboard_text(HWND owner, const std::wstring& text) {
     }
     CloseClipboard();
     return true;
+}
+
+void restore_clipboard_later(HWND owner, std::wstring text, int delay_ms) {
+    if (delay_ms <= 0) {
+        write_clipboard_text(owner, text);
+        return;
+    }
+
+    std::thread([owner, text = std::move(text), delay_ms]() mutable {
+        std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
+        write_clipboard_text(owner, text);
+    }).detach();
 }
 
 void send_key_combo(WORD vk) {
@@ -150,14 +169,19 @@ std::optional<std::wstring> poll_clipboard_change(HWND owner, DWORD baseline_seq
 } // namespace
 
 bool perform_pickup(const ConfigSnapshot& config, Logger& logger, const PickupConverter& convert) {
+    const auto trigger_at = Clock::now();
     const HWND owner = nullptr;
-    const auto clipboard_before = read_clipboard_text(owner);
     bool did_force_select = false;
+    std::optional<std::wstring> clipboard_restore_text;
+    Clock::time_point picked_at = trigger_at;
+    Clock::time_point converted_at = trigger_at;
+    Clock::time_point pasted_at = trigger_at;
 
     std::optional<std::wstring> picked = focused_selection_text();
     if (picked && !picked->empty()) {
         logger.write(LogTag::Pickup, std::wstring(L"pickup captured selection via UIA bytes=") + std::to_wstring(picked->size()));
     } else {
+        const auto clipboard_before = read_clipboard_text(owner);
         picked.reset();
         send_select_previous_word();
         did_force_select = true;
@@ -169,15 +193,21 @@ bool perform_pickup(const ConfigSnapshot& config, Logger& logger, const PickupCo
         if (picked) {
             logger.write(LogTag::Pickup, std::wstring(L"pickup captured clipboard bytes=") + std::to_wstring(picked->size()));
         }
+
+        if (clipboard_before.has_text) {
+            clipboard_restore_text = clipboard_before.text;
+        }
     }
+
+    picked_at = Clock::now();
 
     if (!picked) {
         logger.write(LogTag::Pickup, L"pickup failed: no selection via UIA and clipboard did not change after Ctrl+Shift+Left/Ctrl+C");
         if (did_force_select) {
             send_key(VK_RIGHT);
         }
-        if (clipboard_before.has_text) {
-            write_clipboard_text(owner, clipboard_before.text);
+        if (clipboard_restore_text) {
+            write_clipboard_text(owner, *clipboard_restore_text);
         }
         return false;
     }
@@ -186,20 +216,39 @@ bool perform_pickup(const ConfigSnapshot& config, Logger& logger, const PickupCo
         LogTag::Pickup,
         std::wstring(L"pickup text=\"") + escape_for_log(*picked) + L"\" bytes=" + std::to_wstring(picked->size()));
 
+    const auto convert_started = Clock::now();
     if (auto replacement = convert(*picked)) {
+        converted_at = Clock::now();
+        if (!clipboard_restore_text) {
+            const auto clipboard_before = read_clipboard_text(owner);
+            if (clipboard_before.has_text) {
+                clipboard_restore_text = std::move(clipboard_before.text);
+            }
+        }
         if (write_clipboard_text(owner, *replacement)) {
             send_key_combo('V');
-            logger.write(LogTag::Pickup, std::wstring(L"pickup replaced text bytes=") + std::to_wstring(replacement->size()));
+            pasted_at = Clock::now();
+            logger.write(
+                LogTag::Pickup,
+                std::wstring(L"pickup replaced text bytes=") + std::to_wstring(replacement->size()) +
+                L" total_ms=" + std::to_wstring(elapsed_ms(trigger_at, pasted_at)) +
+                L" selection_ms=" + std::to_wstring(elapsed_ms(trigger_at, picked_at)) +
+                L" convert_ms=" + std::to_wstring(elapsed_ms(convert_started, converted_at)) +
+                L" paste_ms=" + std::to_wstring(elapsed_ms(converted_at, pasted_at)));
+            if (clipboard_restore_text) {
+                restore_clipboard_later(owner, std::move(*clipboard_restore_text), config.clipboard.restore_clipboard_delay_ms);
+            }
         } else {
             logger.write(LogTag::Pickup, L"pickup replacement skipped: could not write replacement to clipboard");
+            if (clipboard_restore_text) {
+                write_clipboard_text(owner, *clipboard_restore_text);
+            }
         }
     } else {
         logger.write(LogTag::Pickup, L"pickup replacement skipped: converter returned no replacement");
-    }
-
-    std::this_thread::sleep_for(std::chrono::milliseconds(config.clipboard.restore_clipboard_delay_ms));
-    if (clipboard_before.has_text) {
-        write_clipboard_text(owner, clipboard_before.text);
+        if (clipboard_restore_text) {
+            write_clipboard_text(owner, *clipboard_restore_text);
+        }
     }
     return true;
 }

@@ -1,7 +1,11 @@
 # Build outputs
 native/macos/build/
+native/windows/build/
+native/windows/build-*/
 bridge/build/
 build/
+build-*/
+build-fcitx5-mozc-win/
 
 # Lazily fetched scripting engine deps (see `make fetch-luajit`).
 third_party/luajit/

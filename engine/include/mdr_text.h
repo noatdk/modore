@@ -23,17 +23,21 @@
 extern "C" {
 #endif
 
-#if defined(_WIN32) || defined(__CYGWIN__)
+#if defined(MDR_TEXT_INTERNAL)
+/* Compiled directly into a consumer (the bridge): keep this copy hidden on
+ * ELF/Mach-O and avoid dllimport on Windows so the internal object file does
+ * not turn into an import thunk. */
+#  if defined(_WIN32) || defined(__CYGWIN__)
+#    define MDR_TEXT_API
+#  else
+#    define MDR_TEXT_API __attribute__((visibility("hidden")))
+#  endif
+#elif defined(_WIN32) || defined(__CYGWIN__)
 #  ifdef MDR_BUILDING
 #    define MDR_TEXT_API __declspec(dllexport)
 #  else
 #    define MDR_TEXT_API __declspec(dllimport)
 #  endif
-#elif defined(MDR_TEXT_INTERNAL)
-/* Compiled directly into a consumer (the bridge) that already owns the engine
- * dylib at runtime: keep this copy hidden so the engine stays the sole
- * exporter and the two identical copies never interpose across dylibs. */
-#  define MDR_TEXT_API __attribute__((visibility("hidden")))
 #else
 #  define MDR_TEXT_API __attribute__((visibility("default")))
 #endif

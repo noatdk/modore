@@ -29,38 +29,40 @@ endif()
 # Skip building the fcitx5 plugin — we only want the mozc engine.
 set(BUILD_MOZC_ADDON OFF CACHE BOOL "Skip the fcitx5 addon (we want engine only)" FORCE)
 
-# fcitx5-mozc's CI applies this patch to the protobuf submodule before building.
-# It strips non-C++ generators from libprotoc (we don't need java/csharp/ruby/etc.)
-# and removes its dependency on libupb. Without the patch, libprotoc references
-# libupb but fcitx5-mozc disables that target, leading to "library 'libupb'
-# not found" at link time. See third_party/fcitx5-mozc/.github/workflows/ci.yml.
-set(_PROTOBUF_PATCH "${FCITX5_MOZC_DIR}/patches/protobuf.patch")
-execute_process(
-    COMMAND git apply --directory=protobuf --reverse --check "${_PROTOBUF_PATCH}"
-    WORKING_DIRECTORY "${FCITX5_MOZC_DIR}"
-    RESULT_VARIABLE _PATCH_ALREADY_APPLIED
-    OUTPUT_QUIET ERROR_QUIET
-)
-if(NOT _PATCH_ALREADY_APPLIED EQUAL 0)
-    message(STATUS "Applying fcitx5-mozc's protobuf.patch")
+if(NOT WIN32)
+    # fcitx5-mozc's CI applies this patch to the protobuf submodule before building.
+    # It strips non-C++ generators from libprotoc (we don't need java/csharp/ruby/etc.)
+    # and removes its dependency on libupb. Without the patch, libprotoc references
+    # libupb but fcitx5-mozc disables that target, leading to "library 'libupb'
+    # not found" at link time. See third_party/fcitx5-mozc/.github/workflows/ci.yml.
+    set(_PROTOBUF_PATCH "${FCITX5_MOZC_DIR}/patches/protobuf.patch")
     execute_process(
-        COMMAND git apply --directory=protobuf "${_PROTOBUF_PATCH}"
+        COMMAND git apply --directory=protobuf --reverse --check "${_PROTOBUF_PATCH}"
         WORKING_DIRECTORY "${FCITX5_MOZC_DIR}"
-        RESULT_VARIABLE _PATCH_RESULT
+        RESULT_VARIABLE _PATCH_ALREADY_APPLIED
+        OUTPUT_QUIET ERROR_QUIET
     )
-    if(NOT _PATCH_RESULT EQUAL 0)
-        message(FATAL_ERROR
-            "Failed to apply fcitx5-mozc's protobuf patch. "
-            "Try resetting the protobuf submodule with: "
-            "git -C ${FCITX5_MOZC_DIR}/protobuf reset --hard HEAD && "
-            "git -C ${FCITX5_MOZC_DIR}/protobuf clean -fdx")
+    if(NOT _PATCH_ALREADY_APPLIED EQUAL 0)
+        message(STATUS "Applying fcitx5-mozc's protobuf.patch")
+        execute_process(
+            COMMAND git apply --directory=protobuf "${_PROTOBUF_PATCH}"
+            WORKING_DIRECTORY "${FCITX5_MOZC_DIR}"
+            RESULT_VARIABLE _PATCH_RESULT
+        )
+        if(NOT _PATCH_RESULT EQUAL 0)
+            message(FATAL_ERROR
+                "Failed to apply fcitx5-mozc's protobuf patch. "
+                "Try resetting the protobuf submodule with: "
+                "git -C ${FCITX5_MOZC_DIR}/protobuf reset --hard HEAD && "
+                "git -C ${FCITX5_MOZC_DIR}/protobuf clean -fdx")
+        endif()
     endif()
-endif()
 
-# fcitx5-mozc disables libupb ("No binary for iOS"), but for our patched
-# protobuf the libupb path is gone entirely. Leave the default and let the
-# patch handle it — explicit OFF works too.
-set(protobuf_BUILD_LIBUPB OFF CACHE BOOL "Patched out of libprotoc by fcitx5-mozc" FORCE)
+    # fcitx5-mozc disables libupb ("No binary for iOS"), but for our patched
+    # protobuf the libupb path is gone entirely. Leave the default and let the
+    # patch handle it — explicit OFF works too.
+    set(protobuf_BUILD_LIBUPB OFF CACHE BOOL "Patched out of libprotoc by fcitx5-mozc" FORCE)
+endif()
 
 # Pre-create binary-tree subdirectories that mozc's python generator scripts
 # write to. fcitx5-mozc declares them via `add_custom_command OUTPUT` but
@@ -69,28 +71,7 @@ set(protobuf_BUILD_LIBUPB OFF CACHE BOOL "Patched out of libprotoc by fcitx5-moz
 file(MAKE_DIRECTORY
     ${CMAKE_BINARY_DIR}/fcitx5-mozc/base
     ${CMAKE_BINARY_DIR}/fcitx5-mozc/dictionary
-    ${CMAKE_BINARY_DIR}/fcitx5-mozc/data_manager/oss
 )
-
-# Mozc's OSS data manager #includes a pre-generated dictionary blob:
-#   #include "data_manager/oss/mozc_data.inc"   (~50MB of compiled-in data)
-# fcitx5-mozc doesn't ship this; their CI downloads a fresh build from a
-# GitHub release. We mirror that.
-set(_MOZC_DATA_INC "${CMAKE_BINARY_DIR}/fcitx5-mozc/data_manager/oss/mozc_data.inc")
-set(_MOZC_DATA_URL "https://github.com/fcitx-contrib/fcitx5-mozc/releases/download/latest/mozc_data.inc")
-if(NOT EXISTS "${_MOZC_DATA_INC}")
-    message(STATUS "Downloading mozc_data.inc (~50MB) from ${_MOZC_DATA_URL}")
-    file(DOWNLOAD "${_MOZC_DATA_URL}" "${_MOZC_DATA_INC}"
-        SHOW_PROGRESS
-        STATUS _DL_STATUS
-        TLS_VERIFY ON
-    )
-    list(GET _DL_STATUS 0 _DL_CODE)
-    if(NOT _DL_CODE EQUAL 0)
-        file(REMOVE "${_MOZC_DATA_INC}")
-        message(FATAL_ERROR "Failed to download mozc_data.inc: ${_DL_STATUS}")
-    endif()
-endif()
 
 add_subdirectory(${FCITX5_MOZC_DIR} ${CMAKE_BINARY_DIR}/fcitx5-mozc EXCLUDE_FROM_ALL)
 
@@ -201,26 +182,32 @@ message(STATUS "Linking ${_absl_count} absl_* static libs into mozc_bridge")
 
 # Linux (GNU ld): linking static libprotobuf into a shared library can leave
 # undefined google::protobuf::* on the final .so unless the archive is pulled
-# in whole. macOS ld64 does not hit this; keep Darwin on the simple link line.
-if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-  target_link_libraries(mozc_bridge PUBLIC
+# in whole. MinGW's GNU ld has the same requirement; macOS ld64 does not.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR WIN32)
+  set(_MOZC_BRIDGE_PROTOBUF_LINK
       "-Wl,--whole-archive"
       libprotobuf
       "-Wl,--no-whole-archive"
-      mozc-static
-      absl::flags_parse
-      absl::log_flags
-      ${_absl_targets}
   )
 else()
-  target_link_libraries(mozc_bridge PUBLIC
+  set(_MOZC_BRIDGE_PROTOBUF_LINK
       libprotobuf
-      mozc-static
-      absl::flags_parse
-      absl::log_flags
-      ${_absl_targets}
   )
 endif()
+
+set(_MOZC_BRIDGE_PLATFORM_LIBS)
+if(WIN32)
+  list(APPEND _MOZC_BRIDGE_PLATFORM_LIBS crypt32 imm32)
+endif()
+
+target_link_libraries(mozc_bridge PUBLIC
+    mozc-static
+    ${_MOZC_BRIDGE_PROTOBUF_LINK}
+    absl::flags_parse
+    absl::log_flags
+    ${_absl_targets}
+    ${_MOZC_BRIDGE_PLATFORM_LIBS}
+)
 
 # Mozc's CMake build generates protobuf headers and a handful of data files
 # via a custom `gen` target. target_link_libraries only adds link-time deps,

@@ -37,7 +37,8 @@ std::filesystem::path config_dir();
 std::filesystem::path config_file_path();
 std::filesystem::path log_file_path();
 std::filesystem::path executable_path();
-std::filesystem::path mozc_profile_path();
+std::filesystem::path ime_profile_path();
+inline std::filesystem::path mozc_profile_path() { return ime_profile_path(); }
 
 HotkeySpec default_hotkey();
 ConfigSnapshot load_config_snapshot();

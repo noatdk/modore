@@ -56,8 +56,8 @@ std::wstring root_of_tag(LogTag tag) {
         return L"pickup";
     case LogTag::Clipboard:
         return L"clipboard";
-    case LogTag::Mozc:
-        return L"mozc";
+    case LogTag::Ime:
+        return L"ime";
     case LogTag::SecureInput:
         return L"secure-input";
     case LogTag::Undo:
@@ -164,7 +164,7 @@ void Logger::configure_disabled_roots(const std::vector<std::wstring>& disabled)
         else if (r == L"hotkey") mask |= bit_for(LogTag::Hotkey);
         else if (r == L"pickup") mask |= bit_for(LogTag::Pickup);
         else if (r == L"clipboard") mask |= bit_for(LogTag::Clipboard);
-        else if (r == L"mozc") mask |= bit_for(LogTag::Mozc);
+        else if (r == L"ime" || r == L"mozc") mask |= bit_for(LogTag::Ime);
         else if (r == L"secure-input") mask |= bit_for(LogTag::SecureInput);
         else if (r == L"undo") mask |= bit_for(LogTag::Undo);
         else if (r == L"cycle") mask |= bit_for(LogTag::Cycle);

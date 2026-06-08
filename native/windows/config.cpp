@@ -347,7 +347,7 @@ std::filesystem::path log_file_path() {
     return config_dir() / L"modore.log";
 }
 
-std::filesystem::path mozc_profile_path() {
+std::filesystem::path ime_profile_path() {
     return config_dir() / L"mozc";
 }
 
@@ -469,12 +469,12 @@ ConfigSnapshot preflight_config() {
 std::wstring format_paths() {
     const auto config = config_file_path().wstring();
     const auto log = log_file_path().wstring();
-    const auto profile = mozc_profile_path().wstring();
+    const auto profile = ime_profile_path().wstring();
     const auto exe = executable_path().wstring();
     std::wostringstream out;
     out << L"config:        " << config << L"\n";
     out << L"log:           " << log << L"\n";
-    out << L"mozc profile:  " << profile << L"\n";
+    out << L"ime profile:   " << profile << L"\n";
     out << L"executable:    " << exe;
     return out.str();
 }

@@ -8,9 +8,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <filesystem>
 #include <string>
-
-#include <sys/stat.h>
 
 #include "absl/log/initialize.h"
 #include "base/system_util.h"
@@ -21,22 +20,16 @@
 namespace modore::mozc_bridge {
 namespace {
 
-// Mozc calls SetUserProfileDirectory which bypasses the usual GetDir()-time
-// CreateDirectory logic; ~/.local/state/... may not exist yet.
-void mkdir_posix_path_parents(const std::string &absolute_dir) {
-  if (absolute_dir.empty() || absolute_dir[0] != '/') {
+// Mozc calls SetUserProfileDirectory directly, so the directory must exist
+// before any singleton touches config or data-manager state.
+void ensure_directory_tree(const std::string &absolute_dir) {
+  if (absolute_dir.empty()) {
     return;
   }
-  for (size_t i = 1; i <= absolute_dir.size(); ++i) {
-    if (i == absolute_dir.size() || absolute_dir[i] == '/') {
-      std::string part = absolute_dir.substr(0, i);
-      if (part.size() <= 1) {
-        continue;
-      }
-      if (::mkdir(part.c_str(), 0755) != 0 && errno != EEXIST) {
-        // Ignore; downstream writes surface their own failures.
-      }
-    }
+  std::error_code ec;
+  std::filesystem::create_directories(std::filesystem::path(absolute_dir), ec);
+  if (ec) {
+    // Ignore; downstream writes surface their own failures.
   }
 }
 
@@ -155,12 +148,16 @@ class OssBackend final : public Backend {
 std::unique_ptr<Backend> CreateOssBackend(const char *user_profile_dir,
                                           std::string *error) {
   // Mozc resolves `user://config1.db` via SystemUtil::GetUserProfileDirectory(),
-  // not via MOZC_USER_PROFILE_DIRECTORY (that env is unused on Linux in this
-  // tree). Set the directory before any Mozc singleton touches ConfigHandler.
+  // not via MOZC_USER_PROFILE_DIRECTORY in this tree. Set the directory before
+  // any Mozc singleton touches ConfigHandler.
   if (user_profile_dir && *user_profile_dir) {
     const std::string p(user_profile_dir);
-    mkdir_posix_path_parents(p);
+    ensure_directory_tree(p);
+#ifdef _WIN32
+    _putenv_s("MOZC_USER_PROFILE_DIRECTORY", p.c_str());
+#else
     setenv("MOZC_USER_PROFILE_DIRECTORY", p.c_str(), /*overwrite=*/1);
+#endif
     mozc::SystemUtil::SetUserProfileDirectory(p);
   }
 

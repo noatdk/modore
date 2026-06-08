@@ -14,7 +14,7 @@ enum class LogTag {
     Hotkey,
     Pickup,
     Clipboard,
-    Mozc,
+    Ime,
     SecureInput,
     Undo,
     Cycle,

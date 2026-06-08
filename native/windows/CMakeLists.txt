@@ -5,11 +5,14 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../../bridge ${CMAKE_CURRENT_BINARY_DIR}/bridge EXCLUDE_FROM_ALL)
+
 add_executable(modore
     app.cpp
     main.cpp
     config.cpp
     log.cpp
+    ime.cpp
     pickup.cpp
     textio.cpp
 )
@@ -29,6 +32,7 @@ target_compile_definitions(modore PRIVATE
 )
 
 target_link_libraries(modore PRIVATE
+    mozc_bridge
     user32
     shell32
     ole32
@@ -41,3 +45,9 @@ target_link_libraries(modore PRIVATE
 if (MINGW)
     target_link_options(modore PRIVATE -municode)
 endif()
+
+add_custom_command(TARGET modore POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        $<TARGET_FILE:mozc_bridge>
+        $<TARGET_FILE_DIR:modore>
+)

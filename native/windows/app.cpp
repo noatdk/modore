@@ -1,6 +1,7 @@
 #include "app.hpp"
 #include "config.hpp"
 #include "log.hpp"
+#include "ime.hpp"
 #include "pickup.hpp"
 
 #include <algorithm>
@@ -178,7 +179,7 @@ void log_boot() {
     logger.write(modore::windows::LogTag::Boot, L"bundle path=not-applicable");
     logger.write(modore::windows::LogTag::Boot, std::wstring(L"config=") + modore::windows::config_file_path().wstring());
     logger.write(modore::windows::LogTag::Boot, std::wstring(L"log=") + modore::windows::log_file_path().wstring());
-    logger.write(modore::windows::LogTag::Boot, std::wstring(L"mozc profile=") + modore::windows::mozc_profile_path().wstring());
+    logger.write(modore::windows::LogTag::Boot, std::wstring(L"ime profile=") + modore::windows::ime_profile_path().wstring());
 }
 
 void print_check_config() {
@@ -276,8 +277,8 @@ LRESULT CALLBACK window_proc(HWND window, UINT msg, WPARAM wparam, LPARAM lparam
             modore::windows::perform_pickup(
                 g_state.config,
                 logger,
-                [](const std::wstring&) -> std::optional<std::wstring> {
-                    return std::nullopt;
+                [&logger](const std::wstring& text) -> std::optional<std::wstring> {
+                    return modore::windows::convert_with_ime(text, false, logger);
                 });
         }
         return 0;
@@ -311,6 +312,7 @@ int run_host() {
     logger.configure_disabled_roots(snapshot.logging_disabled_roots);
 
     log_boot();
+    modore::windows::bootstrap_ime(logger);
 
     const HINSTANCE instance = GetModuleHandleW(nullptr);
     const wchar_t* class_name = L"modore_host_window";

@@ -21,12 +21,14 @@
 #include <string>
 #include <vector>
 
+#ifndef _WIN32
 #include <fcntl.h>
 #include <sys/select.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#endif
 
 namespace {
 
@@ -445,6 +447,7 @@ static std::string shell_candidates_text(const ShellSession& session) {
     return out;
 }
 
+#ifndef _WIN32
 static bool write_all_fd(int fd, const char* data, size_t len);
 static bool read_all_fd(int fd, std::string* out);
 static bool connect_unix_socket(const std::string& socket_path, int* fd_out);
@@ -644,6 +647,7 @@ static void shell_server_worker(ShellConvertServerState* state) {
         }
     }
 }
+#endif
 
 static void replace_all(std::string* s, const std::string& from, const std::string& to) {
     if (from.empty()) return;
@@ -1123,6 +1127,7 @@ extern "C" int mozc_bridge_convert_line(const char *text,
     return rc;
 }
 
+#ifndef _WIN32
 extern "C" int mozc_bridge_shell_server_start(const char *socket_path) {
     if (!socket_path || !*socket_path) {
         mozc_bridge_set_error("missing socket path");
@@ -1241,6 +1246,87 @@ extern "C" int mozc_bridge_shell_select_remote(const char *socket_path,
                                 std::to_string(selected_index), text, text_len,
                                 caret_byte, out_buf, out_cap, out_len);
 }
+#endif
+
+#ifdef _WIN32
+extern "C" int mozc_bridge_shell_server_start(const char *socket_path) {
+    (void)socket_path;
+    mozc_bridge_set_error("shell transport is not supported on Windows");
+    return -1;
+}
+
+extern "C" void mozc_bridge_shell_server_stop(void) {
+    mozc_bridge_clear_error();
+}
+
+extern "C" int mozc_bridge_shell_convert_remote(const char *socket_path,
+                                                const char *session_id_in,
+                                                const char *mode_in,
+                                                const char *text,
+                                                size_t text_len,
+                                                size_t caret_byte,
+                                                char *out_buf,
+                                                size_t out_cap,
+                                                size_t *out_len) {
+    (void)socket_path;
+    (void)session_id_in;
+    (void)mode_in;
+    (void)text;
+    (void)text_len;
+    (void)caret_byte;
+    (void)out_buf;
+    (void)out_cap;
+    (void)out_len;
+    mozc_bridge_set_error("shell transport is not supported on Windows");
+    return -1;
+}
+
+extern "C" int mozc_bridge_shell_candidates_remote(const char *socket_path,
+                                                   const char *session_id_in,
+                                                   const char *mode_in,
+                                                   const char *text,
+                                                   size_t text_len,
+                                                   size_t caret_byte,
+                                                   char *out_buf,
+                                                   size_t out_cap,
+                                                   size_t *out_len) {
+    (void)socket_path;
+    (void)session_id_in;
+    (void)mode_in;
+    (void)text;
+    (void)text_len;
+    (void)caret_byte;
+    (void)out_buf;
+    (void)out_cap;
+    (void)out_len;
+    mozc_bridge_set_error("shell transport is not supported on Windows");
+    return -1;
+}
+
+extern "C" int mozc_bridge_shell_select_remote(const char *socket_path,
+                                               const char *session_id_in,
+                                               const char *mode_in,
+                                               size_t selected_index,
+                                               const char *text,
+                                               size_t text_len,
+                                               size_t caret_byte,
+                                               char *out_buf,
+                                               size_t out_cap,
+                                               size_t *out_len) {
+    (void)socket_path;
+    (void)session_id_in;
+    (void)mode_in;
+    (void)selected_index;
+    (void)text;
+    (void)text_len;
+    (void)caret_byte;
+    (void)out_buf;
+    (void)out_cap;
+    (void)out_len;
+    mozc_bridge_set_error("shell transport is not supported on Windows");
+    return -1;
+}
+#endif
 
 extern "C" int mozc_bridge_shell_bootstrap(const char *hotkey_display_name,
                                            const char *host_executable_path,

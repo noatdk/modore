@@ -1,0 +1,118 @@
+#include "ime.hpp"
+
+#include "config.hpp"
+
+#include <algorithm>
+#include <cstring>
+#include <mutex>
+#include <string>
+
+#include <windows.h>
+
+#include <mozc_bridge.h>
+
+namespace modore::windows {
+namespace {
+
+std::string wide_to_utf8(const std::wstring& text) {
+    if (text.empty()) {
+        return {};
+    }
+    const int size = WideCharToMultiByte(
+        CP_UTF8, 0, text.data(), static_cast<int>(text.size()),
+        nullptr, 0, nullptr, nullptr);
+    if (size <= 0) {
+        return {};
+    }
+    std::string out(static_cast<size_t>(size), '\0');
+    WideCharToMultiByte(
+        CP_UTF8, 0, text.data(), static_cast<int>(text.size()),
+        out.data(), size, nullptr, nullptr);
+    return out;
+}
+
+std::wstring utf8_to_wide(const char* text, size_t len) {
+    if (!text || len == 0) {
+        return {};
+    }
+    const int size = MultiByteToWideChar(
+        CP_UTF8, MB_ERR_INVALID_CHARS, text, static_cast<int>(len),
+        nullptr, 0);
+    if (size <= 0) {
+        return {};
+    }
+    std::wstring out(static_cast<size_t>(size), L'\0');
+    MultiByteToWideChar(
+        CP_UTF8, MB_ERR_INVALID_CHARS, text, static_cast<int>(len),
+        out.data(), size);
+    return out;
+}
+
+std::wstring last_error_wide() {
+    const char* err = mozc_bridge_last_error();
+    if (!err) {
+        return L"unknown error";
+    }
+    return utf8_to_wide(err, std::strlen(err));
+}
+
+} // namespace
+
+bool bootstrap_ime(Logger& logger) {
+    static std::once_flag once;
+    static bool initialized = false;
+    std::call_once(once, [&]() {
+        const auto profile = ime_profile_path().wstring();
+        const std::string profile_utf8 = wide_to_utf8(profile);
+        if (mozc_bridge_init(profile_utf8.c_str()) != 0) {
+            logger.write(LogTag::Ime, std::wstring(L"bridge init failed: ") + last_error_wide());
+            initialized = false;
+            return;
+        }
+
+        logger.write(LogTag::Ime, std::wstring(L"bridge initialized (profile=") + profile + L")");
+        initialized = true;
+    });
+    return initialized;
+}
+
+std::optional<std::wstring> convert_with_ime(const std::wstring& text, bool katakana, Logger& logger) {
+    if (text.empty()) {
+        return std::nullopt;
+    }
+    if (!bootstrap_ime(logger)) {
+        return std::nullopt;
+    }
+
+    const std::string input = wide_to_utf8(text);
+    if (input.empty() && !text.empty()) {
+        logger.write(LogTag::Ime, L"input encoding to UTF-8 failed");
+        return std::nullopt;
+    }
+
+    const unsigned int flags = katakana ? MOZC_CONVERT_FLAG_KATAKANA : 0u;
+    size_t commit_cap = std::max<size_t>(input.size() * 4 + 64, 256);
+    size_t commit_len = 0;
+
+    for (;;) {
+        std::string commit_storage(commit_cap, '\0');
+        int rc = mozc_bridge_convert_ex(
+            input.data(), input.size(),
+            commit_storage.data(), commit_storage.size(), &commit_len,
+            flags);
+        if (rc == 0) {
+            return utf8_to_wide(commit_storage.data(), commit_len);
+        }
+        if (rc < 0) {
+            logger.write(LogTag::Ime, std::wstring(L"bridge convert failed: ") + last_error_wide());
+            return std::nullopt;
+        }
+        if (static_cast<size_t>(rc) > (1u << 20)) {
+            logger.write(LogTag::Ime, L"bridge convert returned unreasonably large output");
+            return std::nullopt;
+        }
+        commit_cap = static_cast<size_t>(rc) + 1;
+    }
+}
+
+} // namespace modore::windows
