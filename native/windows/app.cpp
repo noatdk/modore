@@ -313,6 +313,7 @@ int run_host() {
 
     log_boot();
     modore::windows::bootstrap_ime(logger);
+    modore::windows::warmup_ime(logger);
 
     const HINSTANCE instance = GetModuleHandleW(nullptr);
     const wchar_t* class_name = L"modore_host_window";

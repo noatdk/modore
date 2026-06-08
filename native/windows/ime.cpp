@@ -3,6 +3,7 @@
 #include "config.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cstring>
 #include <mutex>
 #include <string>
@@ -56,6 +57,32 @@ std::wstring last_error_wide() {
     return utf8_to_wide(err, std::strlen(err));
 }
 
+bool run_warmup_convert(Logger& logger) {
+    const char* input = "a";
+    char commit_buf[32] = {};
+    size_t commit_len = 0;
+    const auto start = std::chrono::steady_clock::now();
+    const int rc = mozc_bridge_convert_ex(
+        input, std::strlen(input),
+        commit_buf, sizeof(commit_buf), &commit_len,
+        /*flags=*/0u);
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - start).count();
+    if (rc != 0) {
+        logger.write(
+            LogTag::Ime,
+            std::wstring(L"bridge warmup skipped: ") + last_error_wide() +
+                L" elapsed_ms=" + std::to_wstring(elapsed));
+        return false;
+    }
+
+    logger.write(
+        LogTag::Ime,
+        std::wstring(L"bridge warmup complete commit_bytes=") + std::to_wstring(commit_len) +
+            L" elapsed_ms=" + std::to_wstring(elapsed));
+    return true;
+}
+
 } // namespace
 
 bool bootstrap_ime(Logger& logger) {
@@ -74,6 +101,19 @@ bool bootstrap_ime(Logger& logger) {
         initialized = true;
     });
     return initialized;
+}
+
+bool warmup_ime(Logger& logger) {
+    static std::once_flag once;
+    static bool warmed = false;
+    std::call_once(once, [&]() {
+        if (!bootstrap_ime(logger)) {
+            warmed = false;
+            return;
+        }
+        warmed = run_warmup_convert(logger);
+    });
+    return warmed;
 }
 
 std::optional<std::wstring> convert_with_ime(const std::wstring& text, bool katakana, Logger& logger) {

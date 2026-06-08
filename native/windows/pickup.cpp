@@ -157,11 +157,20 @@ std::optional<std::wstring> poll_clipboard_change(HWND owner, DWORD baseline_seq
             if (snapshot.has_text && !snapshot.text.empty()) {
                 return snapshot.text;
             }
-        } else {
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-            continue;
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    return std::nullopt;
+}
+
+std::optional<std::wstring> wait_for_selection(int timeout_ms) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+    while (std::chrono::steady_clock::now() < deadline) {
+        auto selection = focused_selection_text();
+        if (selection && !selection->empty()) {
+            return selection;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }
     return std::nullopt;
 }
@@ -181,21 +190,25 @@ bool perform_pickup(const ConfigSnapshot& config, Logger& logger, const PickupCo
     if (picked && !picked->empty()) {
         logger.write(LogTag::Pickup, std::wstring(L"pickup captured selection via UIA bytes=") + std::to_wstring(picked->size()));
     } else {
-        const auto clipboard_before = read_clipboard_text(owner);
         picked.reset();
         send_select_previous_word();
         did_force_select = true;
-        std::this_thread::sleep_for(std::chrono::milliseconds(config.clipboard.pre_copy_delay_ms));
-        const DWORD baseline_sequence = GetClipboardSequenceNumber();
-        send_key_combo('C');
-
-        picked = poll_clipboard_change(owner, baseline_sequence, config.clipboard.read_timeout_ms);
+        picked = wait_for_selection(config.clipboard.pre_copy_delay_ms);
         if (picked) {
-            logger.write(LogTag::Pickup, std::wstring(L"pickup captured clipboard bytes=") + std::to_wstring(picked->size()));
-        }
+            logger.write(LogTag::Pickup, std::wstring(L"pickup captured selection after force-select via UIA bytes=") + std::to_wstring(picked->size()));
+        } else {
+            const auto clipboard_before = read_clipboard_text(owner);
+            const DWORD baseline_sequence = GetClipboardSequenceNumber();
+            send_key_combo('C');
 
-        if (clipboard_before.has_text) {
-            clipboard_restore_text = clipboard_before.text;
+            picked = poll_clipboard_change(owner, baseline_sequence, config.clipboard.read_timeout_ms);
+            if (picked) {
+                logger.write(LogTag::Pickup, std::wstring(L"pickup captured clipboard bytes=") + std::to_wstring(picked->size()));
+            }
+
+            if (clipboard_before.has_text) {
+                clipboard_restore_text = clipboard_before.text;
+            }
         }
     }
 
