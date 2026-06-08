@@ -23,7 +23,7 @@ The Linux columns are the same binary on different display servers;
 | --------------------------------------------- | :---: | :---------: | :-------------: | :-----: |
 | Read focused field (Accessibility / AT-SPI2)  |   ✓   |     ✓       |       ◐⁴        |    ✗    |
 | Clipboard fallback (force-select, copy, read) |   ✓¹³ |     ✓⁵      |       ✓⁵        |    ✗    |
-| Write back: native API set-selected-text      |   ✓   |     ✓       |       ◐⁴        |    ✗    |
+| Write back: native API set-selected-text      |   ✓   |     ✓       |       ◐⁴        |    ◐    |
 | Write back: synthetic keystroke injection     |   ✓⁶  |     ✓⁷      |       ✓⁸        |    ✗    |
 | Save / restore user clipboard around write    |   ✓   |     ✓       |       ✓         |    ✗    |
 | Chromium/Electron XWayland fast path          |   —   |     ✓       |       ✓⁹        |    ✗    |

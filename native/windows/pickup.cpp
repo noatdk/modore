@@ -232,29 +232,41 @@ bool perform_pickup(const ConfigSnapshot& config, Logger& logger, const PickupCo
     const auto convert_started = Clock::now();
     if (auto replacement = convert(*picked)) {
         converted_at = Clock::now();
-        if (!clipboard_restore_text) {
-            const auto clipboard_before = read_clipboard_text(owner);
-            if (clipboard_before.has_text) {
-                clipboard_restore_text = std::move(clipboard_before.text);
-            }
-        }
-        if (write_clipboard_text(owner, *replacement)) {
-            send_key_combo('V');
+        const auto native_started = Clock::now();
+        if (replace_focused_selection_text(*picked, *replacement)) {
             pasted_at = Clock::now();
             logger.write(
                 LogTag::Pickup,
-                std::wstring(L"pickup replaced text bytes=") + std::to_wstring(replacement->size()) +
+                std::wstring(L"pickup replaced text via native API bytes=") + std::to_wstring(replacement->size()) +
                 L" total_ms=" + std::to_wstring(elapsed_ms(trigger_at, pasted_at)) +
                 L" selection_ms=" + std::to_wstring(elapsed_ms(trigger_at, picked_at)) +
                 L" convert_ms=" + std::to_wstring(elapsed_ms(convert_started, converted_at)) +
-                L" paste_ms=" + std::to_wstring(elapsed_ms(converted_at, pasted_at)));
-            if (clipboard_restore_text) {
-                restore_clipboard_later(owner, std::move(*clipboard_restore_text), config.clipboard.restore_clipboard_delay_ms);
-            }
+                L" native_ms=" + std::to_wstring(elapsed_ms(native_started, pasted_at)));
         } else {
-            logger.write(LogTag::Pickup, L"pickup replacement skipped: could not write replacement to clipboard");
-            if (clipboard_restore_text) {
-                write_clipboard_text(owner, *clipboard_restore_text);
+            if (!clipboard_restore_text) {
+                const auto clipboard_before = read_clipboard_text(owner);
+                if (clipboard_before.has_text) {
+                    clipboard_restore_text = std::move(clipboard_before.text);
+                }
+            }
+            if (write_clipboard_text(owner, *replacement)) {
+                send_key_combo('V');
+                pasted_at = Clock::now();
+                logger.write(
+                    LogTag::Pickup,
+                    std::wstring(L"pickup replaced text bytes=") + std::to_wstring(replacement->size()) +
+                    L" total_ms=" + std::to_wstring(elapsed_ms(trigger_at, pasted_at)) +
+                    L" selection_ms=" + std::to_wstring(elapsed_ms(trigger_at, picked_at)) +
+                    L" convert_ms=" + std::to_wstring(elapsed_ms(convert_started, converted_at)) +
+                    L" paste_ms=" + std::to_wstring(elapsed_ms(converted_at, pasted_at)));
+                if (clipboard_restore_text) {
+                    restore_clipboard_later(owner, std::move(*clipboard_restore_text), config.clipboard.restore_clipboard_delay_ms);
+                }
+            } else {
+                logger.write(LogTag::Pickup, L"pickup replacement skipped: could not write replacement to clipboard");
+                if (clipboard_restore_text) {
+                    write_clipboard_text(owner, *clipboard_restore_text);
+                }
             }
         }
     } else {
