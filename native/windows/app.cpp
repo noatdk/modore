@@ -27,11 +27,14 @@ constexpr UINT kMenuOpenConfig = 1001;
 constexpr UINT kMenuRevealConfig = 1002;
 constexpr UINT kMenuOpenLog = 1003;
 constexpr UINT kMenuQuit = 1004;
+constexpr int kPrimaryHotkeyId = 1;
+constexpr int kKatakanaHotkeyId = 2;
 
 struct RuntimeState {
     modore::windows::ConfigSnapshot config;
     std::wstring hotkey_label;
     bool hotkey_registered = false;
+    bool katakana_hotkey_registered = false;
     bool running = true;
     HWND window = nullptr;
     NOTIFYICONDATAW nid{};
@@ -47,12 +50,29 @@ void open_path(const std::filesystem::path& path) {
     ShellExecuteW(nullptr, L"open", path.wstring().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 }
 
-bool register_hotkey(HWND window, const modore::windows::HotkeySpec& hotkey) {
-    return RegisterHotKey(window, 1, hotkey.modifiers, hotkey.vk) != 0;
+bool register_hotkey(HWND window, UINT id, const modore::windows::HotkeySpec& hotkey) {
+    return RegisterHotKey(window, id, hotkey.modifiers, hotkey.vk) != 0;
 }
 
-void unregister_hotkey(HWND window) {
-    UnregisterHotKey(window, 1);
+void unregister_hotkey(HWND window, UINT id) {
+    UnregisterHotKey(window, id);
+}
+
+std::optional<modore::windows::HotkeySpec> katakana_hotkey_for(
+    const modore::windows::HotkeySpec& primary) {
+    if ((primary.modifiers & MOD_SHIFT) != 0) {
+        return std::nullopt;
+    }
+
+    modore::windows::HotkeySpec katakana = primary;
+    katakana.modifiers |= MOD_SHIFT;
+    katakana.display_name = std::wstring(L"Shift+") + primary.display_name;
+    return katakana;
+}
+
+void unregister_hotkeys(HWND window) {
+    unregister_hotkey(window, kPrimaryHotkeyId);
+    unregister_hotkey(window, kKatakanaHotkeyId);
 }
 
 void update_tray_tooltip(const std::wstring& text) {
@@ -88,8 +108,13 @@ void apply_runtime_config(const modore::windows::ConfigSnapshot& snapshot) {
     }
 
     if (hotkey_changed) {
-        unregister_hotkey(g_state.window);
-        const bool hotkey_ok = register_hotkey(g_state.window, snapshot.hotkey);
+        unregister_hotkeys(g_state.window);
+        const bool hotkey_ok = register_hotkey(g_state.window, kPrimaryHotkeyId, snapshot.hotkey);
+        bool katakana_ok = false;
+        const auto katakana_hotkey = katakana_hotkey_for(snapshot.hotkey);
+        if (katakana_hotkey) {
+            katakana_ok = register_hotkey(g_state.window, kKatakanaHotkeyId, *katakana_hotkey);
+        }
         {
             std::scoped_lock lock(g_state.mutex);
             if (hotkey_ok) {
@@ -98,6 +123,7 @@ void apply_runtime_config(const modore::windows::ConfigSnapshot& snapshot) {
             } else {
                 g_state.hotkey_registered = false;
             }
+            g_state.katakana_hotkey_registered = katakana_ok;
         }
         if (hotkey_ok) {
             logger.write(modore::windows::LogTag::Hotkey, std::wstring(L"config reloaded: hotkey=") + snapshot.hotkey.display_name);
@@ -105,6 +131,15 @@ void apply_runtime_config(const modore::windows::ConfigSnapshot& snapshot) {
         } else {
             logger.write(modore::windows::LogTag::Hotkey, std::wstring(L"config reload rejected: hotkey=") + snapshot.hotkey.display_name + L" (RegisterHotKey failed)");
             refresh_hotkey_ui(snapshot.hotkey, false);
+        }
+        if (katakana_hotkey) {
+            if (katakana_ok) {
+                logger.write(modore::windows::LogTag::Hotkey, std::wstring(L"katakana hotkey registered: ") + katakana_hotkey->display_name);
+            } else {
+                logger.write(modore::windows::LogTag::Hotkey, std::wstring(L"katakana hotkey registration failed for ") + katakana_hotkey->display_name);
+            }
+        } else {
+            logger.write(modore::windows::LogTag::Hotkey, L"katakana hotkey unavailable: primary hotkey already includes Shift");
         }
     }
 
@@ -273,12 +308,18 @@ LRESULT CALLBACK window_proc(HWND window, UINT msg, WPARAM wparam, LPARAM lparam
     case WM_HOTKEY:
         {
             auto& logger = modore::windows::Logger::instance();
-            logger.write(modore::windows::LogTag::Hotkey, L"conversion hotkey fired");
+            const bool katakana = (wparam == kKatakanaHotkeyId);
+            if (wparam != kPrimaryHotkeyId && wparam != kKatakanaHotkeyId) {
+                return 0;
+            }
+            logger.write(
+                modore::windows::LogTag::Hotkey,
+                katakana ? L"katakana hotkey fired" : L"conversion hotkey fired");
             modore::windows::perform_pickup(
                 g_state.config,
                 logger,
-                [&logger](const std::wstring& text) -> std::optional<std::wstring> {
-                    return modore::windows::convert_with_ime(text, false, logger);
+                [katakana, &logger](const std::wstring& text) -> std::optional<std::wstring> {
+                    return modore::windows::convert_with_ime(text, katakana, logger);
                 });
         }
         return 0;
@@ -334,13 +375,24 @@ int run_host() {
     g_state.window = window;
     logger.write(modore::windows::LogTag::Boot, L"window created");
 
-    if (!register_hotkey(window, snapshot.hotkey)) {
+    if (!register_hotkey(window, kPrimaryHotkeyId, snapshot.hotkey)) {
         logger.write(modore::windows::LogTag::Hotkey, std::wstring(L"hotkey registration failed for ") + snapshot.hotkey.display_name);
         refresh_hotkey_ui(snapshot.hotkey, false);
     } else {
         g_state.hotkey_registered = true;
         refresh_hotkey_ui(snapshot.hotkey, true);
         logger.write(modore::windows::LogTag::Hotkey, std::wstring(L"hotkey registered: ") + snapshot.hotkey.display_name);
+    }
+
+    if (const auto katakana_hotkey = katakana_hotkey_for(snapshot.hotkey)) {
+        if (register_hotkey(window, kKatakanaHotkeyId, *katakana_hotkey)) {
+            g_state.katakana_hotkey_registered = true;
+            logger.write(modore::windows::LogTag::Hotkey, std::wstring(L"katakana hotkey registered: ") + katakana_hotkey->display_name);
+        } else {
+            logger.write(modore::windows::LogTag::Hotkey, std::wstring(L"katakana hotkey registration failed for ") + katakana_hotkey->display_name);
+        }
+    } else {
+        logger.write(modore::windows::LogTag::Hotkey, L"katakana hotkey unavailable: primary hotkey already includes Shift");
     }
 
     logger.write(
@@ -365,7 +417,7 @@ int run_host() {
     if (g_watcher.joinable()) {
         g_watcher.join();
     }
-    unregister_hotkey(window);
+    unregister_hotkeys(window);
     return 0;
 }
 
