@@ -7,7 +7,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../../bridge ${CMAKE_CURRENT_BINARY_DIR}/bridge EXCLUDE_FROM_ALL)
 
-add_executable(modore
+add_executable(modore WIN32
     app.cpp
     main.cpp
     config.cpp

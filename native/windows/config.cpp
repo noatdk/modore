@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cwctype>
 #include <fstream>
 #include <optional>
 #include <sstream>
@@ -18,7 +19,7 @@ constexpr int kClipboardFields = 3;
 
 std::wstring trim(std::wstring s) {
     auto is_space = [](wchar_t ch) {
-        return std::iswspace(ch) != 0;
+        return ::iswspace(ch) != 0;
     };
     auto start = std::find_if_not(s.begin(), s.end(), is_space);
     auto end = std::find_if_not(s.rbegin(), s.rend(), is_space).base();
@@ -30,7 +31,7 @@ std::wstring trim(std::wstring s) {
 
 std::wstring lower(std::wstring s) {
     std::transform(s.begin(), s.end(), s.begin(), [](wchar_t ch) {
-        return static_cast<wchar_t>(std::towlower(ch));
+        return static_cast<wchar_t>(::towlower(ch));
     });
     return s;
 }
@@ -146,7 +147,7 @@ std::optional<UINT> parse_vk_token(const std::wstring& token) {
     if (t.size() == 1) {
         const wchar_t ch = t[0];
         if ((ch >= L'a' && ch <= L'z') || (ch >= L'0' && ch <= L'9')) {
-            return static_cast<UINT>(std::towupper(ch));
+            return static_cast<UINT>(::towupper(ch));
         }
     }
 

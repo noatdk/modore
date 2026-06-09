@@ -3,6 +3,7 @@
 #include <string>
 
 #include <windows.h>
+#include <objbase.h>
 #include <UIAutomation.h>
 
 namespace modore::windows {

@@ -29,40 +29,38 @@ endif()
 # Skip building the fcitx5 plugin — we only want the mozc engine.
 set(BUILD_MOZC_ADDON OFF CACHE BOOL "Skip the fcitx5 addon (we want engine only)" FORCE)
 
-if(NOT WIN32)
-    # fcitx5-mozc's CI applies this patch to the protobuf submodule before building.
-    # It strips non-C++ generators from libprotoc (we don't need java/csharp/ruby/etc.)
-    # and removes its dependency on libupb. Without the patch, libprotoc references
-    # libupb but fcitx5-mozc disables that target, leading to "library 'libupb'
-    # not found" at link time. See third_party/fcitx5-mozc/.github/workflows/ci.yml.
-    set(_PROTOBUF_PATCH "${FCITX5_MOZC_DIR}/patches/protobuf.patch")
+# fcitx5-mozc's CI applies this patch to the protobuf submodule before building.
+# It strips non-C++ generators from libprotoc (we don't need java/csharp/ruby/etc.)
+# and removes its dependency on libupb. Without the patch, libprotoc references
+# libupb but fcitx5-mozc disables that target, leading to "library 'libupb'
+# not found" at link time. See third_party/fcitx5-mozc/.github/workflows/ci.yml.
+set(_PROTOBUF_PATCH "${FCITX5_MOZC_DIR}/patches/protobuf.patch")
+execute_process(
+    COMMAND git apply --directory=protobuf --reverse --check "${_PROTOBUF_PATCH}"
+    WORKING_DIRECTORY "${FCITX5_MOZC_DIR}"
+    RESULT_VARIABLE _PATCH_ALREADY_APPLIED
+    OUTPUT_QUIET ERROR_QUIET
+)
+if(NOT _PATCH_ALREADY_APPLIED EQUAL 0)
+    message(STATUS "Applying fcitx5-mozc's protobuf.patch")
     execute_process(
-        COMMAND git apply --directory=protobuf --reverse --check "${_PROTOBUF_PATCH}"
+        COMMAND git apply --directory=protobuf "${_PROTOBUF_PATCH}"
         WORKING_DIRECTORY "${FCITX5_MOZC_DIR}"
-        RESULT_VARIABLE _PATCH_ALREADY_APPLIED
-        OUTPUT_QUIET ERROR_QUIET
+        RESULT_VARIABLE _PATCH_RESULT
     )
-    if(NOT _PATCH_ALREADY_APPLIED EQUAL 0)
-        message(STATUS "Applying fcitx5-mozc's protobuf.patch")
-        execute_process(
-            COMMAND git apply --directory=protobuf "${_PROTOBUF_PATCH}"
-            WORKING_DIRECTORY "${FCITX5_MOZC_DIR}"
-            RESULT_VARIABLE _PATCH_RESULT
-        )
-        if(NOT _PATCH_RESULT EQUAL 0)
-            message(FATAL_ERROR
-                "Failed to apply fcitx5-mozc's protobuf patch. "
-                "Try resetting the protobuf submodule with: "
-                "git -C ${FCITX5_MOZC_DIR}/protobuf reset --hard HEAD && "
-                "git -C ${FCITX5_MOZC_DIR}/protobuf clean -fdx")
-        endif()
+    if(NOT _PATCH_RESULT EQUAL 0)
+        message(FATAL_ERROR
+            "Failed to apply fcitx5-mozc's protobuf patch. "
+            "Try resetting the protobuf submodule with: "
+            "git -C ${FCITX5_MOZC_DIR}/protobuf reset --hard HEAD && "
+            "git -C ${FCITX5_MOZC_DIR}/protobuf clean -fdx")
     endif()
-
-    # fcitx5-mozc disables libupb ("No binary for iOS"), but for our patched
-    # protobuf the libupb path is gone entirely. Leave the default and let the
-    # patch handle it — explicit OFF works too.
-    set(protobuf_BUILD_LIBUPB OFF CACHE BOOL "Patched out of libprotoc by fcitx5-mozc" FORCE)
 endif()
+
+# fcitx5-mozc disables libupb ("No binary for iOS"), but for our patched
+# protobuf the libupb path is gone entirely. Leave the default and let the
+# patch handle it — explicit OFF works too.
+set(protobuf_BUILD_LIBUPB OFF CACHE BOOL "Patched out of libprotoc by fcitx5-mozc" FORCE)
 
 # Pre-create binary-tree subdirectories that mozc's python generator scripts
 # write to. fcitx5-mozc declares them via `add_custom_command OUTPUT` but
@@ -95,6 +93,12 @@ add_library(mozc_bridge SHARED
     # drifting C++ re-implementation. See engine/include/mdr_text.h.
     ${CMAKE_CURRENT_SOURCE_DIR}/../engine/src/pickup_core.c
 )
+
+if(WIN32)
+    set_target_properties(mozc_bridge PROPERTIES
+        WINDOWS_EXPORT_ALL_SYMBOLS ON
+    )
+endif()
 
 if(APPLE)
     target_sources(mozc_bridge PRIVATE
@@ -130,7 +134,11 @@ target_include_directories(mozc_bridge
 target_compile_definitions(mozc_bridge PRIVATE MDR_TEXT_INTERNAL)
 
 # Mozc requires char to be unsigned (uses it as array index).
-target_compile_options(mozc_bridge PRIVATE -funsigned-char -Wall -Wextra -Wno-unused-parameter)
+if(MSVC)
+    target_compile_options(mozc_bridge PRIVATE /J /W3 /wd4100)
+else()
+    target_compile_options(mozc_bridge PRIVATE -funsigned-char -Wall -Wextra -Wno-unused-parameter)
+endif()
 
 # Keep our exported C symbols visible to the consumer (Swift host etc.).
 set_target_properties(mozc_bridge PROPERTIES
@@ -144,7 +152,11 @@ set_target_properties(mozc_bridge PROPERTIES
 add_executable(modore_shell src/shell_client_main.cc)
 set_target_properties(modore_shell PROPERTIES OUTPUT_NAME modore-shell)
 target_compile_features(modore_shell PRIVATE cxx_std_17)
-target_compile_options(modore_shell PRIVATE -Wall -Wextra)
+if(MSVC)
+    target_compile_options(modore_shell PRIVATE /W3)
+else()
+    target_compile_options(modore_shell PRIVATE -Wall -Wextra)
+endif()
 
 # fcitx5-mozc's `MOZC_TARGET` variable is set in their subdirectory scope and
 # doesn't propagate to ours, so we name its members explicitly. mozc-static
@@ -180,10 +192,13 @@ list(REMOVE_DUPLICATES _absl_targets)
 list(LENGTH _absl_targets _absl_count)
 message(STATUS "Linking ${_absl_count} absl_* static libs into mozc_bridge")
 
-# Linux (GNU ld): linking static libprotobuf into a shared library can leave
-# undefined google::protobuf::* on the final .so unless the archive is pulled
-# in whole. MinGW's GNU ld has the same requirement; macOS ld64 does not.
-if(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR WIN32)
+# GNU ld can leave undefined google::protobuf::* on the final shared library
+# unless libprotobuf is pulled in whole. ld64 does not need this.
+if(MSVC)
+  set(_MOZC_BRIDGE_PROTOBUF_LINK
+      libprotobuf
+  )
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR WIN32)
   set(_MOZC_BRIDGE_PROTOBUF_LINK
       "-Wl,--whole-archive"
       libprotobuf
