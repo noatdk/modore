@@ -224,6 +224,7 @@ bool load_modore_config(ModoreConfig *out, std::string *error_message) {
   std::string current_section;
   std::string line;
   std::string hotkey_value;
+  std::string bridge_backend_value;
   std::string pre_paste_delay_value;
   std::string paste_visibility_wait_value;
   std::string paste_visibility_step_value;
@@ -261,6 +262,8 @@ bool load_modore_config(ModoreConfig *out, std::string *error_message) {
     const std::string k_l = to_lower(k);
     if (current_section == "conversion" && k_l == "hotkey") {
       hotkey_value = v;
+    } else if (current_section == "bridge" && k_l == "mozc_backend") {
+      bridge_backend_value = v;
     } else if (current_section == "clipboard") {
       if (k_l == "pre_copy_delay_ms" || k_l == "pre_paste_delay_ms") {
         pre_paste_delay_value = v;
@@ -311,6 +314,19 @@ bool load_modore_config(ModoreConfig *out, std::string *error_message) {
     }
     out->conversion_hotkey = parsed;
     out->conversion_hotkey_description = trim(hotkey_value);
+  }
+
+  // Normalize [bridge] mozc_backend to the bridge's MODORE_MOZC_BACKEND token.
+  // Unrecognized / absent leaves it empty so the host keeps the bridge default
+  // (built-in Mozc) rather than failing init on a typo.
+  if (!bridge_backend_value.empty()) {
+    const std::string b = to_lower(bridge_backend_value);
+    if (b == "atzc") {
+      out->mozc_backend = "atzc";
+    } else if (b == "built-in" || b == "built_in" || b == "builtin" ||
+               b == "oss") {
+      out->mozc_backend = "oss";
+    }
   }
 
   int parsed_int = 0;

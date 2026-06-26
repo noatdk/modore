@@ -39,6 +39,7 @@ The Linux columns are the same binary on different display servers;
 | Katakana modifier (Shift+hotkey → カタカナ)   |   ✓   |     ✗       |       ✗         |    ◐    |
 | Floating candidate panel                      |   ✓   |     ✗       |       ✗         |    ✗    |
 | Bootstrap from existing Mozc / GJI profile    |   ✗   |     ✗       |       ✗         |    ✗    |
+| Relay backend: atzc → Wine engine (opt-in)    |   ✗   |     ◐²⁸     |       ◐²⁸       |    ✗    |
 
 ## Shell-native (terminal)
 
@@ -114,3 +115,5 @@ X11/compositor-trigger paths when raw access is unavailable.
 ²⁶ zsh only: cycling draws the candidate list below the prompt via ZLE `POSTDISPLAY` (no dependency), current pick bracketed, cleared on the next edit or accept. bash (readline) and fish expose no below-buffer region, so they cycle without the inline list.
 
 ²⁷ `Ctrl-X Ctrl-L` opens a chooser; picker auto-detects `fzf` → `gum` → a built-in numbered prompt (no dependency), overridable with `MODORE_SHELL_PICKER`.
+
+²⁸ Opt-in build (`make bridge MODORE_ENABLE_ATZC=1`); `[bridge] mozc_backend = atzc` relays romaji → conversion to a Wine-hosted engine via `atzcd`. Independent of X11/Wayland. See [`linux.md`](linux.md).

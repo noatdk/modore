@@ -132,6 +132,22 @@ int main(int argc, char **argv) {
     }
   }
 
+  ModoreConfig modore_config;
+  std::string cfg_err;
+  if (!load_modore_config(&modore_config, &cfg_err)) {
+    modore_log("config", "%s — using defaults", cfg_err.c_str());
+  }
+
+  // Select the conversion backend before the bridge initializes: the bridge
+  // reads MODORE_MOZC_BACKEND once, in mozc_bridge_init(). Empty = leave the
+  // bridge default (built-in Mozc). See [bridge] mozc_backend in modore.conf.
+  if (!modore_config.mozc_backend.empty()) {
+    setenv("MODORE_MOZC_BACKEND", modore_config.mozc_backend.c_str(),
+           /*overwrite=*/1);
+    modore_log("mozc", "conversion backend: %s ([bridge] mozc_backend)",
+               modore_config.mozc_backend.c_str());
+  }
+
   std::string profile = default_profile_dir();
   if (mozc_bridge_init(profile.c_str()) != 0) {
     modore_log("mozc", "bridge init failed: %s",
@@ -140,11 +156,6 @@ int main(int argc, char **argv) {
   }
   modore_log("mozc", "bridge initialized (profile=%s)", profile.c_str());
 
-  ModoreConfig modore_config;
-  std::string cfg_err;
-  if (!load_modore_config(&modore_config, &cfg_err)) {
-    modore_log("config", "%s — using defaults", cfg_err.c_str());
-  }
   g_conversion_hotkey_modifier_mask =
       modore_config.conversion_hotkey.modifier_mask;
   g_conversion_hotkey_keysym = modore_config.conversion_hotkey.keysym;

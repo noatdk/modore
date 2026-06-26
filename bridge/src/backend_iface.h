@@ -58,6 +58,13 @@ std::unique_ptr<Backend> CreateBackend(const char *requested_backend,
 std::unique_ptr<Backend> CreateGoogleImeMacBackend(std::string *error);
 #endif
 
+#ifdef MODORE_ENABLE_ATZC
+// Relay backend over the atzc Unix-socket protocol (see backend_atzc.cc).
+// Construction is cheap and never fails — the socket connects lazily on the
+// first conversion.
+std::unique_ptr<Backend> CreateAtzcBackend(std::string *error);
+#endif
+
 }  // namespace modore::mozc_bridge
 
 #endif  // MODORE_MOZC_BRIDGE_BACKEND_IFACE_H_

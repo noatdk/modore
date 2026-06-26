@@ -135,6 +135,36 @@ unit, restarts `modore-host`, and tries to bootstrap evdev access in one
 step. Use `make -C native/linux run-local` if you want the old behavior of
 launching the freshly built binary directly.
 
+## Conversion backend (atzc)
+
+Default conversion is the bundled in-process Mozc. To relay to a
+Wine-hosted engine via [atzc](https://github.com/noatdk/atzc) instead,
+build the bridge with the backend compiled in:
+
+```sh
+make fetch-atzc                    # clone the client into third_party/atzc-server
+make bridge MODORE_ENABLE_ATZC=1   # or pass MODORE_ATZC_DIR=<existing checkout>
+make build                         # relink the host against the new bridge .so
+```
+
+Then select it in `~/.config/modore/modore.conf`:
+
+```ini
+[bridge]
+mozc_backend = atzc                # built-in (default) | atzc
+```
+
+`atzcd` owns the engine and serves conversions; start it separately
+(`atzcd --engine-dir <path>`). modore connects lazily and reconnects once
+on failure, so start order doesn't matter — if `atzcd` is down a conversion
+just fails and the romaji is left in place. Socket path follows atzc's
+default (`$ATZC_SOCKET`, else `$XDG_RUNTIME_DIR/atzcd.sock`, else
+`/tmp/atzcd-<uid>.sock`).
+
+Caveats: a bridge built **without** `MODORE_ENABLE_ATZC` exits at startup
+with `unknown mozc backend: atzc` if the config selects it. The katakana
+chord falls back to the engine's top-1 kanji (atzc has no katakana mode).
+
 ## Environment knobs
 
 `modore-host --help` prints the current list. The ones you're most
@@ -144,3 +174,5 @@ likely to need:
 - `MODORE_E2E_TRACE=1` — verbose `[e2e]` step logs (Puppeteer, debugging).
 - `MODORE_ATSPI_ONLY=1` — refuse the clipboard fallback if AT-SPI can't
   read the focused field.
+- `MODORE_MOZC_BACKEND=atzc` — pick the conversion backend, overriding
+  `[bridge] mozc_backend`. Requires an atzc-enabled bridge (see above).

@@ -68,10 +68,12 @@ Default is `Cmd+Semicolon` on macOS and `Ctrl+Semicolon` on Linux. Full
 hotkey grammar, modifier aliases, and key names in
 [docs/configuration.md](docs/configuration.md).
 
-On macOS, `[bridge] mozc_backend` selects the bridge backend:
-`built-in` (default, bundled Mozc; `oss` is still accepted as an alias)
-or `google_ime` (system-installed Google Japanese Input service).
-Backend changes require restarting the app.
+`[bridge] mozc_backend` selects the conversion backend. Default is
+`built-in` (bundled Mozc in-process; `oss` is still accepted as an alias).
+On macOS, `google_ime` uses the system-installed Google Japanese Input
+service. On Linux, `atzc` relays to a Wine-hosted engine via `atzcd`
+(opt-in build — see [docs/linux.md](docs/linux.md)). Backend changes
+require restarting the app.
 
 ## Layout
 
