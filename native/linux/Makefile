@@ -29,8 +29,12 @@ PKG_X11 := $(shell pkg-config --cflags --libs x11 xtst)
 # compositor / external glue), pickup/ (conversion pipeline). -I on each folder
 # lets the quoted #includes resolve across folders without path prefixes.
 HOST_DIRS := core platform pickup
+# native/common/: header-only logic shared with the Windows host (see
+# mozc_convert.hpp).
+COMMON_DIR := $(REPO_ROOT)/native/common
 CXXFLAGS := -std=c++20 -O2 -Wall -Wextra \
-           -I$(BRIDGE_SRC)/include -I$(ENGINE_SRC)/include -I$(BUILD) -pthread \
+           -I$(BRIDGE_SRC)/include -I$(ENGINE_SRC)/include -I$(BUILD) \
+           -I$(COMMON_DIR) -pthread \
            $(addprefix -I,$(HOST_DIRS))
 LDFLAGS := -pthread -Wl,-rpath,\$$ORIGIN
 # gobject: g_object_ref/unref (atspi headers use GObject; link needs -lgobject).

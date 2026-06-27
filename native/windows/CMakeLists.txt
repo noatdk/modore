@@ -21,6 +21,7 @@ add_executable(modore WIN32
 target_include_directories(modore PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/../..
+    ${CMAKE_CURRENT_SOURCE_DIR}/../common
     ${CMAKE_CURRENT_SOURCE_DIR}/../../bridge/include
     ${CMAKE_CURRENT_SOURCE_DIR}/../../engine/include
 )
