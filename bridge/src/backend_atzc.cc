@@ -1,17 +1,21 @@
-// backend_atzc.cc — conversion backend that relays to a Wine-hosted Japanese
-// engine through atzcd over the atzc Unix-socket protocol (libatzcclient).
+// backend_atzc.cc — conversion backend backed by an atzc::Converter (atzc-server).
+//
+// modore is transport-agnostic here: it obtains one Converter from
+// atzc::MakeConverter() and never knows what's underneath. On Linux that's a
+// reconnecting client to atzcd (Wine-hosted ATOK over a Unix socket); on Windows
+// it's an in-process engine driving the installed ATOK. Either way this backend
+// converts once and packs the committed top-1 + candidate list into the flat
+// C-ABI buffers.
 //
 // Selected with MODORE_MOZC_BACKEND=atzc (the Linux host sets this from
 // `[bridge] mozc_backend = atzc`). Built only when MODORE_ENABLE_ATZC is
 // defined; see bridge/CMakeLists.txt and `make fetch-atzc`. When the backend
 // is not compiled in, CreateBackend() reports "unknown mozc backend: atzc".
 //
-// atzc returns the committed top-1 plus the full candidate list in a single
-// request, so unlike the in-process Mozc backend this needs no session flow —
-// it converts once and packs the result into the flat C-ABI buffers. It depends
-// only on the flat mozc_bridge.h C ABI (no Mozc/protobuf headers), so the
-// candidate packing is reimplemented here rather than reusing the Mozc-coupled
-// helpers in backend_candidates.h. The two packers mirror those exactly.
+// It depends only on the flat mozc_bridge.h C ABI (no Mozc/protobuf headers), so
+// the candidate packing is reimplemented here rather than reusing the
+// Mozc-coupled helpers in backend_candidates.h. The two packers mirror those
+// exactly.
 
 #include "backend_iface.h"
 #include "mozc_bridge.h"
@@ -22,7 +26,7 @@
 #include <string>
 #include <vector>
 
-#include "atzc/client.h"
+#include "atzc/converter.h"
 
 namespace modore::mozc_bridge {
 namespace {
@@ -112,6 +116,8 @@ size_t PackRecords(const std::vector<std::string> &values,
 
 class AtzcBackend final : public Backend {
  public:
+  AtzcBackend() : converter_(atzc::MakeConverter()) {}
+
   int ConvertWithCandidatesEx(const char *romaji,
                               size_t romaji_len,
                               char *commit_buf,
@@ -188,25 +194,17 @@ class AtzcBackend final : public Backend {
   }
 
  private:
-  // Lazy-connect plus one reconnect on failure (atzcd may have restarted) —
-  // the same pattern the fcitx5 addon uses. The bridge serializes every
-  // conversion under a mutex, so a single Client instance is safe.
+  // One conversion via the Converter. Connection/engine recovery lives in atzc
+  // (MakeConverter), not here. The bridge serializes every conversion under a
+  // mutex, so the single, non-thread-safe Converter is safe.
   bool Convert(const std::string &romaji,
                int max_candidates,
                atzc::ConvertResult *out,
                std::string *error) {
     const int cap = max_candidates > 0 ? max_candidates : 0;  // 0 = no cap
-    std::string err;
-    // candidates() connects on first use; on failure (atzcd may have restarted)
-    // close and reconnect once before giving up.
-    if (!client_.candidates(romaji, cap, out, &err)) {
-      client_.close();
-      if (!client_.connect(&err) ||
-          !client_.candidates(romaji, cap, out, &err)) {
-        *error =
-            "atzc: " + (err.empty() ? std::string("conversion failed") : err);
-        return false;
-      }
+    if (!converter_->candidates(romaji, cap, out, error)) {
+      if (error && error->empty()) *error = "atzc: conversion failed";
+      return false;
     }
     // An `ok` reply with no result leaves commit empty; fall back to the romaji
     // so the host commits the input rather than erasing it — matching the
@@ -217,7 +215,7 @@ class AtzcBackend final : public Backend {
     return true;
   }
 
-  atzc::Client client_;
+  std::unique_ptr<atzc::Converter> converter_;
 };
 
 }  // namespace

@@ -106,23 +106,32 @@ if(APPLE)
     )
 endif()
 
-# atzc relay backend (opt-in). Reaches a Wine-hosted engine over the atzc
-# Unix-socket protocol (github.com/noatdk/atzc). The client is a single .cpp
-# from that tree; point MODORE_ATZC_DIR at a checkout (lazy-cloned by
-# `make fetch-atzc`). Off by default, so a normal build needs nothing extra.
-option(MODORE_ENABLE_ATZC "Build the atzc relay conversion backend" OFF)
+# atzc conversion backend (opt-in). backend_atzc.cc talks to an atzc::Converter
+# from that tree (github.com/noatdk/atzc) — transport-agnostic. Point
+# MODORE_ATZC_DIR at a checkout (lazy-cloned by `make fetch-atzc`). Off by
+# default, so a normal build needs nothing extra.
+option(MODORE_ENABLE_ATZC "Build the atzc conversion backend" OFF)
 set(MODORE_ATZC_DIR "" CACHE PATH "Path to an atzc-server checkout (its include/ + src/)")
 if(MODORE_ENABLE_ATZC)
-    if(NOT MODORE_ATZC_DIR OR NOT EXISTS "${MODORE_ATZC_DIR}/include/atzc/client.h")
+    if(NOT MODORE_ATZC_DIR OR NOT EXISTS "${MODORE_ATZC_DIR}/include/atzc/converter.h")
         message(FATAL_ERROR
             "MODORE_ENABLE_ATZC=ON but MODORE_ATZC_DIR does not point at an "
-            "atzc-server checkout (expected include/atzc/client.h). Run "
+            "atzc-server checkout (expected include/atzc/converter.h). Run "
             "`make fetch-atzc` or pass -DMODORE_ATZC_DIR=<path>.")
     endif()
-    target_sources(mozc_bridge PRIVATE
-        src/backend_atzc.cc
-        ${MODORE_ATZC_DIR}/src/client.cpp
-    )
+    # Consumer sources from the atzc tree. On POSIX this is the socket client +
+    # the reconnecting MakeConverter; the Windows host will instead pull atzc's
+    # in-process engine (Session + the installed-ATOK engine + frontend_windows).
+    if(WIN32)
+        message(FATAL_ERROR "atzc backend on Windows is not wired yet "
+            "(needs the in-process engine sources; see atzc-server).")
+    else()
+        target_sources(mozc_bridge PRIVATE
+            src/backend_atzc.cc
+            ${MODORE_ATZC_DIR}/src/client.cpp
+            ${MODORE_ATZC_DIR}/src/frontend_posix.cpp
+        )
+    endif()
     target_include_directories(mozc_bridge PRIVATE ${MODORE_ATZC_DIR}/include)
     target_compile_definitions(mozc_bridge PRIVATE MODORE_ENABLE_ATZC)
     message(STATUS "atzc backend enabled (MODORE_ATZC_DIR=${MODORE_ATZC_DIR})")

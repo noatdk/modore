@@ -125,20 +125,20 @@ endif
 # Build with `make bridge MODORE_ENABLE_ATZC=1` after `make fetch-atzc` (or
 # point MODORE_ATZC_DIR at an existing atzc-server checkout).
 # Repo is noatdk/atzc; the checkout lives in atzc-server/ to match the atzc/
-# C++ include namespace (include/atzc/client.h), not the repo name.
+# C++ include namespace (include/atzc/converter.h), not the repo name.
 ATZC_DIR        := third_party/atzc-server
 ATZC_REPO       := https://github.com/noatdk/atzc.git
 ATZC_BRANCH     := main
 # Pinned commit. Bump deliberately; do not let the branch drift.
-ATZC_SHA        := 39a37a121064503891271e430bd0c7ad7417cf74
+ATZC_SHA        := f5db084ba21270340779abb3d0c356c9be1cc005
 MODORE_ATZC_DIR ?= $(CURDIR)/$(ATZC_DIR)
 
 # Build just the cross-platform bridge (no host UI). Useful when iterating
 # on the C ABI from a non-native frontend.
 bridge:
 ifeq ($(MODORE_ENABLE_ATZC),1)
-	@if [ ! -f "$(MODORE_ATZC_DIR)/include/atzc/client.h" ]; then \
-	    echo "atzc client not found at $(MODORE_ATZC_DIR)."; \
+	@if [ ! -f "$(MODORE_ATZC_DIR)/include/atzc/converter.h" ]; then \
+	    echo "atzc checkout not found at $(MODORE_ATZC_DIR)."; \
 	    echo "Run 'make fetch-atzc' or set MODORE_ATZC_DIR=<atzc-server checkout>."; \
 	    exit 1; \
 	fi
