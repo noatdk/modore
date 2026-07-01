@@ -25,14 +25,28 @@ export PATH := $(REPO_ROOT)/bridge/build-tools:$(PATH)
 
 PKG_ATSPI := $(shell pkg-config --cflags --libs atspi-2)
 PKG_X11 := $(shell pkg-config --cflags --libs x11 xtst)
+# Source is grouped by concern: core/ (infra + lifecycle), platform/ (OS /
+# compositor / external glue), pickup/ (conversion pipeline). -I on each folder
+# lets the quoted #includes resolve across folders without path prefixes.
+HOST_DIRS := core platform pickup
 CXXFLAGS := -std=c++20 -O2 -Wall -Wextra \
-           -I$(BRIDGE_SRC)/include -I$(ENGINE_SRC)/include -I$(BUILD) -pthread
+           -I$(BRIDGE_SRC)/include -I$(ENGINE_SRC)/include -I$(BUILD) -pthread \
+           $(addprefix -I,$(HOST_DIRS))
 LDFLAGS := -pthread -Wl,-rpath,\$$ORIGIN
 # gobject: g_object_ref/unref (atspi headers use GObject; link needs -lgobject).
 PKG_GOBJECT := $(shell pkg-config --libs gobject-2.0)
 
-SRC := main.cpp config.cpp evdev_hotkey.cpp ipc.cpp log.cpp scripting.cpp
-HDR := config.hpp evdev_hotkey.hpp ipc.hpp log.hpp scripting.hpp
+# Host translation units. main.cpp was split into focused modules sharing
+# core/host_internal.hpp (see that header for the layout).
+SRC := main.cpp \
+       core/host_state.cpp core/host_util.cpp core/host_runtime.cpp \
+       core/config.cpp core/log.cpp \
+       platform/x11_input.cpp platform/wayland_hypr.cpp platform/clipboard.cpp \
+       platform/evdev_hotkey.cpp platform/ipc.cpp platform/scripting.cpp \
+       pickup/mozc_session.cpp pickup/pick_heuristics.cpp pickup/pickup.cpp \
+       pickup/clipboard_pickup.cpp
+HDR := core/host_internal.hpp core/config.hpp core/log.hpp \
+       platform/evdev_hotkey.hpp platform/ipc.hpp platform/scripting.hpp
 FORMAT_FILES := $(SRC) $(HDR)
 
 PREFIX := $(HOME)/.local

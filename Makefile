@@ -8,6 +8,9 @@
 # (or an explicit `make macos` / `make bridge`) to actually compile.
 
 MODORE_ENABLE_SCRIPTING ?= 0
+# Opt-in atzc relay backend (Wine-hosted engine over a Unix socket). See the
+# `bridge` / `fetch-atzc` targets below.
+MODORE_ENABLE_ATZC ?= 0
 
 ifeq ($(OS),Windows_NT)
     PLATFORM := windows
@@ -35,7 +38,7 @@ export PATH := $(CURDIR)/$(BRIDGE_DIR)/build-tools:$(PATH)
 
 .PHONY: help build run open bridge clean clean-bridge distclean signing \
         check-platform macos linux windows install-user-bin test-puppeteer \
-        fetch-luajit engine engine-test clean-engine \
+        fetch-luajit fetch-atzc engine engine-test clean-engine \
         macos-e2e macos-e2e-smoke macos-e2e-full macos-e2e-quarantine
 
 .DEFAULT_GOAL := help
@@ -117,10 +120,29 @@ else
 	@$(MAKE) --no-print-directory -C $(NATIVE_DIR) open MODORE_ENABLE_SCRIPTING=$(MODORE_ENABLE_SCRIPTING)
 endif
 
+# ---- atzc relay backend (opt-in) -------------------------------------------
+# Reaches a Wine-hosted engine via atzcd over a Unix socket. Off by default.
+# Build with `make bridge MODORE_ENABLE_ATZC=1` after `make fetch-atzc` (or
+# point MODORE_ATZC_DIR at an existing atzc-server checkout).
+ATZC_DIR        := third_party/atzc-server
+ATZC_REPO       := https://github.com/noatdk/atzc.git
+ATZC_BRANCH     := main
+# Pinned commit. Bump deliberately; do not let the branch drift.
+ATZC_SHA        := 39a37a121064503891271e430bd0c7ad7417cf74
+MODORE_ATZC_DIR ?= $(CURDIR)/$(ATZC_DIR)
+
 # Build just the cross-platform bridge (no host UI). Useful when iterating
 # on the C ABI from a non-native frontend.
 bridge:
-	@cmake -S $(BRIDGE_DIR) -B $(BRIDGE_DIR)/build -G "Unix Makefiles" -DCMAKE_BUILD_TYPE=Release
+ifeq ($(MODORE_ENABLE_ATZC),1)
+	@if [ ! -f "$(MODORE_ATZC_DIR)/include/atzc/client.h" ]; then \
+	    echo "atzc client not found at $(MODORE_ATZC_DIR)."; \
+	    echo "Run 'make fetch-atzc' or set MODORE_ATZC_DIR=<atzc-server checkout>."; \
+	    exit 1; \
+	fi
+endif
+	@cmake -S $(BRIDGE_DIR) -B $(BRIDGE_DIR)/build -G "Unix Makefiles" -DCMAKE_BUILD_TYPE=Release \
+	    $(if $(filter 1,$(MODORE_ENABLE_ATZC)),-DMODORE_ENABLE_ATZC=ON -DMODORE_ATZC_DIR=$(MODORE_ATZC_DIR),-DMODORE_ENABLE_ATZC=OFF)
 	@cmake --build $(BRIDGE_DIR)/build -j
 
 # ---- scripting engine -------------------------------------------------------
@@ -153,6 +175,25 @@ fetch-luajit:
 	    echo "luajit: cloning $(LUAJIT_REPO) @ $(LUAJIT_SHA)"; \
 	    git clone --branch $(LUAJIT_BRANCH) $(LUAJIT_REPO) $(LUAJIT_DIR); \
 	    git -C $(LUAJIT_DIR) checkout --detach $(LUAJIT_SHA); \
+	fi
+
+# Lazy-clone the atzc client into third_party/ at the pinned SHA. Only needed
+# when building the bridge with MODORE_ENABLE_ATZC=1.
+fetch-atzc:
+	@if [ -d $(ATZC_DIR)/.git ]; then \
+	    have=$$(git -C $(ATZC_DIR) rev-parse HEAD); \
+	    if [ "$$have" = "$(ATZC_SHA)" ]; then \
+	        echo "atzc: already at pinned SHA $(ATZC_SHA)"; \
+	    else \
+	        echo "atzc: re-pinning $$have -> $(ATZC_SHA)"; \
+	        git -C $(ATZC_DIR) fetch --depth=1 origin $(ATZC_SHA) || \
+	            git -C $(ATZC_DIR) fetch origin $(ATZC_BRANCH); \
+	        git -C $(ATZC_DIR) checkout --detach $(ATZC_SHA); \
+	    fi; \
+	else \
+	    echo "atzc: cloning $(ATZC_REPO) @ $(ATZC_SHA)"; \
+	    git clone --branch $(ATZC_BRANCH) $(ATZC_REPO) $(ATZC_DIR); \
+	    git -C $(ATZC_DIR) checkout --detach $(ATZC_SHA); \
 	fi
 
 engine:
@@ -206,6 +247,8 @@ help:
 	@echo "  make windows    build the Windows host explicitly"
 	@echo "  make install-user-bin   Linux: install to ~/.local (modore-host + bridge .so)"
 	@echo "  make bridge     build only the cross-platform Mozc bridge"
+	@echo "                  add MODORE_ENABLE_ATZC=1 to also build the atzc relay backend"
+	@echo "  make fetch-atzc lazy clone the atzc client into third_party/atzc-server/"
 	@echo "  make fetch-luajit  lazy clone LuaJIT 2.1 into third_party/luajit/"
 	@echo "  make engine     build libmodore_script; add MODORE_ENABLE_SCRIPTING=1 for Lua hooks"
 	@echo "  make engine-test  run engine smoke harness"

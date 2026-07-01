@@ -264,6 +264,12 @@ std::unique_ptr<Backend> CreateBackend(const char *requested_backend,
   }
 #endif
 
+#ifdef MODORE_ENABLE_ATZC
+  if (name == "atzc") {
+    return CreateAtzcBackend(error);
+  }
+#endif
+
   *error = "unknown mozc backend: " + name;
   return nullptr;
 }

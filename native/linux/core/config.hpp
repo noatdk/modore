@@ -5,6 +5,8 @@
 //   # comment
 //   [conversion]
 //   hotkey = Ctrl+Semicolon
+//   [bridge]
+//   mozc_backend = built-in        # built-in (Mozc, default) | atzc
 //
 // Modifiers (combine with +): Ctrl, Shift, Alt, Super.
 // Key names: Slash, Period, Comma, a–z, 0–9, Space, Return, Tab, Escape,
@@ -29,6 +31,10 @@ struct ModoreConfig {
   X11HotkeySpec conversion_hotkey{};
   // Human-readable chord for logs (defaults to "Ctrl+Semicolon (default)").
   std::string conversion_hotkey_description;
+  // [bridge] mozc_backend, normalized to the bridge's MODORE_MOZC_BACKEND
+  // token: "oss" (built-in Mozc) or "atzc". Empty = key absent or unrecognized;
+  // the host then leaves the bridge on its default (built-in Mozc).
+  std::string mozc_backend;
   int clipboard_pre_paste_delay_ms{30};
   int clipboard_paste_visibility_wait_ms{6};
   int clipboard_paste_visibility_step_ms{1};
