@@ -278,8 +278,6 @@ bool wait_wl_clipboard_equals_normalized(const std::string &expected,
 bool mozc_convert_utf8(const std::string &romaji, std::string *replacement);
 std::optional<std::pair<std::string, std::vector<std::string>>>
 mozc_convert_utf8_with_candidates(const std::string &romaji);
-// After a fast top-1 convert, pull the full candidate list on a background
-// thread so cycle never blocks on the slow reconversion path.
 void mozc_prefetch_candidates_async(const std::string &romaji,
                                     const std::string &committed);
 void clear_conversion_session_locked();

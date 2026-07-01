@@ -1,6 +1,7 @@
 // mozc_session.cpp — Mozc bridge calls and conversion-session state.
 
 #include "host_internal.hpp"
+#include "mozc_convert.hpp"
 
 namespace modore_host {
 
@@ -41,51 +42,16 @@ mozc_convert_utf8_with_candidates(const std::string &romaji) {
   if (romaji.empty()) {
     return std::nullopt;
   }
-
-  size_t commit_cap = std::max<size_t>(romaji.size() * 4 + 64, 256);
-  char cand_buf[16384] = {0};
-  size_t cand_total_len = 0;
-  int candidate_count = 0;
-
-  for (;;) {
-    std::string commit_buf(commit_cap, '\0');
-    size_t commit_len = 0;
-    int rc = mozc_bridge_convert_with_candidates_ex(
-        romaji.data(), romaji.size(), commit_buf.data(), commit_buf.size(),
-        &commit_len, cand_buf, sizeof(cand_buf), &cand_total_len, 16,
-        &candidate_count, 0u);
-    if (rc == 0) {
-      std::string committed(commit_buf.data(), commit_len);
-      std::vector<std::string> candidates;
-      size_t pos = 0;
-      while (pos < cand_total_len) {
-        size_t next = pos;
-        while (next < cand_total_len && cand_buf[next] != '\0') {
-          ++next;
-        }
-        candidates.emplace_back(cand_buf + pos, next - pos);
-        pos = next + 1;
-      }
-      if (candidates.empty() || candidates.front() != committed) {
-        candidates.insert(candidates.begin(), committed);
-      }
-      (void)candidate_count;
-      return std::make_pair(std::move(committed), std::move(candidates));
-    }
-    if (rc < 0) {
-      logf("mozc_bridge_convert_with_candidates_ex: %s",
-           mozc_bridge_last_error() ? mozc_bridge_last_error()
-                                    : "unknown error");
-      return std::nullopt;
-    }
-    if (static_cast<size_t>(rc) > (1u << 20)) {
-      logf("mozc_bridge_convert_with_candidates_ex: unreasonably large output "
-           "(%d)",
-           rc);
-      return std::nullopt;
-    }
-    commit_cap = static_cast<size_t>(rc) + 1;
+  modore::common::CandidateConversion conv;
+  std::string error;
+  if (!modore::common::convert_with_candidates(
+          romaji, /*flags=*/0u, modore::common::kDefaultMaxCandidates, &conv,
+          &error)) {
+    logf("mozc_bridge_convert_with_candidates_ex: %s",
+         error.empty() ? "unknown error" : error.c_str());
+    return std::nullopt;
   }
+  return std::make_pair(std::move(conv.committed), std::move(conv.candidates));
 }
 
 void mozc_prefetch_candidates_async(const std::string &romaji,

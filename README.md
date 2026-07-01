@@ -68,10 +68,12 @@ hotkey = Ctrl+Shift+grave
 の文法、修飾キーのエイリアス、キー名一覧は
 [docs/configuration.md](docs/configuration.md) を参照。
 
-`[bridge] mozc_backend` で変換バックエンドを選べる。`built-in`
-（デフォルト、同梱Mozcをプロセス内で使用。`oss` も互換エイリアス）または
-`google_ime`（システムに入っている Google 日本語入力サービス）を
-指定する。この変更はアプリ再起動後に反映される。
+`[bridge] mozc_backend` で変換バックエンドを選べる。デフォルトは
+`built-in`（同梱Mozcをプロセス内で使用。`oss` も互換エイリアス）。
+macOSでは `google_ime`（システムのGoogle日本語入力サービス）、Linuxでは
+`atzc`（Wineホストのエンジンを `atzcd` 経由で利用。オプトインビルド、
+[docs/linux.md](docs/linux.md) 参照）を指定できる。この変更はアプリ
+再起動後に反映される。
 
 ## 構成
 
